@@ -24,7 +24,7 @@ NC='\033[0m'
 
 # --- 核心配置 ---
 ST_DIR="$HOME/SillyTavern"
-REPO_URL="https://git.723123.xyz/gh/SillyTavern/SillyTavern.git"
+REPO_URL="https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
 REPO_BRANCH="release"
 BACKUP_ROOT_DIR="$ST_DIR/_我的备份"
 BACKUP_LIMIT=10
