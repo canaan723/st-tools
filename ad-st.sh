@@ -1,17 +1,17 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # =========================================================================
 #
-#                       SillyTavern 助手 v2.3
+#                       SillyTavern 助手 v2.4
 #
 #   作者: Qingjue
 #   小红书号: 826702880
 #
-#   v2.3 更新日志:
-#   - 重大修复: [更新BUG] 在下载新脚本后强制转换文件格式为Unix(LF)，
-#               从根本上解决了因换行符问题导致的更新后无法执行的错误。
-#   - 新增: [更新提示] 脚本启动时会自动在后台检查更新。若有新版本，
-#           主菜单的更新选项旁会出现黄色 [!] 提示。
-#   - 优化: [UI] 统一交互逻辑，将备份菜单的“取消”键从 'Q' 改为 '0'。
+#   v2.4 更新日志:
+#   - 功能恢复: [删除] “删除备份”列表重新显示文件大小。
+#   - UI优化: [备份] 将备份项的描述信息单独成行，解决窄屏对齐问题。
+#   - 交互优化: [备份] 将“开始备份”的确认键改为更直观的回车键。
+#   - 功能强化: [更新] 更新ST时，会强制将远程仓库地址与脚本内定义
+#               的REPO_URL同步，确保镜像地址的有效性。
 #
 # =========================================================================
 
@@ -25,7 +25,7 @@ NC='\033[0m'
 
 # --- 核心配置 ---
 ST_DIR="$HOME/SillyTavern"
-REPO_URL="https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
+REPO_URL="https://git.723123.xyz/gh/SillyTavern/SillyTavern.git"
 REPO_BRANCH="release"
 BACKUP_ROOT_DIR="$ST_DIR/_我的备份"
 BACKUP_LIMIT=10
@@ -107,21 +107,22 @@ run_backup_interactive() {
         for i in "${!options[@]}"; do
             local key="${options[$i]}"
             local description="${ALL_PATHS[$key]}"
+            # [v2.4] 优化布局，描述单独成行
             if ${selection_status[$key]}; then
-                printf "  [%-2d] ${GREEN}[✓] %-38s${NC} (%s)\n" "$((i+1))" "$key" "$description"
+                printf "  [%-2d] ${GREEN}[✓] %s${NC}\n" "$((i+1))" "$key"
             else
-                printf "  [%-2d] [ ] %-38s (%s)\n" "$((i+1))" "$key" "$description"
+                printf "  [%-2d] [ ] %s\n" "$((i+1))" "$key"
             fi
+            printf "      ${CYAN}(%s)${NC}\n" "$description"
         done
         
-        echo
-        # [v2.3] 统一交互，Q改为0
-        echo -e "      ${GREEN}[S] 开始备份${NC}      ${RED}[0] 取消备份${NC}"
-        read -p "请操作 [输入数字, S 或 0]: " user_choice
+        # [v2.4] 优化交互，回车确认
+        echo -e "      ${GREEN}[回车] 开始备份${NC}      ${RED}[0] 取消备份${NC}"
+        read -p "请操作 [输入数字, 回车 或 0]: " user_choice
 
         case "$user_choice" in
+            "" | [sS]) break ;; # 回车或S确认
             0) echo "备份已取消。"; fn_press_any_key; return ;;
-            [sS]) break ;;
             *)
                 if [[ "$user_choice" =~ ^[0-9]+$ ]] && [ "$user_choice" -ge 1 ] && [ "$user_choice" -le "${#options[@]}" ]; then
                     local selected_key="${options[$((user_choice-1))]}"
@@ -189,21 +190,11 @@ main_manual_restore_guide() {
     clear
     fn_print_header "手动恢复指南 (使用MT管理器)"
     echo -e "${YELLOW}自动恢复有风险，手动操作更安全。请遵循以下步骤：${NC}"
-    echo
-    echo -e "${BOLD}第1步：找到备份文件${NC}"
-    echo -e "  - 备份文件位于: ${CYAN}${ST_DIR}/_我的备份/${NC}"
-    echo -e "  - 文件名类似于: ${GREEN}ST_备份_2023-10-27_14-30.zip${NC}"
-    echo
-    echo -e "${BOLD}第2步：找到酒馆主目录${NC}"
-    echo -e "  - 您的酒馆安装在: ${CYAN}${ST_DIR}${NC}"
-    echo
-    echo -e "${BOLD}第3步：执行解压覆盖 (核心操作)${NC}"
-    echo -e "  1. 在MT管理器中，长按你的备份zip文件。"
-    echo -e "  2. 在弹出的菜单中选择 ${GREEN}“解压到...”${NC}。"
-    echo -e "  3. 导航到酒馆主目录 (${CYAN}SillyTavern${NC}) 并确认。"
-    echo -e "  4. MT管理器会提示“存在同名文件”，务必选择 ${YELLOW}“全部覆盖”${NC}。"
-    echo
-    echo -e "${RED}${BOLD}警告：此操作会用备份文件覆盖现有文件，请确保您选择了正确的备份包。${NC}"
+    echo -e "  1. 在MT管理器中找到备份文件: ${CYAN}${ST_DIR}/_我的备份/${NC}"
+    echo -e "  2. 长按zip文件, 选择 ${GREEN}“解压到...”${NC}。"
+    echo -e "  3. 路径选择到酒馆主目录: ${CYAN}${ST_DIR}${NC}"
+    echo -e "  4. 提示同名文件时, 选择 ${YELLOW}“全部覆盖”${NC}。"
+    echo -e "\n${RED}${BOLD}警告：此操作会用备份文件覆盖现有文件，请谨慎操作。${NC}"
     fn_press_any_key
 }
 
@@ -219,8 +210,13 @@ run_delete_backup() {
     fi
 
     echo -e "检测到以下备份 (当前/上限: ${#backup_files[@]}/${BACKUP_LIMIT}):"
-    for i in "${!backup_files[@]}"; do
-        printf "    [%-2d] %s\n" "$((i+1))" "$(basename "${backup_files[$i]}")"
+    # [v2.4] 恢复文件大小显示
+    local i=0
+    for file in "${backup_files[@]}"; do
+        if [ -f "$file" ]; then
+            local size; size=$(du -h "$file" | cut -f1)
+            printf "    [%-2d] %-40s (%s)\n" "$((++i))" "$(basename "$file")" "$size"
+        fi
     done
 
     read -p "输入要删除的备份编号 (其他键取消): " choice
@@ -288,6 +284,12 @@ main_update_st() {
     clear; fn_print_header "更新 SillyTavern 主程序"
     if [ ! -d "$ST_DIR/.git" ]; then fn_print_warning "未找到Git仓库，请先完整部署。"; fn_press_any_key; return; fi
     cd "$ST_DIR" || return
+    
+    # [v2.4] 强制同步远程仓库地址
+    echo -e "${YELLOW}正在同步远程仓库地址以确保使用最新镜像...${NC}"
+    git remote set-url origin "$REPO_URL"
+    if [ $? -ne 0 ]; then fn_print_warning "同步远程地址失败，更新可能使用旧链接。"; fi
+
     echo -e "${YELLOW}正在拉取最新代码...${NC}"; git pull origin "$REPO_BRANCH"
     if [ $? -eq 0 ]; then fn_print_success "代码更新成功。"; echo -e "${YELLOW}正在同步依赖包...${NC}"; npm install --no-audit --no-fund --omit=dev; fn_print_success "依赖包更新完成。"; else fn_print_warning "代码更新失败，可能存在冲突。"; fi
     fn_press_any_key
@@ -305,19 +307,17 @@ main_update_script() {
     elif cmp -s "$SCRIPT_SELF_PATH" "$temp_file"; then
         rm -f "$temp_file"; fn_print_success "当前已是最新版本。"
     else
-        # [v2.3] 重大修复：强制转换文件为Unix格式，解决执行错误
         sed -i 's/\r$//' "$temp_file"
-        
         mv "$temp_file" "$SCRIPT_SELF_PATH"
         chmod +x "$SCRIPT_SELF_PATH"
-        rm -f "$UPDATE_FLAG_FILE" # 清除更新标记
+        rm -f "$UPDATE_FLAG_FILE"
         echo -e "${GREEN}助手更新成功！正在自动重启...${NC}"; sleep 2
         exec "$SCRIPT_SELF_PATH" --updated
     fi
     fn_press_any_key
 }
 
-# [v2.3] 新增：后台静默更新检查
+# 后台静默更新检查
 check_for_updates_on_start() {
     (
         local temp_file; temp_file=$(mktemp)
@@ -363,7 +363,6 @@ while true; do
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
-    # [v2.3] 更新提示
     update_notice=""
     if [ -f "$UPDATE_FLAG_FILE" ]; then
         update_notice="${YELLOW}[!]${NC} "
