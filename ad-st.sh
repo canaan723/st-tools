@@ -1,15 +1,14 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # =========================================================================
 #
-#                       SillyTavern 助手 v1.4
+#                       SillyTavern 助手 v1.5
 #
 #   作者: Qingjue
 #   小红书号: 826702880
 #
-#   v1.4 更新日志:
-#   - 新增: 首次部署成功后，自动启动一次 SillyTavern。
-#   - 修复: 恢复备份时因 /tmp 目录权限问题导致的解压失败。
-#   - 优化: 镜像源配置的提示语，使其更准确。
+#   v1.5 更新日志:
+#   - 修复: 重新校准顶部标题框，解决UI显示错位问题。
+#   - 优化: 镜像源配置前的确认提示改为“按任意键”，避免操作混淆。
 #
 # =========================================================================
 
@@ -152,7 +151,6 @@ run_restore() {
         return
     fi
     
-    # 使用 Termux 的标准临时目录 $TMPDIR
     local temp_restore_dir="$TMPDIR/st_restore_$$"
     mkdir -p "$temp_restore_dir"
     
@@ -192,7 +190,8 @@ main_install() {
     fn_print_header "1/5: 配置软件源"
     echo -e "即将打开Termux官方的镜像源选择器。"
     fn_print_warning "接下来会弹出一个界面，按两次回车或OK确认即可。"
-    read -p "  准备好后，请按回车键继续..."
+    read -n 1 -s -r -p "  准备好后，请按任意键继续..."
+    echo
     
     termux-change-repo
     yes | pkg update && yes | pkg upgrade
@@ -362,8 +361,8 @@ while true; do
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
     ╔═════════════════════════════╗
-    ║      SillyTavern 助手       ║
-    ║ by Qingjue | XHS:826702880  ║
+    ║        SillyTavern 助手        ║
+    ║  by Qingjue | XHS:826702880 ║
     ╚═════════════════════════════╝
 EOF
     echo -e "${NC}"
