@@ -1,17 +1,16 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # =========================================================================
 #
-#                       SillyTavern 助手 v2.4
+#                       SillyTavern 助手 v2.5
 #
 #   作者: Qingjue
 #   小红书号: 826702880
 #
-#   v2.4 更新日志:
-#   - 功能恢复: [删除] “删除备份”列表重新显示文件大小。
-#   - UI优化: [备份] 将备份项的描述信息单独成行，解决窄屏对齐问题。
-#   - 交互优化: [备份] 将“开始备份”的确认键改为更直观的回车键。
-#   - 功能强化: [更新] 更新ST时，会强制将远程仓库地址与脚本内定义
-#               的REPO_URL同步，确保镜像地址的有效性。
+#   v2.5 更新日志:
+#   - 流程加固: 移除了所有在关键任务执行过程中的暂停提示，防止用户
+#               误操作中断流程。现在只有任务结束后才会暂停。
+#   - UI强化: 更新提示更加醒目，会直接显示“[!] 有更新”文字。
+#   - 文案优化: 将“在线文档”统一修改为更准确的“帮助文档”。
 #
 # =========================================================================
 
@@ -25,7 +24,7 @@ NC='\033[0m'
 
 # --- 核心配置 ---
 ST_DIR="$HOME/SillyTavern"
-REPO_URL="https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
+REPO_URL="https://git.723123.xyz/gh/SillyTavern/SillyTavern.git"
 REPO_BRANCH="release"
 BACKUP_ROOT_DIR="$ST_DIR/_我的备份"
 BACKUP_LIMIT=10
@@ -107,7 +106,6 @@ run_backup_interactive() {
         for i in "${!options[@]}"; do
             local key="${options[$i]}"
             local description="${ALL_PATHS[$key]}"
-            # [v2.4] 优化布局，描述单独成行
             if ${selection_status[$key]}; then
                 printf "  [%-2d] ${GREEN}[✓] %s${NC}\n" "$((i+1))" "$key"
             else
@@ -116,12 +114,11 @@ run_backup_interactive() {
             printf "      ${CYAN}(%s)${NC}\n" "$description"
         done
         
-        # [v2.4] 优化交互，回车确认
         echo -e "      ${GREEN}[回车] 开始备份${NC}      ${RED}[0] 取消备份${NC}"
         read -p "请操作 [输入数字, 回车 或 0]: " user_choice
 
         case "$user_choice" in
-            "" | [sS]) break ;; # 回车或S确认
+            "" | [sS]) break ;;
             0) echo "备份已取消。"; fn_press_any_key; return ;;
             *)
                 if [[ "$user_choice" =~ ^[0-9]+$ ]] && [ "$user_choice" -ge 1 ] && [ "$user_choice" -le "${#options[@]}" ]; then
@@ -210,7 +207,6 @@ run_delete_backup() {
     fi
 
     echo -e "检测到以下备份 (当前/上限: ${#backup_files[@]}/${BACKUP_LIMIT}):"
-    # [v2.4] 恢复文件大小显示
     local i=0
     for file in "${backup_files[@]}"; do
         if [ -f "$file" ]; then
@@ -260,8 +256,9 @@ main_data_management_menu() {
 main_install() {
     clear; fn_print_header "SillyTavern 首次部署向导"
     fn_print_header "1/5: 配置软件源"
-    fn_print_warning "接下来会弹出一个界面，按两次回车或OK确认即可。"
-    read -n 1 -s -r -p "  准备好后，请按任意键继续..."; echo
+    # [v2.5] 移除过程暂停
+    fn_print_warning "即将自动配置软件源，请在弹窗中按两次回车或OK确认。"
+    sleep 3
     termux-change-repo
     echo -e "${YELLOW}正在更新软件包列表...${NC}"; yes | pkg update && yes | pkg upgrade || fn_print_error_exit "软件源更新失败！"
     fn_print_success "软件源配置完成。"
@@ -285,7 +282,6 @@ main_update_st() {
     if [ ! -d "$ST_DIR/.git" ]; then fn_print_warning "未找到Git仓库，请先完整部署。"; fn_press_any_key; return; fi
     cd "$ST_DIR" || return
     
-    # [v2.4] 强制同步远程仓库地址
     echo -e "${YELLOW}正在同步远程仓库地址以确保使用最新镜像...${NC}"
     git remote set-url origin "$REPO_URL"
     if [ $? -ne 0 ]; then fn_print_warning "同步远程地址失败，更新可能使用旧链接。"; fi
@@ -343,7 +339,8 @@ main_manage_autostart() {
     fn_press_any_key
 }
 main_open_docs() {
-    clear; fn_print_header "打开在线帮助文档"; if fn_check_command "termux-open-url"; then termux-open-url "https://stdocs.723123.xyz"; fn_print_success "已调用浏览器打开文档。"; else fn_print_warning "命令 'termux-open-url' 不存在。"; echo "请先安装【Termux:API】应用及 'pkg install termux-api'。"; fi; fn_press_any_key
+    # [v2.5] 文案优化
+    clear; fn_print_header "查看帮助文档"; if fn_check_command "termux-open-url"; then termux-open-url "https://stdocs.723123.xyz"; fn_print_success "已调用浏览器打开文档。"; else fn_print_warning "命令 'termux-open-url' 不存在。"; echo "请先安装【Termux:API】应用及 'pkg install termux-api'。"; fi; fn_press_any_key
 }
 
 # =========================================================================
@@ -363,17 +360,19 @@ while true; do
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
+    # [v2.5] 强化更新提示
     update_notice=""
     if [ -f "$UPDATE_FLAG_FILE" ]; then
-        update_notice="${YELLOW}[!]${NC} "
+        update_notice=" ${YELLOW}[!] 有更新${NC}"
     fi
 
     echo -e "${NC}"; echo -e "    选择一个操作来开始：\n";
     echo -e "      ${GREEN}[1]${NC} ${BOLD}启动 SillyTavern${NC}"
     echo -e "      ${CYAN}[2]${NC} ${BOLD}数据管理${NC}"
     echo -e "      ${YELLOW}[3]${NC} ${BOLD}首次部署 (全新安装)${NC}\n"
-    echo -e "      [4] 更新 ST 主程序    [5] ${update_notice}更新助手脚本"
-    echo -e "      [6] 管理助手自启      [7] 查看在线文档\n"
+    echo -e "      [4] 更新 ST 主程序    [5] 更新助手脚本${update_notice}"
+    # [v2.5] 文案优化
+    echo -e "      [6] 管理助手自启      [7] 查看帮助文档\n"
     echo -e "      ${RED}[0] 退出助手${NC}\n"
     read -p "    请输入选项数字: " choice
 
