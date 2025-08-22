@@ -1,17 +1,15 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # =========================================================================
 #
-#                       SillyTavern 助手 v1.6
+#                       SillyTavern 助手 v1.7
 #
 #   作者: Qingjue
 #   小红书号: 826702880
 #
-#   v1.6 更新日志:
-#   - 新增: 备份管理功能，自动清理旧备份并限制最多10个。
-#   - 新增: 手动删除备份文件的功能。
-#   - 新增: 耗时操作的动态加载动画，提升用户体验。
-#   - 优化: 恢复/删除列表会显示文件大小并按时间排序。
-#   - 优化: 整体UI美化，重制标题框，移除易误导的提示。
+#   v1.7 更新日志:
+#   - 修复: 移除了在核心安装/更新步骤中的加载动画。该动画会抑制
+#           命令的输出和错误信息，导致安装失败却不报错的严重问题。
+#           现在所有关键步骤都会显示其完整的原生输出，确保稳定性和透明度。
 #
 # =========================================================================
 
@@ -49,35 +47,6 @@ fn_press_any_key() {
 }
 fn_check_command() { command -v "$1" >/dev/null 2>&1; }
 
-# 动态加载动画
-_spinner() {
-    local chars="/-\|"
-    while :; do
-        for (( i=0; i<${#chars}; i++ )); do
-            sleep 0.1
-            echo -en "${GREEN}${chars:$i:1}\r${NC}"
-        done
-    done
-}
-fn_spinner_start() {
-    echo -n "$1 "
-    _spinner &
-    SPINNER_PID=$!
-    # 隐藏光标
-    tput civis
-}
-fn_spinner_stop() {
-    kill $SPINNER_PID
-    wait $SPINNER_PID 2>/dev/null
-    # 显示光标
-    tput cnorm
-    if [ "$1" -eq 0 ]; then
-        echo -e "\r${GREEN}✓ 操作完成${NC}  "
-    else
-        echo -e "\r${RED}✗ 操作失败${NC}  "
-    fi
-}
-
 # =========================================================================
 #   核心功能模块
 # =========================================================================
@@ -94,7 +63,7 @@ main_start() {
     cd "$ST_DIR" || fn_print_error_exit "无法进入 SillyTavern 目录。"
     
     echo -e "正在配置NPM镜像并准备启动环境..."
-    npm config set registry https://registry.npmmirror.com &>/dev/null
+    npm config set registry https://registry.npmmirror.com
     echo -e "${YELLOW}环境准备就绪，正在启动SillyTavern服务...${NC}"
     bash start.sh
     echo -e "\n${YELLOW}SillyTavern 已停止运行。${NC}"
@@ -103,15 +72,12 @@ main_start() {
 
 # --- 模块：备份、恢复、删除 ---
 fn_list_backups() {
-    # $1: 全局数组名，用于返回文件列表
-    # $2: 模式 (restore/delete)
     local -n files_ref=$1
     local mode=$2
     
     fn_print_header "从备份${mode}"
     mkdir -p "$BACKUP_ROOT_DIR"
     
-    # 使用 find 和 sort 来可靠地处理文件名和排序
     mapfile -t files_ref < <(find "$BACKUP_ROOT_DIR" -maxdepth 1 -name "*.zip" -printf "%T@ %p\n" | sort -nr | cut -d' ' -f2-)
 
     if [ ${#files_ref[@]} -eq 0 ]; then
@@ -148,14 +114,10 @@ run_backup() {
     local backup_name="ST_备份_${timestamp}"
     local backup_zip_path="${BACKUP_ROOT_DIR}/${backup_name}.zip"
     
-    echo -e "\n${YELLOW}即将开始备份...${NC}"
+    echo -e "\n${YELLOW}正在压缩文件，请稍候...${NC}"
+    zip -rq "$backup_zip_path" "${paths_to_backup[@]}" -x "*_cache/*" "*.git*" "*.log"
     
-    fn_spinner_start "正在压缩文件..."
-    zip -rq "$backup_zip_path" "${paths_to_backup[@]}" -x "*_cache/*" "*.git*" "*.log" &>/dev/null
-    local zip_status=$?
-    fn_spinner_stop $zip_status
-    
-    if [ $zip_status -ne 0 ]; then
+    if [ $? -ne 0 ]; then
         fn_print_warning "备份失败！"
         fn_press_any_key
         return
@@ -163,7 +125,6 @@ run_backup() {
 
     fn_print_success "备份成功：${backup_name}.zip"
 
-    # 自动清理旧备份
     mapfile -t all_backups < <(find "$BACKUP_ROOT_DIR" -maxdepth 1 -name "*.zip" -printf "%T@ %p\n" | sort -nr | cut -d' ' -f2-)
     if [ "${#all_backups[@]}" -gt $BACKUP_LIMIT ]; then
         echo -e "${YELLOW}备份数量超过 ${BACKUP_LIMIT} 个，正在清理旧备份...${NC}"
@@ -204,15 +165,15 @@ run_restore() {
     local temp_restore_dir="$TMPDIR/st_restore_$$"
     mkdir -p "$temp_restore_dir"
     
-    fn_spinner_start "正在解压并同步文件..."
-    unzip -qo "$chosen_backup" -d "$temp_restore_dir" && rsync -a --delete "$temp_restore_dir/" "$ST_DIR/" &>/dev/null
-    local restore_status=$?
-    fn_spinner_stop $restore_status
-    rm -rf "$temp_restore_dir"
-
-    if [ $restore_status -eq 0 ]; then
+    echo -e "${YELLOW}正在解压并同步文件...${NC}"
+    unzip -qo "$chosen_backup" -d "$temp_restore_dir" && rsync -a --delete "$temp_restore_dir/" "$ST_DIR/"
+    
+    if [ $? -eq 0 ]; then
         fn_print_success "数据恢复成功！"
+    else
+        fn_print_warning "恢复操作失败！"
     fi
+    rm -rf "$temp_restore_dir"
     fn_press_any_key
 }
 
@@ -271,30 +232,30 @@ main_install() {
     echo
     
     termux-change-repo
-    fn_spinner_start "正在更新软件包列表..."
-    yes | pkg update &>/dev/null && yes | pkg upgrade &>/dev/null
-    fn_spinner_stop $?
+    echo -e "${YELLOW}正在更新软件包列表，请耐心等待...${NC}"
+    yes | pkg update && yes | pkg upgrade || fn_print_error_exit "软件源更新失败！"
+    fn_print_success "软件源配置完成。"
 
     fn_print_header "2/5: 安装核心依赖"
-    local packages="git nodejs-lts rsync zip termux-api"
-    yes | pkg install ${packages} &>/dev/null
+    echo -e "${YELLOW}正在安装所需的核心软件包...${NC}"
+    yes | pkg install git nodejs-lts rsync zip termux-api || fn_print_error_exit "核心依赖安装失败！"
     fn_print_success "核心依赖安装完毕。"
 
     fn_print_header "3/5: 下载 ST 主程序"
     if [ -d "$ST_DIR" ]; then
         fn_print_warning "目录已存在，跳过下载。"
     else
-        fn_spinner_start "正在从镜像下载主程序 (${REPO_BRANCH} 分支)..."
-        git clone --depth 1 -b "$REPO_BRANCH" "$REPO_URL" "$ST_DIR" &>/dev/null
-        fn_spinner_stop $?
+        echo -e "${YELLOW}正在从镜像下载主程序 (${REPO_BRANCH} 分支)...${NC}"
+        git clone --depth 1 -b "$REPO_BRANCH" "$REPO_URL" "$ST_DIR" || fn_print_error_exit "主程序下载失败！"
+        fn_print_success "主程序下载完成。"
     fi
     
     fn_print_header "4/5: 配置 NPM 环境"
     if [ -d "$ST_DIR" ]; then
         cd "$ST_DIR" || fn_print_error_exit "无法进入 '$ST_DIR'。"
-        fn_spinner_start "正在配置NPM国内镜像..."
-        npm config set registry https://registry.npmmirror.com &>/dev/null
-        fn_spinner_stop $?
+        echo -e "${YELLOW}正在配置NPM国内镜像...${NC}"
+        npm config set registry https://registry.npmmirror.com
+        fn_print_success "NPM配置完成。"
     else
         fn_print_warning "SillyTavern 目录不存在，跳过此步。"
     fi
@@ -321,15 +282,13 @@ main_update_st() {
     fi
     cd "$ST_DIR" || return
     
-    fn_spinner_start "正在拉取最新代码..."
-    git pull origin "$REPO_BRANCH" &>/dev/null
-    local pull_status=$?
-    fn_spinner_stop $pull_status
-
-    if [ $pull_status -eq 0 ]; then
-        fn_spinner_start "正在同步依赖包..."
-        npm install --no-audit --no-fund --omit=dev &>/dev/null
-        fn_spinner_stop $?
+    echo -e "${YELLOW}正在拉取最新代码...${NC}"
+    git pull origin "$REPO_BRANCH"
+    if [ $? -eq 0 ]; then
+        fn_print_success "代码更新成功。"
+        echo -e "${YELLOW}正在同步依赖包...${NC}"
+        npm install --no-audit --no-fund --omit=dev
+        fn_print_success "依赖包更新完成。"
     else
         fn_print_warning "代码更新失败，可能存在冲突。"
     fi
@@ -340,14 +299,12 @@ main_update_st() {
 main_update_script() {
     clear
     fn_print_header "更新助手脚本"
-    fn_spinner_start "正在从 Gitee 检查新版本..."
+    echo -e "${YELLOW}正在从 Gitee 检查新版本...${NC}"
     
     local temp_file="${SCRIPT_SELF_PATH}.tmp"
-    curl -s -L -o "$temp_file" "$SCRIPT_URL"
-    local curl_status=$?
-    fn_spinner_stop $curl_status
-
-    if [ $curl_status -ne 0 ] || [ ! -s "$temp_file" ]; then
+    curl -L -o "$temp_file" "$SCRIPT_URL"
+    
+    if [ $? -ne 0 ] || [ ! -s "$temp_file" ]; then
         fn_print_warning "下载失败，请检查网络。"
         rm -f "$temp_file"
     elif cmp -s "$SCRIPT_SELF_PATH" "$temp_file"; then
@@ -453,5 +410,5 @@ EOF
         7) main_open_docs ;;
         0) echo -e "\n感谢使用，助手已退出。"; exit 0 ;;
         *) echo -e "\n${RED}无效输入，请重新选择。${NC}"; sleep 1.5 ;;
-    esac
+    ac
 done
