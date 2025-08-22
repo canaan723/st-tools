@@ -1,10 +1,15 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # =========================================================================
 #
-#                       SillyTavern 助手 v1.1
+#                       SillyTavern 助手 v1.2
 #
 #   作者: Qingjue
 #   小红书号: 826702880
+#
+#   v1.2 更新日志:
+#   - 修复: 镜像源选择界面未弹出的问题。
+#   - 修复: 部分终端颜色代码显示为乱码的问题。
+#   - 优化: 未安装ST时，备份/恢复功能会友好提示而非中止。
 #
 # =========================================================================
 
@@ -53,11 +58,15 @@ fn_check_command() {
 main_start() {
     clear
     fn_print_header "启动 SillyTavern"
-    [ ! -f "$ST_DIR/start.sh" ] && fn_print_warning "未找到启动脚本，请先部署。" && fn_press_any_key && return
+    if [ ! -f "$ST_DIR/start.sh" ]; then
+        fn_print_warning "SillyTavern 尚未安装，请先部署。"
+        fn_press_any_key
+        return
+    fi
     cd "$ST_DIR" || fn_print_error_exit "无法进入 SillyTavern 目录。"
     
     npm config set registry https://registry.npmmirror.com
-    echo "即将启动 SillyTavern..."
+    echo -e "即将启动 SillyTavern..."
     echo -e "在 Termux 中按 ${BOLD}Ctrl + C${NC} 可随时停止。"
     bash start.sh
     echo -e "\n${YELLOW}SillyTavern 已停止运行。${NC}"
@@ -66,8 +75,12 @@ main_start() {
 
 # --- 模块：备份与恢复 ---
 run_backup() {
-    cd "$ST_DIR" || fn_print_error_exit "无法进入 SillyTavern 目录。"
     fn_print_header "执行数据备份"
+    if [ ! -d "$ST_DIR" ]; then
+        fn_print_warning "SillyTavern 尚未安装，无法备份。"
+        return
+    fi
+    cd "$ST_DIR" || fn_print_error_exit "无法进入 SillyTavern 目录。"
 
     local paths_to_backup=("./data" "./plugins" "./public/scripts/extensions/third-party")
     mkdir -p "$BACKUP_ROOT_DIR"
@@ -75,46 +88,50 @@ run_backup() {
     local backup_name="ST_备份_${timestamp}"
     local backup_dir="${BACKUP_ROOT_DIR}/${backup_name}"
     
-    echo "将备份以下内容到 '$BACKUP_ROOT_DIR'："
-    for path in "${paths_to_backup[@]}"; do echo "  - $path"; done
+    echo -e "将备份以下内容到 '$BACKUP_ROOT_DIR'："
+    for path in "${paths_to_backup[@]}"; do echo -e "  - $path"; done
     echo
     read -p "开始备份吗？ (输入 'y' 继续): " confirm
     [[ ! "$confirm" =~ ^[yY](es)?$ ]] && echo "操作已取消。" && return
 
-    echo "1/3: 复制文件..."
+    echo -e "1/3: 复制文件..."
     mkdir -p "$backup_dir"
-    rsync -aR --exclude='_cache' --exclude='.git' --exclude='*.log' "${paths_to_backup[@]}" "${backup_dir}/" || { echo "${RED}复制失败！${NC}"; return; }
+    rsync -aR --exclude='_cache' --exclude='.git' --exclude='*.log' "${paths_to_backup[@]}" "${backup_dir}/" || { echo -e "${RED}复制失败！${NC}"; return; }
     fn_print_success "复制成功。"
 
-    echo "2/3: 压缩文件..."
-    (cd "$backup_dir" && zip -rq "../${backup_name}.zip" .) || { echo "${RED}压缩失败！${NC}"; return; }
+    echo -e "2/3: 压缩文件..."
+    (cd "$backup_dir" && zip -rq "../${backup_name}.zip" .) || { echo -e "${RED}压缩失败！${NC}"; return; }
     fn_print_success "压缩完成！"
 
-    echo "3/3: 清理临时文件..."
+    echo -e "3/3: 清理临时文件..."
     rm -rf "$backup_dir"
     fn_print_success "清理完成。"
 
     echo -e "\n${GREEN}备份成功：${backup_name}.zip${NC}"
 }
 run_restore() {
-    cd "$ST_DIR" || fn_print_error_exit "无法进入 SillyTavern 目录。"
     fn_print_header "从备份恢复数据"
+    if [ ! -d "$ST_DIR" ]; then
+        fn_print_warning "SillyTavern 尚未安装，无法恢复。"
+        return
+    fi
+    cd "$ST_DIR" || fn_print_error_exit "无法进入 SillyTavern 目录。"
     
     local backups=("$BACKUP_ROOT_DIR"/*.zip)
     if [ ! -d "$BACKUP_ROOT_DIR" ] || [ ! -e "${backups[0]}" ]; then
         fn_print_warning "未找到任何备份文件。" && return
     fi
 
-    echo "检测到以下备份："
+    echo -e "检测到以下备份："
     local i=1
     for backup in "${backups[@]}"; do
-        echo "  [${i}] $(basename "$backup")"
+        echo -e "  [${i}] $(basename "$backup")"
         i=$((i+1))
     done
     
     read -p "输入编号恢复 (其他键取消): " choice
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#backups[@]}" ]; then
-        echo "操作已取消。" && return
+        echo -e "操作已取消。" && return
     fi
     
     local chosen_backup="${backups[$((choice-1))]}"
@@ -130,12 +147,12 @@ run_restore() {
     local temp_restore_dir="/tmp/st_restore_$$"
     mkdir -p "$temp_restore_dir"
     
-    echo "1/2: 解压备份..."
-    unzip -q "$chosen_backup" -d "$temp_restore_dir" || { echo "${RED}解压失败！${NC}"; rm -rf "$temp_restore_dir"; return; }
+    echo -e "1/2: 解压备份..."
+    unzip -q "$chosen_backup" -d "$temp_restore_dir" || { echo -e "${RED}解压失败！${NC}"; rm -rf "$temp_restore_dir"; return; }
     fn_print_success "解压完成。"
 
-    echo "2/2: 同步文件..."
-    rsync -a "$temp_restore_dir/" "$ST_DIR/" || { echo "${RED}同步失败！${NC}"; rm -rf "$temp_restore_dir"; return; }
+    echo -e "2/2: 同步文件..."
+    rsync -a "$temp_restore_dir/" "$ST_DIR/" || { echo -e "${RED}同步失败！${NC}"; rm -rf "$temp_restore_dir"; return; }
     rm -rf "$temp_restore_dir"
     fn_print_success "数据恢复成功！"
 }
@@ -143,9 +160,9 @@ main_backup_restore_menu() {
     while true; do
         clear
         fn_print_header "SillyTavern 数据管理"
-        echo "      [1] ${GREEN}备份当前数据${NC}"
-        echo "      [2] ${YELLOW}从备份恢复数据${NC}"
-        echo "      [0] ${RED}返回主菜单${NC}"
+        echo -e "      [1] ${GREEN}备份当前数据${NC}"
+        echo -e "      [2] ${YELLOW}从备份恢复数据${NC}"
+        echo -e "      [0] ${RED}返回主菜单${NC}"
         read -p "    请输入选项: " choice
 
         case $choice in
@@ -162,12 +179,13 @@ main_install() {
     clear
     fn_print_header "SillyTavern 首次部署向导"
 
-    fn_print_header "1/5: 更新软件源"
-    echo "将自动选择最快镜像源。"
-    fn_print_warning "请根据提示【按两次回车】。"
+    fn_print_header "1/5: 配置软件源"
+    echo -e "即将打开镜像源选择器。"
+    fn_print_warning "请选择一个源后，按两次回车。"
     sleep 3
+    termux-change-repo
     pkg update -y && pkg upgrade -y
-    fn_print_success "软件源更新完成。"
+    fn_print_success "软件源配置完成。"
 
     fn_print_header "2/5: 安装核心依赖"
     local packages="git nodejs-lts rsync zip termux-api"
@@ -175,7 +193,7 @@ main_install() {
         if fn_check_command $pkg_name; then
             fn_print_warning "'$pkg_name' 已安装。"
         else
-            echo "正在安装 '$pkg_name'..."
+            echo -e "正在安装 '$pkg_name'..."
             pkg install $pkg_name -y || fn_print_error_exit "'$pkg_name' 安装失败。"
         fi
     done
@@ -185,14 +203,14 @@ main_install() {
     if [ -d "$ST_DIR" ]; then
         fn_print_warning "目录已存在，跳过下载。"
     else
-        echo "正从镜像下载主程序 (${REPO_BRANCH} 分支)..."
+        echo -e "正从镜像下载主程序 (${REPO_BRANCH} 分支)..."
         git clone --depth 1 -b "$REPO_BRANCH" "$REPO_URL" "$ST_DIR" || fn_print_error_exit "下载失败。"
         fn_print_success "主程序下载完成。"
     fi
     
     fn_print_header "4/5: 配置 NPM 环境"
     cd "$ST_DIR" || fn_print_error_exit "无法进入 '$ST_DIR'。"
-    echo "正在配置 NPM 国内镜像..."
+    echo -e "正在配置 NPM 国内镜像..."
     npm config set registry https://registry.npmmirror.com
     fn_print_success "NPM 配置完成。"
 
@@ -210,14 +228,18 @@ main_install() {
 main_update_st() {
     clear
     fn_print_header "更新 SillyTavern 主程序"
-    [ ! -d "$ST_DIR/.git" ] && fn_print_warning "未找到Git仓库，无法更新。" && fn_press_any_key && return
+    if [ ! -d "$ST_DIR/.git" ]; then
+        fn_print_warning "未找到Git仓库，无法更新。"
+        fn_press_any_key
+        return
+    fi
     cd "$ST_DIR" || fn_print_error_exit "无法进入 SillyTavern 目录。"
     
-    echo "正在拉取最新代码..."
+    echo -e "正在拉取最新代码..."
     git pull origin "$REPO_BRANCH"
     if [ $? -eq 0 ]; then
         fn_print_success "代码更新成功。"
-        echo "正在同步依赖包..."
+        echo -e "正在同步依赖包..."
         npm install --no-audit --no-fund --omit=dev
         fn_print_success "依赖包更新完成。"
     else
@@ -230,7 +252,7 @@ main_update_st() {
 main_update_script() {
     clear
     fn_print_header "更新助手脚本"
-    echo "正在从 Gitee 检查新版本..."
+    echo -e "正在从 Gitee 检查新版本..."
     
     local temp_file="${SCRIPT_SELF_PATH}.tmp"
     curl -L -o "$temp_file" "$SCRIPT_URL"
@@ -271,7 +293,7 @@ main_manage_autostart() {
     clear
     fn_print_header "管理助手自启"
     if $is_set; then
-        echo "当前状态: ${GREEN}已启用${NC}"
+        echo -e "当前状态: ${GREEN}已启用${NC}"
         read -p "是否取消自启？ (y/n): " confirm
         if [[ "$confirm" =~ ^[yY]$ ]]; then
             sed -i "/# SillyTavern 助手/d" "$BASHRC_FILE"
@@ -281,7 +303,7 @@ main_manage_autostart() {
             echo "操作已取消。"
         fi
     else
-        echo "当前状态: ${RED}未启用${NC}"
+        echo -e "当前状态: ${RED}未启用${NC}"
         read -p "是否设置自启？ (y/n): " confirm
         if [[ "$confirm" =~ ^[yY]$ ]]; then
             echo -e "\n# SillyTavern 助手\n$AUTOSTART_CMD" >> "$BASHRC_FILE"
@@ -298,13 +320,13 @@ main_open_docs() {
     clear
     fn_print_header "打开在线帮助文档"
     if fn_check_command "termux-open-url"; then
-        echo "正在调用浏览器打开文档..."
+        echo -e "正在调用浏览器打开文档..."
         termux-open-url "https://stdocs.723123.xyz"
         sleep 1
     else
         fn_print_warning "命令 'termux-open-url' 不存在。"
-        echo "请先安装【Termux:API】应用，"
-        echo "并执行 'pkg install termux-api'。"
+        echo -e "请先安装【Termux:API】应用，"
+        echo -e "并执行 'pkg install termux-api'。"
     fi
     fn_press_any_key
 }
@@ -329,7 +351,7 @@ while true; do
     ╚═════════════════════════════╝
 EOF
     echo -e "${NC}"
-    echo "    请选择操作："
+    echo -e "    请选择操作："
     echo
     echo -e "      ${GREEN}[1]${NC} ${BOLD}启动 SillyTavern${NC}"
     echo -e "      ${CYAN}[2]${NC} ${BOLD}备份 / 恢复数据${NC}"
