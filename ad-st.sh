@@ -1,16 +1,14 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # =========================================================================
 #
-#                       SillyTavern 助手 v2.5
+#                       SillyTavern 助手 v2.6
 #
 #   作者: Qingjue
 #   小红书号: 826702880
 #
-#   v2.5 更新日志:
-#   - 流程加固: 移除了所有在关键任务执行过程中的暂停提示，防止用户
-#               误操作中断流程。现在只有任务结束后才会暂停。
-#   - UI强化: 更新提示更加醒目，会直接显示“[!] 有更新”文字。
-#   - 文案优化: 将“在线文档”统一修改为更准确的“帮助文档”。
+#   v2.6 更新日志:
+#   - 新增: [备份] 自定义备份现在会自动保存用户的选项，下次进入时
+#           无需重新选择，实现“选项记忆”功能。
 #
 # =========================================================================
 
@@ -24,13 +22,15 @@ NC='\033[0m'
 
 # --- 核心配置 ---
 ST_DIR="$HOME/SillyTavern"
-REPO_URL="https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
+REPO_URL="https://git.723123.xyz/gh/SillyTavern/SillyTavern.git"
 REPO_BRANCH="release"
 BACKUP_ROOT_DIR="$ST_DIR/_我的备份"
 BACKUP_LIMIT=10
 SCRIPT_SELF_PATH=$(readlink -f "$0")
 SCRIPT_URL="https://gitee.com/canaan723/st-assistant/raw/master/ad-st.sh"
 UPDATE_FLAG_FILE="/data/data/com.termux/files/usr/tmp/.st_assistant_update_flag"
+# [v2.6] 新增配置文件路径
+CONFIG_FILE="$HOME/.st_assistant.conf"
 
 # =========================================================================
 #   辅助函数库
@@ -92,11 +92,28 @@ run_backup_interactive() {
         ["./config.yaml"]="服务器配置 (网络/安全)"
     )
     local options=("./data" "./public/scripts/extensions/third-party" "./plugins" "./config.yaml")
+    
+    # [v2.6] 选项记忆功能
     local default_selection=("./data" "./plugins" "./public/scripts/extensions/third-party")
+    local selection_to_load=()
+    if [ -f "$CONFIG_FILE" ]; then
+        mapfile -t selection_to_load < "$CONFIG_FILE"
+        # 如果配置文件为空，则使用默认值
+        if [ ${#selection_to_load[@]} -eq 0 ]; then
+            selection_to_load=("${default_selection[@]}")
+        fi
+    else
+        selection_to_load=("${default_selection[@]}")
+    fi
     
     declare -A selection_status
     for key in "${options[@]}"; do selection_status["$key"]=false; done
-    for key in "${default_selection[@]}"; do selection_status["$key"]=true; done
+    for key in "${selection_to_load[@]}"; do
+        # 确保加载的选项仍然是有效选项
+        if [[ -v selection_status["$key"] ]]; then
+            selection_status["$key"]=true
+        fi
+    done
 
     while true; do
         clear
@@ -170,6 +187,9 @@ run_backup_interactive() {
     
     mapfile -t all_backups < <(find "$BACKUP_ROOT_DIR" -maxdepth 1 -name "*.zip" -printf "%T@ %p\n" | sort -nr | cut -d' ' -f2-)
     fn_print_success "备份成功：${backup_name}.zip (当前备份数: ${#all_backups[@]}/${BACKUP_LIMIT})"
+    
+    # [v2.6] 保存当前选项到配置文件
+    printf "%s\n" "${paths_to_backup[@]}" > "$CONFIG_FILE"
 
     if [ "${#all_backups[@]}" -gt $BACKUP_LIMIT ]; then
         echo -e "${YELLOW}备份数量超过上限，正在清理旧备份...${NC}"
@@ -256,7 +276,6 @@ main_data_management_menu() {
 main_install() {
     clear; fn_print_header "SillyTavern 首次部署向导"
     fn_print_header "1/5: 配置软件源"
-    # [v2.5] 移除过程暂停
     fn_print_warning "即将自动配置软件源，请在弹窗中按两次回车或OK确认。"
     sleep 3
     termux-change-repo
@@ -339,7 +358,6 @@ main_manage_autostart() {
     fn_press_any_key
 }
 main_open_docs() {
-    # [v2.5] 文案优化
     clear; fn_print_header "查看帮助文档"; if fn_check_command "termux-open-url"; then termux-open-url "https://stdocs.723123.xyz"; fn_print_success "已调用浏览器打开文档。"; else fn_print_warning "命令 'termux-open-url' 不存在。"; echo "请先安装【Termux:API】应用及 'pkg install termux-api'。"; fi; fn_press_any_key
 }
 
@@ -360,7 +378,6 @@ while true; do
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
-    # [v2.5] 强化更新提示
     update_notice=""
     if [ -f "$UPDATE_FLAG_FILE" ]; then
         update_notice=" ${YELLOW}[!] 有更新${NC}"
@@ -371,7 +388,6 @@ EOF
     echo -e "      ${CYAN}[2]${NC} ${BOLD}数据管理${NC}"
     echo -e "      ${YELLOW}[3]${NC} ${BOLD}首次部署 (全新安装)${NC}\n"
     echo -e "      [4] 更新 ST 主程序    [5] 更新助手脚本${update_notice}"
-    # [v2.5] 文案优化
     echo -e "      [6] 管理助手自启      [7] 查看帮助文档\n"
     echo -e "      ${RED}[0] 退出助手${NC}\n"
     read -p "    请输入选项数字: " choice
