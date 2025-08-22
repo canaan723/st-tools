@@ -1,15 +1,15 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # =========================================================================
 #
-#                       SillyTavern 助手 v1.3
+#                       SillyTavern 助手 v1.4
 #
 #   作者: Qingjue
 #   小红书号: 826702880
 #
-#   v1.3 更新日志:
-#   - 优化: 镜像源配置流程，增加用户确认步骤，简化提示。
-#   - 修复: 全局使用 'yes | pkg' 替代 '-y'，增强兼容性。
-#   - 统一: 所有依赖ST安装的功能，在未安装时的错误处理逻辑。
+#   v1.4 更新日志:
+#   - 新增: 首次部署成功后，自动启动一次 SillyTavern。
+#   - 修复: 恢复备份时因 /tmp 目录权限问题导致的解压失败。
+#   - 优化: 镜像源配置的提示语，使其更准确。
 #
 # =========================================================================
 
@@ -152,7 +152,8 @@ run_restore() {
         return
     fi
     
-    local temp_restore_dir="/tmp/st_restore_$$"
+    # 使用 Termux 的标准临时目录 $TMPDIR
+    local temp_restore_dir="$TMPDIR/st_restore_$$"
     mkdir -p "$temp_restore_dir"
     
     echo -e "1/2: 解压备份..."
@@ -190,7 +191,7 @@ main_install() {
 
     fn_print_header "1/5: 配置软件源"
     echo -e "即将打开Termux官方的镜像源选择器。"
-    fn_print_warning "在接下来的界面中，通常直接按回车确认即可。"
+    fn_print_warning "接下来会弹出一个界面，按两次回车或OK确认即可。"
     read -p "  准备好后，请按回车键继续..."
     
     termux-change-repo
@@ -233,9 +234,10 @@ main_install() {
     
     echo -e "\n${GREEN}${BOLD}==================================="
     echo -e "  恭喜！SillyTavern 已部署完成。"
-    echo -e "  下次打开 Termux 将自动运行本助手。"
+    echo -e "  即将为您进行首次启动..."
     echo -e "===================================${NC}"
-    fn_press_any_key
+    sleep 3
+    main_start
 }
 
 # --- 模块：更新 SillyTavern ---
