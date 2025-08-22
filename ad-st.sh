@@ -1,19 +1,16 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # =========================================================================
 #
-#                       SillyTavern 助手 v2.0
+#                       SillyTavern 助手 v2.1
 #
 #   作者: Qingjue
 #   小红书号: 826702880
 #
-#   v2.0 更新日志:
-#   - 核心: [重大变更] 彻底移除了自动恢复功能，将数据恢复的控制权
-#           完全交还给用户，避免任何潜在的数据风险。
-#   - 新增: [交互式备份] 备份功能升级为交互式菜单，用户可以自由选择
-#           本次需要备份的具体项目（如角色、聊天、插件、配置等）。
-#   - 新增: [手动恢复指南] 增加了一个新选项，提供清晰、分步的
-#           MT管理器手动恢复教程，赋能用户安全地管理自己的数据。
-#   - 优化: 重构了数据管理菜单的结构和逻辑。
+#   v2.1 更新日志:
+#   - 核心: [重大修正] 根据用户反馈，彻底重构了交互式备份功能。
+#   - 精简: 备份选项精简为4个核心项目(data, plugins, extensions, config)。
+#   - 修正: 默认备份项排除了 'config.yaml'，避免覆盖网络配置。
+#   - 修复: 解决了交互菜单中只能取消勾选、无法重新勾选的BUG。
 #
 # =========================================================================
 
@@ -76,7 +73,7 @@ main_start() {
 
 # --- 模块：数据管理 ---
 
-# [新] 交互式备份
+# [v2.1] 交互式备份 (重构版)
 run_backup_interactive() {
     clear
     fn_print_header "创建自定义备份"
@@ -87,29 +84,24 @@ run_backup_interactive() {
     fi
     cd "$ST_DIR" || return
 
-    # 定义所有可备份项及其描述
+    # [修正] 精简为4个核心备份项
     declare -A ALL_PATHS=(
-        ["./public/characters"]="角色卡"
-        ["./public/chats"]="聊天记录"
-        ["./public/groups"]="群组聊天"
-        ["./public/worlds"]="世界设定"
-        ["./public/user"]="用户头像等"
-        ["./public/backgrounds"]="背景图片"
-        ["./public/settings.json"]="核心设置"
-        ["./secrets.json"]="API密钥"
-        ["./config.conf"]="服务器配置"
+        ["./data"]="用户数据 (聊天/角色/设置)"
+        ["./plugins"]="后端扩展"
+        ["./public/scripts/extensions/third-party"]="前端扩展"
+        ["./config.yaml"]="服务器配置 (网络/安全)"
     )
-    # 默认勾选项
-    local default_selection=("characters" "chats" "groups" "worlds" "user" "backgrounds" "settings.json" "secrets.json")
+    # [修正] 默认不勾选 config.yaml
+    local default_selection=("./data" "./plugins" "./public/scripts/extensions/third-party")
     
     declare -A selection_status
+    # 初始化所有为 false
     for key in "${!ALL_PATHS[@]}"; do
         selection_status["$key"]=false
     done
-    for item in "${default_selection[@]}"; do
-        for key in "${!ALL_PATHS[@]}"; do
-            [[ "$key" == *"$item"* ]] && selection_status["$key"]=true
-        done
+    # 设置默认勾选项为 true
+    for key in "${default_selection[@]}"; do
+        selection_status["$key"]=true
     done
 
     while true; do
@@ -117,19 +109,20 @@ run_backup_interactive() {
         fn_print_header "请选择要备份的内容"
         echo "输入数字可切换勾选状态。"
         
+        # 将key存入数组以保证顺序
         local options=()
-        # 使用sort确保顺序一致
-        while IFS= read -r key; do
-            options+=("$key")
-        done < <(printf "%s\n" "${!ALL_PATHS[@]}" | sort)
+        options+=("./data")
+        options+=("./plugins")
+        options+=("./public/scripts/extensions/third-party")
+        options+=("./config.yaml")
 
         for i in "${!options[@]}"; do
             local key="${options[$i]}"
             local description="${ALL_PATHS[$key]}"
             if ${selection_status[$key]}; then
-                printf "  [%-2d] ${GREEN}[✓] %-25s${NC} (%s)\n" "$((i+1))" "$key" "$description"
+                printf "  [%-2d] ${GREEN}[✓] %-40s${NC} (%s)\n" "$((i+1))" "$key" "$description"
             else
-                printf "  [%-2d] [ ] %-25s (%s)\n" "$((i+1))" "$key" "$description"
+                printf "  [%-2d] [ ] %-40s (%s)\n" "$((i+1))" "$key" "$description"
             fi
         done
         
@@ -143,7 +136,12 @@ run_backup_interactive() {
             *)
                 if [[ "$user_choice" =~ ^[0-9]+$ ]] && [ "$user_choice" -ge 1 ] && [ "$user_choice" -le "${#options[@]}" ]; then
                     local selected_key="${options[$((user_choice-1))]}"
-                    selection_status["$selected_key"]=!${selection_status[$selected_key]}
+                    # [修复] 切换逻辑
+                    if ${selection_status[$selected_key]}; then
+                        selection_status[$selected_key]=false
+                    else
+                        selection_status[$selected_key]=true
+                    fi
                 else
                     fn_print_warning "无效输入。"
                     sleep 1
@@ -154,8 +152,12 @@ run_backup_interactive() {
 
     local paths_to_backup=()
     for key in "${!selection_status[@]}"; do
-        if ${selection_status[$key]} && [ -e "$key" ]; then
-            paths_to_backup+=("$key")
+        if ${selection_status[$key]}; then
+            if [ -e "$key" ]; then
+                 paths_to_backup+=("$key")
+            else
+                 fn_print_warning "路径 '$key' 不存在，已跳过。"
+            fi
         fi
     done
 
@@ -171,6 +173,7 @@ run_backup_interactive() {
     local backup_zip_path="${BACKUP_ROOT_DIR}/${backup_name}.zip"
     
     echo -e "\n${YELLOW}正在根据您的选择压缩文件...${NC}"
+    echo "包含项目: ${paths_to_backup[*]}"
     zip -rq "$backup_zip_path" "${paths_to_backup[@]}"
     
     if [ $? -ne 0 ]; then fn_print_warning "备份失败！"; fn_press_any_key; return; fi
@@ -189,14 +192,14 @@ run_backup_interactive() {
     fn_press_any_key
 }
 
-# [新] 手动恢复指南
+# 手动恢复指南
 main_manual_restore_guide() {
     clear
     fn_print_header "手动恢复指南 (使用MT管理器)"
     echo -e "${YELLOW}自动恢复有风险，手动操作更安全。请遵循以下步骤：${NC}"
     echo
     echo -e "${BOLD}第1步：找到备份文件${NC}"
-    echo -e "  - 备份文件通常位于: ${CYAN}/sdcard/SillyTavern/_我的备份/${NC}"
+    echo -e "  - 备份文件通常位于: ${CYAN}${ST_DIR}/_我的备份/${NC}"
     echo -e "  - 文件名类似于: ${GREEN}ST_备份_2023-10-27_14-30.zip${NC}"
     echo
     echo -e "${BOLD}第2步：找到酒馆主目录${NC}"
@@ -213,7 +216,7 @@ main_manual_restore_guide() {
     fn_press_any_key
 }
 
-# [改] 删除备份
+# 删除备份
 run_delete_backup() {
     clear
     fn_print_header "删除旧备份"
@@ -245,7 +248,7 @@ run_delete_backup() {
     fn_press_any_key
 }
 
-# [改] 数据管理主菜单
+# 数据管理主菜单
 main_data_management_menu() {
     while true; do
         clear
