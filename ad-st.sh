@@ -1,14 +1,12 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # =========================================================================
 #
-#                       SillyTavern 助手 v2.6
+#                       SillyTavern 助手 v1.0
+#
+#   一个为 Termux 用户设计的 SillyTavern 管理与维护脚本。
 #
 #   作者: Qingjue
 #   小红书号: 826702880
-#
-#   v2.6 更新日志:
-#   - 新增: [备份] 自定义备份现在会自动保存用户的选项，下次进入时
-#           无需重新选择，实现“选项记忆”功能。
 #
 # =========================================================================
 
@@ -22,15 +20,14 @@ NC='\033[0m'
 
 # --- 核心配置 ---
 ST_DIR="$HOME/SillyTavern"
-REPO_URL="https://git.723123.xyz/gh/SillyTavern/SillyTavern.git"
+REPO_URL="https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
 REPO_BRANCH="release"
 BACKUP_ROOT_DIR="$ST_DIR/_我的备份"
 BACKUP_LIMIT=10
 SCRIPT_SELF_PATH=$(readlink -f "$0")
 SCRIPT_URL="https://gitee.com/canaan723/st-assistant/raw/master/ad-st.sh"
-UPDATE_FLAG_FILE="/data/data/com.termux/files/usr/tmp/.st_assistant_update_flag"
-# [v2.6] 新增配置文件路径
 CONFIG_FILE="$HOME/.st_assistant.conf"
+UPDATE_FLAG_FILE="/data/data/com.termux/files/usr/tmp/.st_assistant_update_flag"
 
 # =========================================================================
 #   辅助函数库
@@ -74,7 +71,7 @@ main_start() {
 
 # --- 模块：数据管理 ---
 
-# 交互式备份
+# 创建自定义备份
 run_backup_interactive() {
     clear
     fn_print_header "创建自定义备份"
@@ -93,12 +90,10 @@ run_backup_interactive() {
     )
     local options=("./data" "./public/scripts/extensions/third-party" "./plugins" "./config.yaml")
     
-    # [v2.6] 选项记忆功能
     local default_selection=("./data" "./plugins" "./public/scripts/extensions/third-party")
     local selection_to_load=()
     if [ -f "$CONFIG_FILE" ]; then
         mapfile -t selection_to_load < "$CONFIG_FILE"
-        # 如果配置文件为空，则使用默认值
         if [ ${#selection_to_load[@]} -eq 0 ]; then
             selection_to_load=("${default_selection[@]}")
         fi
@@ -109,7 +104,6 @@ run_backup_interactive() {
     declare -A selection_status
     for key in "${options[@]}"; do selection_status["$key"]=false; done
     for key in "${selection_to_load[@]}"; do
-        # 确保加载的选项仍然是有效选项
         if [[ -v selection_status["$key"] ]]; then
             selection_status["$key"]=true
         fi
@@ -188,7 +182,6 @@ run_backup_interactive() {
     mapfile -t all_backups < <(find "$BACKUP_ROOT_DIR" -maxdepth 1 -name "*.zip" -printf "%T@ %p\n" | sort -nr | cut -d' ' -f2-)
     fn_print_success "备份成功：${backup_name}.zip (当前备份数: ${#all_backups[@]}/${BACKUP_LIMIT})"
     
-    # [v2.6] 保存当前选项到配置文件
     printf "%s\n" "${paths_to_backup[@]}" > "$CONFIG_FILE"
 
     if [ "${#all_backups[@]}" -gt $BACKUP_LIMIT ]; then
@@ -215,7 +208,7 @@ main_manual_restore_guide() {
     fn_press_any_key
 }
 
-# 删除备份
+# 删除旧备份
 run_delete_backup() {
     clear
     fn_print_header "删除旧备份"
@@ -332,7 +325,7 @@ main_update_script() {
     fn_press_any_key
 }
 
-# 后台静默更新检查
+# --- 模块：后台更新检查 ---
 check_for_updates_on_start() {
     (
         local temp_file; temp_file=$(mktemp)
@@ -347,7 +340,7 @@ check_for_updates_on_start() {
     ) &
 }
 
-# --- 其它模块 (自启, 文档) ---
+# --- 模块：其它功能 ---
 main_manage_autostart() {
     local BASHRC_FILE="$HOME/.bashrc"; local AUTOSTART_CMD="[ -f \"$SCRIPT_SELF_PATH\" ] && \"$SCRIPT_SELF_PATH\""
     grep -qF "$AUTOSTART_CMD" "$BASHRC_FILE" && is_set=true || is_set=false
