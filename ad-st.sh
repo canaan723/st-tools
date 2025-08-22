@@ -410,5 +410,5 @@ EOF
         7) main_open_docs ;;
         0) echo -e "\n感谢使用，助手已退出。"; exit 0 ;;
         *) echo -e "\n${RED}无效输入，请重新选择。${NC}"; sleep 1.5 ;;
-    ac
+    esac
 done
