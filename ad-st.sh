@@ -363,7 +363,7 @@ while true; do
     cat << "EOF"
     ╔═════════════════════════════╗
     ║      SillyTavern 助手       ║
-    ║   by Qingjue | XHS:826702880  ║
+    ║ by Qingjue | XHS:826702880  ║
     ╚═════════════════════════════╝
 EOF
     echo -e "${NC}"
