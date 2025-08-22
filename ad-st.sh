@@ -1,17 +1,17 @@
-#!/data/data/com/termux/files/usr/bin/bash
+#!/data/data/com.termux/files/usr/bin/bash
 # =========================================================================
 #
-#                       SillyTavern 助手 v2.2
+#                       SillyTavern 助手 v2.3
 #
 #   作者: Qingjue
 #   小红书号: 826702880
 #
-#   v2.2 更新日志:
-#   - 核心: [功能补全] 遵从原作者脚本逻辑，为zip备份增加了文件排除功能，
-#           会自动忽略 .git, _cache, 和 .log 文件。
-#   - 修正: [UI] 固定了备份选项的显示顺序，不再错误地按字母排序。
-#   - 修正: [UI] 优化了备份菜单的对齐方式，防止在窄屏下换行。
-#   - 优化: [UI] 压缩文件时，会以列表形式清晰展示包含的项目。
+#   v2.3 更新日志:
+#   - 重大修复: [更新BUG] 在下载新脚本后强制转换文件格式为Unix(LF)，
+#               从根本上解决了因换行符问题导致的更新后无法执行的错误。
+#   - 新增: [更新提示] 脚本启动时会自动在后台检查更新。若有新版本，
+#           主菜单的更新选项旁会出现黄色 [!] 提示。
+#   - 优化: [UI] 统一交互逻辑，将备份菜单的“取消”键从 'Q' 改为 '0'。
 #
 # =========================================================================
 
@@ -25,12 +25,13 @@ NC='\033[0m'
 
 # --- 核心配置 ---
 ST_DIR="$HOME/SillyTavern"
-REPO_URL="https://git.723123.xyz/gh/SillyTavern/SillyTavern.git"
+REPO_URL="https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
 REPO_BRANCH="release"
 BACKUP_ROOT_DIR="$ST_DIR/_我的备份"
 BACKUP_LIMIT=10
 SCRIPT_SELF_PATH=$(readlink -f "$0")
 SCRIPT_URL="https://gitee.com/canaan723/st-assistant/raw/master/ad-st.sh"
+UPDATE_FLAG_FILE="/data/data/com.termux/files/usr/tmp/.st_assistant_update_flag"
 
 # =========================================================================
 #   辅助函数库
@@ -74,7 +75,7 @@ main_start() {
 
 # --- 模块：数据管理 ---
 
-# [v2.2] 交互式备份 (再次重构)
+# 交互式备份
 run_backup_interactive() {
     clear
     fn_print_header "创建自定义备份"
@@ -91,10 +92,7 @@ run_backup_interactive() {
         ["./plugins"]="后端扩展"
         ["./config.yaml"]="服务器配置 (网络/安全)"
     )
-    # [修正] 严格按照指定顺序
     local options=("./data" "./public/scripts/extensions/third-party" "./plugins" "./config.yaml")
-    
-    # 默认勾选项
     local default_selection=("./data" "./plugins" "./public/scripts/extensions/third-party")
     
     declare -A selection_status
@@ -109,7 +107,6 @@ run_backup_interactive() {
         for i in "${!options[@]}"; do
             local key="${options[$i]}"
             local description="${ALL_PATHS[$key]}"
-            # [修正] 调整对齐宽度，防止换行
             if ${selection_status[$key]}; then
                 printf "  [%-2d] ${GREEN}[✓] %-38s${NC} (%s)\n" "$((i+1))" "$key" "$description"
             else
@@ -118,11 +115,12 @@ run_backup_interactive() {
         done
         
         echo
-        echo -e "      ${GREEN}[S] 开始备份${NC}      ${RED}[Q] 取消备份${NC}"
-        read -p "请操作 [输入数字, S 或 Q]: " user_choice
+        # [v2.3] 统一交互，Q改为0
+        echo -e "      ${GREEN}[S] 开始备份${NC}      ${RED}[0] 取消备份${NC}"
+        read -p "请操作 [输入数字, S 或 0]: " user_choice
 
         case "$user_choice" in
-            [qQ]) echo "备份已取消。"; fn_press_any_key; return ;;
+            0) echo "备份已取消。"; fn_press_any_key; return ;;
             [sS]) break ;;
             *)
                 if [[ "$user_choice" =~ ^[0-9]+$ ]] && [ "$user_choice" -ge 1 ] && [ "$user_choice" -le "${#options[@]}" ]; then
@@ -141,7 +139,7 @@ run_backup_interactive() {
     done
 
     local paths_to_backup=()
-    for key in "${options[@]}"; do # 按顺序检查
+    for key in "${options[@]}"; do
         if ${selection_status[$key]}; then
             if [ -e "$key" ]; then
                  paths_to_backup+=("$key")
@@ -162,13 +160,11 @@ run_backup_interactive() {
     local backup_zip_path="${BACKUP_ROOT_DIR}/${backup_name}.zip"
     
     echo -e "\n${YELLOW}正在根据您的选择压缩文件...${NC}"
-    # [修正] 列表化显示包含项目
     echo "包含项目:"
     for item in "${paths_to_backup[@]}"; do
         echo "  - $item"
     done
     
-    # [功能补全] 增加排除项
     local exclude_params=(-x "*/.git/*" -x "*/_cache/*" -x "*.log")
     zip -rq "$backup_zip_path" "${paths_to_backup[@]}" "${exclude_params[@]}"
     
@@ -274,7 +270,7 @@ main_install() {
     echo -e "${YELLOW}正在更新软件包列表...${NC}"; yes | pkg update && yes | pkg upgrade || fn_print_error_exit "软件源更新失败！"
     fn_print_success "软件源配置完成。"
     fn_print_header "2/5: 安装核心依赖"
-    echo -e "${YELLOW}正在安装所需的核心软件包...${NC}"; yes | pkg install git nodejs-lts rsync zip termux-api || fn_print_error_exit "核心依赖安装失败！"
+    echo -e "${YELLOW}正在安装所需的核心软件包...${NC}"; yes | pkg install git nodejs-lts rsync zip termux-api coreutils || fn_print_error_exit "核心依赖安装失败！"
     fn_print_success "核心依赖安装完毕。"
     fn_print_header "3/5: 下载 ST 主程序"
     if [ -d "$ST_DIR" ]; then fn_print_warning "目录已存在，跳过下载。"; else
@@ -300,13 +296,40 @@ main_update_st() {
 # --- 模块：助手自我更新 ---
 main_update_script() {
     clear; fn_print_header "更新助手脚本"
-    echo -e "${YELLOW}正在从 Gitee 检查新版本...${NC}"
-    local temp_file="${SCRIPT_SELF_PATH}.tmp"
+    echo -e "${YELLOW}正在从 Gitee 下载新版本...${NC}"
+    local temp_file; temp_file=$(mktemp)
+    
     curl -L -o "$temp_file" "$SCRIPT_URL"
-    if [ $? -ne 0 ] || [ ! -s "$temp_file" ]; then rm -f "$temp_file"; fn_print_warning "下载失败，请检查网络。";
-    elif cmp -s "$SCRIPT_SELF_PATH" "$temp_file"; then rm -f "$temp_file"; fn_print_success "当前已是最新版本。";
-    else mv "$temp_file" "$SCRIPT_SELF_PATH"; chmod +x "$SCRIPT_SELF_PATH"; echo -e "${GREEN}助手更新成功！正在自动重启...${NC}"; sleep 2; exec "$SCRIPT_SELF_PATH" --updated; fi
+    if [ $? -ne 0 ] || [ ! -s "$temp_file" ]; then
+        rm -f "$temp_file"; fn_print_warning "下载失败，请检查网络。"
+    elif cmp -s "$SCRIPT_SELF_PATH" "$temp_file"; then
+        rm -f "$temp_file"; fn_print_success "当前已是最新版本。"
+    else
+        # [v2.3] 重大修复：强制转换文件为Unix格式，解决执行错误
+        sed -i 's/\r$//' "$temp_file"
+        
+        mv "$temp_file" "$SCRIPT_SELF_PATH"
+        chmod +x "$SCRIPT_SELF_PATH"
+        rm -f "$UPDATE_FLAG_FILE" # 清除更新标记
+        echo -e "${GREEN}助手更新成功！正在自动重启...${NC}"; sleep 2
+        exec "$SCRIPT_SELF_PATH" --updated
+    fi
     fn_press_any_key
+}
+
+# [v2.3] 新增：后台静默更新检查
+check_for_updates_on_start() {
+    (
+        local temp_file; temp_file=$(mktemp)
+        if curl -L -s -o "$temp_file" "$SCRIPT_URL"; then
+            if ! cmp -s "$SCRIPT_SELF_PATH" "$temp_file"; then
+                touch "$UPDATE_FLAG_FILE"
+            else
+                rm -f "$UPDATE_FLAG_FILE"
+            fi
+        fi
+        rm -f "$temp_file"
+    ) &
 }
 
 # --- 其它模块 (自启, 文档) ---
@@ -327,6 +350,9 @@ main_open_docs() {
 #   主菜单与脚本入口
 # =========================================================================
 
+if [[ "$1" != "--no-check" ]]; then
+    check_for_updates_on_start
+fi
 if [[ "$1" == "--updated" ]]; then clear; fn_print_success "助手已成功更新至最新版本！"; sleep 2; fi
 
 while true; do
@@ -337,11 +363,17 @@ while true; do
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
+    # [v2.3] 更新提示
+    update_notice=""
+    if [ -f "$UPDATE_FLAG_FILE" ]; then
+        update_notice="${YELLOW}[!]${NC} "
+    fi
+
     echo -e "${NC}"; echo -e "    选择一个操作来开始：\n";
     echo -e "      ${GREEN}[1]${NC} ${BOLD}启动 SillyTavern${NC}"
     echo -e "      ${CYAN}[2]${NC} ${BOLD}数据管理${NC}"
     echo -e "      ${YELLOW}[3]${NC} ${BOLD}首次部署 (全新安装)${NC}\n"
-    echo -e "      [4] 更新 ST 主程序    [5] 更新助手脚本"
+    echo -e "      [4] 更新 ST 主程序    [5] ${update_notice}更新助手脚本"
     echo -e "      [6] 管理助手自启      [7] 查看在线文档\n"
     echo -e "      ${RED}[0] 退出助手${NC}\n"
     read -p "    请输入选项数字: " choice
@@ -354,7 +386,7 @@ EOF
         5) main_update_script ;;
         6) main_manage_autostart ;;
         7) main_open_docs ;;
-        0) echo -e "\n感谢使用，助手已退出。"; exit 0 ;;
+        0) echo -e "\n感谢使用，助手已退出。"; rm -f "$UPDATE_FLAG_FILE"; exit 0 ;;
         *) echo -e "\n${RED}无效输入，请重新选择。${NC}"; sleep 1.5 ;;
     esac
 done
