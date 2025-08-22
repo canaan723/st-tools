@@ -1,16 +1,17 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/data/data/com/termux/files/usr/bin/bash
 # =========================================================================
 #
-#                       SillyTavern 助手 v2.1
+#                       SillyTavern 助手 v2.2
 #
 #   作者: Qingjue
 #   小红书号: 826702880
 #
-#   v2.1 更新日志:
-#   - 核心: [重大修正] 根据用户反馈，彻底重构了交互式备份功能。
-#   - 精简: 备份选项精简为4个核心项目(data, plugins, extensions, config)。
-#   - 修正: 默认备份项排除了 'config.yaml'，避免覆盖网络配置。
-#   - 修复: 解决了交互菜单中只能取消勾选、无法重新勾选的BUG。
+#   v2.2 更新日志:
+#   - 核心: [功能补全] 遵从原作者脚本逻辑，为zip备份增加了文件排除功能，
+#           会自动忽略 .git, _cache, 和 .log 文件。
+#   - 修正: [UI] 固定了备份选项的显示顺序，不再错误地按字母排序。
+#   - 修正: [UI] 优化了备份菜单的对齐方式，防止在窄屏下换行。
+#   - 优化: [UI] 压缩文件时，会以列表形式清晰展示包含的项目。
 #
 # =========================================================================
 
@@ -73,7 +74,7 @@ main_start() {
 
 # --- 模块：数据管理 ---
 
-# [v2.1] 交互式备份 (重构版)
+# [v2.2] 交互式备份 (再次重构)
 run_backup_interactive() {
     clear
     fn_print_header "创建自定义备份"
@@ -84,45 +85,35 @@ run_backup_interactive() {
     fi
     cd "$ST_DIR" || return
 
-    # [修正] 精简为4个核心备份项
     declare -A ALL_PATHS=(
         ["./data"]="用户数据 (聊天/角色/设置)"
-        ["./plugins"]="后端扩展"
         ["./public/scripts/extensions/third-party"]="前端扩展"
+        ["./plugins"]="后端扩展"
         ["./config.yaml"]="服务器配置 (网络/安全)"
     )
-    # [修正] 默认不勾选 config.yaml
+    # [修正] 严格按照指定顺序
+    local options=("./data" "./public/scripts/extensions/third-party" "./plugins" "./config.yaml")
+    
+    # 默认勾选项
     local default_selection=("./data" "./plugins" "./public/scripts/extensions/third-party")
     
     declare -A selection_status
-    # 初始化所有为 false
-    for key in "${!ALL_PATHS[@]}"; do
-        selection_status["$key"]=false
-    done
-    # 设置默认勾选项为 true
-    for key in "${default_selection[@]}"; do
-        selection_status["$key"]=true
-    done
+    for key in "${options[@]}"; do selection_status["$key"]=false; done
+    for key in "${default_selection[@]}"; do selection_status["$key"]=true; done
 
     while true; do
         clear
         fn_print_header "请选择要备份的内容"
         echo "输入数字可切换勾选状态。"
         
-        # 将key存入数组以保证顺序
-        local options=()
-        options+=("./data")
-        options+=("./plugins")
-        options+=("./public/scripts/extensions/third-party")
-        options+=("./config.yaml")
-
         for i in "${!options[@]}"; do
             local key="${options[$i]}"
             local description="${ALL_PATHS[$key]}"
+            # [修正] 调整对齐宽度，防止换行
             if ${selection_status[$key]}; then
-                printf "  [%-2d] ${GREEN}[✓] %-40s${NC} (%s)\n" "$((i+1))" "$key" "$description"
+                printf "  [%-2d] ${GREEN}[✓] %-38s${NC} (%s)\n" "$((i+1))" "$key" "$description"
             else
-                printf "  [%-2d] [ ] %-40s (%s)\n" "$((i+1))" "$key" "$description"
+                printf "  [%-2d] [ ] %-38s (%s)\n" "$((i+1))" "$key" "$description"
             fi
         done
         
@@ -136,7 +127,6 @@ run_backup_interactive() {
             *)
                 if [[ "$user_choice" =~ ^[0-9]+$ ]] && [ "$user_choice" -ge 1 ] && [ "$user_choice" -le "${#options[@]}" ]; then
                     local selected_key="${options[$((user_choice-1))]}"
-                    # [修复] 切换逻辑
                     if ${selection_status[$selected_key]}; then
                         selection_status[$selected_key]=false
                     else
@@ -151,7 +141,7 @@ run_backup_interactive() {
     done
 
     local paths_to_backup=()
-    for key in "${!selection_status[@]}"; do
+    for key in "${options[@]}"; do # 按顺序检查
         if ${selection_status[$key]}; then
             if [ -e "$key" ]; then
                  paths_to_backup+=("$key")
@@ -163,8 +153,7 @@ run_backup_interactive() {
 
     if [ ${#paths_to_backup[@]} -eq 0 ]; then
         fn_print_warning "您没有选择任何有效的项目，备份已取消。"
-        fn_press_any_key
-        return
+        fn_press_any_key; return
     fi
     
     mkdir -p "$BACKUP_ROOT_DIR"
@@ -173,8 +162,15 @@ run_backup_interactive() {
     local backup_zip_path="${BACKUP_ROOT_DIR}/${backup_name}.zip"
     
     echo -e "\n${YELLOW}正在根据您的选择压缩文件...${NC}"
-    echo "包含项目: ${paths_to_backup[*]}"
-    zip -rq "$backup_zip_path" "${paths_to_backup[@]}"
+    # [修正] 列表化显示包含项目
+    echo "包含项目:"
+    for item in "${paths_to_backup[@]}"; do
+        echo "  - $item"
+    done
+    
+    # [功能补全] 增加排除项
+    local exclude_params=(-x "*/.git/*" -x "*/_cache/*" -x "*.log")
+    zip -rq "$backup_zip_path" "${paths_to_backup[@]}" "${exclude_params[@]}"
     
     if [ $? -ne 0 ]; then fn_print_warning "备份失败！"; fn_press_any_key; return; fi
     
@@ -199,7 +195,7 @@ main_manual_restore_guide() {
     echo -e "${YELLOW}自动恢复有风险，手动操作更安全。请遵循以下步骤：${NC}"
     echo
     echo -e "${BOLD}第1步：找到备份文件${NC}"
-    echo -e "  - 备份文件通常位于: ${CYAN}${ST_DIR}/_我的备份/${NC}"
+    echo -e "  - 备份文件位于: ${CYAN}${ST_DIR}/_我的备份/${NC}"
     echo -e "  - 文件名类似于: ${GREEN}ST_备份_2023-10-27_14-30.zip${NC}"
     echo
     echo -e "${BOLD}第2步：找到酒馆主目录${NC}"
@@ -208,9 +204,8 @@ main_manual_restore_guide() {
     echo -e "${BOLD}第3步：执行解压覆盖 (核心操作)${NC}"
     echo -e "  1. 在MT管理器中，长按你的备份zip文件。"
     echo -e "  2. 在弹出的菜单中选择 ${GREEN}“解压到...”${NC}。"
-    echo -e "  3. 在路径选择界面，导航到你的酒馆主目录 (${CYAN}SillyTavern${NC})。"
-    echo -e "  4. 点击右下角的 ${GREEN}“确定”${NC}。"
-    echo -e "  5. MT管理器会提示“存在同名文件”，请务必选择 ${YELLOW}“全部覆盖”${NC}。"
+    echo -e "  3. 导航到酒馆主目录 (${CYAN}SillyTavern${NC}) 并确认。"
+    echo -e "  4. MT管理器会提示“存在同名文件”，务必选择 ${YELLOW}“全部覆盖”${NC}。"
     echo
     echo -e "${RED}${BOLD}警告：此操作会用备份文件覆盖现有文件，请确保您选择了正确的备份包。${NC}"
     fn_press_any_key
