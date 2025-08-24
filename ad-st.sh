@@ -17,7 +17,7 @@ NC='\033[0m'
 
 # --- 核心配置 ---
 ST_DIR="$HOME/SillyTavern"                                                   # SillyTavern 的安装目录
-MIRROR_LIST=(                                                               # Git 镜像列表 (脚本将自动测试并选择最快的)
+MIRROR_LIST=(                                                               # Git 镜像列表
     "https://github.com/SillyTavern/SillyTavern.git"
     "https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
     "https://git.723123.xyz/gh/SillyTavern/SillyTavern.git"
@@ -124,7 +124,7 @@ main_start() {
 run_backup_interactive() {
     clear
     fn_print_header "创建自定义备份"
-    if [ ! -d "$ST_DIR" ]; then
+    if [ ! -f "$ST_DIR/start.sh" ]; then
         fn_print_warning "SillyTavern 尚未安装，无法备份。"
         fn_press_any_key
         return
@@ -168,7 +168,7 @@ run_backup_interactive() {
             if ${selection_status[$key]}; then
                 printf "  [%-2d] ${GREEN}[✓] %s${NC}\n" "$((i+1))" "$key"
             else
-                printf "  [%-2d] [ ] %s\n" "$((i+1))" "$key"
+                printf "  [%-2d] [ ] %s${NC}\n" "$((i+1))" "$key"
             fi
             printf "      ${CYAN}(%s)${NC}\n" "$description"
         done
@@ -263,7 +263,13 @@ main_migration_guide() {
 
 # 提供删除旧备份文件的功能
 run_delete_backup() {
-    clear; fn_print_header "删除旧备份"; mkdir -p "$BACKUP_ROOT_DIR"
+    clear; fn_print_header "删除旧备份"
+    if [ ! -f "$ST_DIR/start.sh" ]; then
+        fn_print_warning "SillyTavern 尚未安装，没有可管理的备份。"
+        fn_press_any_key
+        return
+    fi
+    mkdir -p "$BACKUP_ROOT_DIR"
     mapfile -t backup_files < <(find "$BACKUP_ROOT_DIR" -maxdepth 1 -name "*.zip" -printf "%T@ %p\n" | sort -nr | cut -d' ' -f2-)
     if [ ${#backup_files[@]} -eq 0 ]; then
         fn_print_warning "未找到任何备份文件。"
@@ -337,8 +343,11 @@ main_install() {
     fn_print_success "核心依赖安装完毕。"
     
     fn_print_header "3/5: 下载 ST 主程序"
-    if [ -d "$ST_DIR" ]; then 
-        fn_print_warning "目录 $ST_DIR 已存在，跳过下载。"
+    # 【增强】修改部署检查逻辑，防止因空目录导致跳过
+    if [ -f "$ST_DIR/start.sh" ]; then
+        fn_print_warning "检测到完整的 SillyTavern 安装，跳过下载。"
+    elif [ -d "$ST_DIR" ] && [ -n "$(ls -A "$ST_DIR")" ]; then
+        fn_print_error_exit "目录 $ST_DIR 已存在但安装不完整。请手动删除该目录后再试。"
     else
         local fastest_repo_url; fastest_repo_url=$(fn_find_fastest_mirror)
         echo -e "${YELLOW}正在从最快镜像下载主程序 (${REPO_BRANCH} 分支)...${NC}"
