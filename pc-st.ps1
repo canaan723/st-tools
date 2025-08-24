@@ -2,7 +2,7 @@
 # 作者: Qingjue | 小红书号: 826702880
 
 # --- 核心配置 ---
-$ScriptSelfUpdateUrl = "https://gitee.com/Qingjue/st-helper/raw/master/pc-st.ps1"
+$ScriptSelfUpdateUrl = "https://gitee.com/canaan723/st-assistant/raw/master/pc-st.ps1"
 $HelpDocsUrl = "https://stdocs.723123.xyz"
 $ScriptBaseDir = $PSScriptRoot
 $ST_Dir = Join-Path $ScriptBaseDir "SillyTavern"
