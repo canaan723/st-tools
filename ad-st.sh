@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # =========================================================================
 #
-#                       SillyTavern 助手 v1.4
+#                       SillyTavern 助手 v1.5
 #                           作者: Qingjue
 #                        小红书号: 826702880
 #
@@ -343,7 +343,6 @@ main_install() {
     fn_print_success "核心依赖安装完毕。"
     
     fn_print_header "3/5: 下载 ST 主程序"
-    # 【增强】修改部署检查逻辑，防止因空目录导致跳过
     if [ -f "$ST_DIR/start.sh" ]; then
         fn_print_warning "检测到完整的 SillyTavern 安装，跳过下载。"
     elif [ -d "$ST_DIR" ] && [ -n "$(ls -A "$ST_DIR")" ]; then
@@ -517,7 +516,7 @@ while true; do
     clear
     echo -e "${CYAN}${BOLD}"; cat << "EOF"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v1.4      ║
+    ║      SillyTavern 助手 v1.5      ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
