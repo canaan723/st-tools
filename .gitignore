@@ -11,7 +11,7 @@ ehthumbs.db
 .idea/
 *.swp
 *.swo
-lib
+lib/
 .history
 
 # 忽略临时的配置文件或备份文件
