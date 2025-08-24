@@ -1,1 +1,27 @@
-/.history/
+# 忽略项目文档
+Markdown/
+
+# 忽略操作系统生成的文件
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# 忽略 IDE 和编辑器配置文件
+.vscode/
+.idea/
+*.swp
+*.swo
+lib
+.history
+
+# 忽略临时的配置文件或备份文件
+*.bak
+*.tmp
+*.old
+*.orig
+
+# 忽略脚本运行时可能产生的日志或缓存文件
+*.log
+_cache/
+
+main.sh
