@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.5 (yq 依赖修复版)
+# 版本: 1.6 (目录冲突处理优化版)
 # 功能: 自动化部署 SillyTavern Docker 版，为新手用户提供极致的自动化安装体验。
 
 # --- 初始化与环境设置 ---
@@ -40,6 +40,40 @@ fn_get_public_ip() {
     ip=$(hostname -I | awk '{print $1}')
     echo "$ip"
 }
+
+fn_confirm_and_delete_dir() {
+    local dir_to_delete="$1"
+    local confirmed=false
+
+    fn_print_warning "目录 '$dir_to_delete' 已存在，其中可能包含您之前的聊天记录和角色卡。"
+
+    for i in {1..3}; do
+        local prompt_msg
+        if [ "$i" -eq 1 ]; then
+            prompt_msg="您确定要删除此目录并继续安装吗？(yes/no): "
+        elif [ "$i" -eq 2 ]; then
+            prompt_msg="${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 (yes/no): ${NC}"
+        else
+            prompt_msg="${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}"
+        fi
+
+        read -p "$prompt_msg" user_confirmation < /dev/tty
+
+        if [[ "$user_confirmation" == "yes" ]]; then
+            confirmed=true
+            break
+        fi
+    done
+
+    if [ "$confirmed" = true ]; then
+        fn_print_info "正在删除旧目录: $dir_to_delete..."
+        rm -rf "$dir_to_delete"
+        fn_print_success "旧目录已删除。"
+    else
+        fn_print_error "操作被用户取消。"
+    fi
+}
+
 
 # ==============================================================================
 #   主逻辑开始
@@ -88,7 +122,6 @@ else
     fn_print_error "未检测到 Docker Compose。\n  请确保 Docker Compose v2 (插件模式) 或 v1 (独立命令) 已正确安装。"
 fi
 
-# 检查 yq 是否为正确的 Go 版本，如果不是或不存在，则自动下载安装
 if ! yq --version 2>/dev/null | grep -q 'mikefarah'; then
     fn_print_info "未检测到正确的 yq 版本，正在为您自动下载安装..."
     ARCH=$(uname -m)
@@ -98,7 +131,7 @@ if ! yq --version 2>/dev/null | grep -q 'mikefarah'; then
         *) fn_print_error "不支持的系统架构: $ARCH" ;;
     esac
     
-    YQ_VERSION="v4.44.2" # 固定一个稳定版本
+    YQ_VERSION="v4.44.2"
     YQ_URL="https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${ARCH}"
     
     if ! curl -L "$YQ_URL" -o /usr/local/bin/yq; then
@@ -171,7 +204,7 @@ fi
 fn_print_step "[ 3 / 5 ] 创建项目文件"
 
 if [ -d "$INSTALL_DIR" ]; then
-    fn_print_error "目录 '$INSTALL_DIR' 已存在。为防止数据丢失，请先手动备份并删除该目录后再运行本脚本。"
+    fn_confirm_and_delete_dir "$INSTALL_DIR"
 fi
 
 mkdir -p "$INSTALL_DIR"
