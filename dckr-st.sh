@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.0
-# 功能: 自动化部署 SillyTavern Docker 版，为新手用户提供保姆级安装体验。
+# 版本: 1.1
+# 功能: 自动化部署 SillyTavern Docker 版，为新手用户提供极致的自动化安装体验。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -32,12 +32,15 @@ fn_print_info() {
     echo -e "  $1"
 }
 
-# --- 核心配置 ---
-INSTALL_DIR="$HOME/sillytavern"
-CONFIG_FILE="$INSTALL_DIR/config.yaml"
-COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
-DOCKER_CMD=""
-DOCKER_COMPOSE_CMD=""
+# --- 核心函数 ---
+fn_get_public_ip() {
+    # 尝试从多个服务获取公网IP，增加成功率
+    local ip
+    ip=$(curl -s --max-time 5 https://api.ipify.org) || \
+    ip=$(curl -s --max-time 5 https://ifconfig.me) || \
+    ip=$(hostname -I | awk '{print $1}')
+    echo "$ip"
+}
 
 # ==============================================================================
 #   主逻辑开始
@@ -51,10 +54,30 @@ echo -e "\n本脚本将引导您完成 SillyTavern 的自动化安装。"
 
 # --- 阶段一：环境自检与准备 ---
 
-fn_print_step "[ 1 / 5 ] 环境检查"
+fn_print_step "[ 1 / 5 ] 环境检查与准备"
 
-# 1.1 检查核心依赖
-fn_print_info "正在检查 Docker, Docker Compose, yq..."
+# 1.1 权限与用户检查
+if [ "$(id -u)" -ne 0 ]; then
+    fn_print_error "本脚本需要以 root 权限运行。请使用 'sudo' 执行。"
+fi
+
+TARGET_USER="${SUDO_USER:-root}"
+if [ "$TARGET_USER" = "root" ]; then
+    USER_HOME="/root"
+    fn_print_warning "您正以 root 用户身份直接运行脚本，将安装在 /root 目录下。"
+else
+    USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
+    if [ -z "$USER_HOME" ]; then
+        fn_print_error "无法找到用户 '$TARGET_USER' 的家目录。"
+    fi
+fi
+
+INSTALL_DIR="$USER_HOME/sillytavern"
+CONFIG_FILE="$INSTALL_DIR/config.yaml"
+COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
+
+# 1.2 检查并自动安装依赖
+fn_print_info "正在检查核心依赖..."
 if ! command -v docker &> /dev/null; then
     fn_print_error "未检测到 Docker。\n  请先根据您服务器的操作系统安装 Docker，或使用 1Panel 面板的 Docker 管理功能。"
 fi
@@ -65,31 +88,24 @@ elif docker compose version &> /dev/null; then
 else
     fn_print_error "未检测到 Docker Compose。\n  请确保 Docker Compose v2 (插件模式) 或 v1 (独立命令) 已正确安装。"
 fi
+
 if ! command -v yq &> /dev/null; then
-    fn_print_error "未检测到核心工具 yq。\n  请根据您的系统运行对应的安装命令:\n  - Ubuntu/Debian: sudo apt update && sudo apt install -y yq\n  - CentOS/RHEL: sudo yum install -y yq"
+    fn_print_info "未检测到 yq，正在为您自动安装..."
+    if command -v apt-get &> /dev/null; then
+        (apt-get update && apt-get install -y yq) || fn_print_error "使用 apt 安装 yq 失败。"
+    elif command -v yum &> /dev/null; then
+        yum install -y yq || fn_print_error "使用 yum 安装 yq 失败。"
+    elif command -v dnf &> /dev/null; then
+        dnf install -y yq || fn_print_error "使用 dnf 安装 yq 失败。"
+    else
+        fn_print_error "不支持的操作系统，请手动安装 yq 后再运行本脚本。"
+    fi
+    if ! command -v yq &> /dev/null; then
+        fn_print_error "yq 自动安装失败，请检查系统环境或手动安装。"
+    fi
+    fn_print_success "依赖工具 yq 安装成功！"
 fi
 fn_print_success "核心依赖检查通过！"
-
-# 1.2 智能 sudo 检测
-fn_print_info "正在检测 Docker 运行权限..."
-if docker info > /dev/null 2>&1; then
-    DOCKER_CMD="docker"
-    # 更新 DOCKER_COMPOSE_CMD 以匹配
-    if [[ "$DOCKER_COMPOSE_CMD" == "docker compose" ]]; then
-        DOCKER_COMPOSE_CMD="docker compose"
-    else
-        DOCKER_COMPOSE_CMD="docker-compose"
-    fi
-    fn_print_success "权限正常，将以当前用户身份运行。"
-else
-    DOCKER_CMD="sudo docker"
-    if [[ "$DOCKER_COMPOSE_CMD" == "docker compose" ]]; then
-        DOCKER_COMPOSE_CMD="sudo docker compose"
-    else
-        DOCKER_COMPOSE_CMD="sudo docker-compose"
-    fi
-    fn_print_warning "检测到需要 sudo 权限运行 Docker 命令。"
-fi
 
 # 1.3 (可选) Docker 镜像加速
 read -p "您是否在中国大陆服务器上运行，需要配置 Docker 加速镜像？(y/n): " use_mirror
@@ -107,16 +123,10 @@ if [[ "$use_mirror" =~ ^[yY]$ ]]; then
 '
     DAEMON_JSON_CONTENT="{\n  \"registry-mirrors\": [\n    $(echo "$MIRROR_LIST" | sed '$d')\n  ]\n}"
 
-    if sudo tee /etc/docker/daemon.json <<< "$DAEMON_JSON_CONTENT" > /dev/null; then
-        fn_print_info "配置文件 /etc/docker/daemon.json 已更新。"
-        if sudo systemctl restart docker; then
-            fn_print_success "Docker 服务已重启，加速配置生效！"
-        else
-            fn_print_error "Docker 服务重启失败！请手动运行 'sudo systemctl restart docker' 进行排查。"
-        fi
-    else
-        fn_print_error "写入 Docker 配置文件失败！请检查 sudo 权限。"
-    fi
+    tee /etc/docker/daemon.json <<< "$DAEMON_JSON_CONTENT" > /dev/null
+    fn_print_info "配置文件 /etc/docker/daemon.json 已更新。"
+    systemctl restart docker || fn_print_error "Docker 服务重启失败！请手动运行 'systemctl restart docker' 进行排查。"
+    fn_print_success "Docker 服务已重启，加速配置生效！"
 fi
 
 # --- 阶段二：交互式配置 ---
@@ -126,7 +136,8 @@ fn_print_step "[ 2 / 5 ] 选择运行模式"
 echo "请选择您希望的运行模式："
 echo "  [1] 单用户模式 (简单，适合个人使用，通过浏览器弹窗认证)"
 echo "  [2] 多用户模式 (推荐，功能完整，拥有独立的登录页面)"
-read -p "请输入选项数字 [1 或 2]: " run_mode
+read -p "请输入选项数字 [默认为 2]: " run_mode
+run_mode=${run_mode:-2}
 
 if [[ "$run_mode" == "1" ]]; then
     fn_print_info "您选择了单用户模式。"
@@ -172,9 +183,7 @@ fn_print_success "项目目录和 docker-compose.yml 文件创建成功！"
 fn_print_step "[ 4 / 5 ] 初始化与配置"
 
 fn_print_info "正在拉取 SillyTavern 镜像，可能需要几分钟，请耐心等待..."
-if ! $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" pull; then
-    fn_print_error "拉取 Docker 镜像失败！请检查网络连接或 Docker 加速镜像配置。"
-fi
+$DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" pull || fn_print_error "拉取 Docker 镜像失败！请检查网络连接或 Docker 加速镜像配置。"
 
 fn_print_info "正在进行首次启动以生成初始配置文件..."
 $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
@@ -191,6 +200,10 @@ done
 $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down > /dev/null
 fn_print_success "初始配置文件生成成功！"
 
+fn_print_info "正在修正文件权限..."
+chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
+fn_print_success "文件权限已设置为 '$TARGET_USER' 用户。"
+
 fn_print_info "正在根据您的选择修改配置文件..."
 
 # yq 修改函数，支持添加注释
@@ -200,7 +213,6 @@ fn_yq_mod() {
     local comment="$3"
     local value_type
     
-    # 判断值类型以决定是否加引号
     if [[ "$value" == "true" || "$value" == "false" || "$value" =~ ^[0-9]+$ ]]; then
         value_type="literal"
     else
@@ -237,7 +249,7 @@ else
     $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
     
     # 显示引导文字并暂停
-    SERVER_IP=$(hostname -I | awk '{print $1}')
+    SERVER_IP=$(fn_get_public_ip)
     echo -e "\n"
     cat <<EOF
 ---【 重要：请按以下步骤设置管理员 】---
@@ -249,7 +261,6 @@ SillyTavern 已临时启动，请完成管理员的初始设置：
 
 2. 【访问并登录】
    请打开浏览器，访问: http://${SERVER_IP}:8000
-   (如果以上IP无法访问，请使用您服务器的公网IP)
    使用以下默认凭据登录：
      ▶ 账号: user
      ▶ 密码: password
@@ -281,11 +292,11 @@ fn_print_step "[ 5 / 5 ] 完成部署"
 fn_print_info "正在应用最终配置并启动服务..."
 $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
 
-SERVER_IP=$(hostname -I | awk '{print $1}')
+SERVER_IP=$(fn_get_public_ip)
 echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗"
 echo -e "║                      部署成功！尽情享受吧！                      ║"
 echo -e "╚════════════════════════════════════════════════════════════╝${NC}"
-echo -e "\n  ${CYAN}访问地址:${NC} http://${SERVER_IP}:8000 (或使用您服务器的公网IP)"
+echo -e "\n  ${CYAN}访问地址:${NC} http://${SERVER_IP}:8000"
 echo -e "  ${CYAN}管理方式:${NC} 请登录 1Panel 服务器面板，在“容器”菜单中管理您的 SillyTavern。"
 echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
 echo -e "\n"
