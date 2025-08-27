@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 11.0 (终极稳定版)
-# 作者: Qingjue (由 AI 助手基于 v10.1 优化)
-# 更新日志 (v11.0):
-# - [修复] 彻底修复了 docker-compose.yml 的 YAML 语法错误，解决了 `pull` 失败问题。
-# - [修复] 彻底修复了 `sed` 后备方案中对嵌套键修改和添加注释失败的 Bug。
-# - [修复] 采用子 shell 和管道重构测速数据流，从根本上解决了排序和决策在不同环境下失效的问题。
+# 版本: 11.1 (兼容性修复版)
+# 作者: Qingjue (由 AI 助手基于 v11.0 优化)
+# 更新日志 (v11.1):
+# - [健壮] 新增 yq 版本检查。当 yq 版本低于 v4 时，将自动回退到 sed 方案，解决兼容性错误。
+# - [修复] 修正了打印正在使用的工具时，错误显示 "yqtrue" 的 Bug。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -37,7 +36,19 @@ fn_check_dependencies() {
     if ! command -v docker &> /dev/null; then fn_print_error "未检测到 Docker。"; fi
     if ! command -v bc &> /dev/null; then fn_print_error "需要 'bc' 命令来进行测速计算，请先安装它 (例如: sudo apt install bc)。"; fi
     if command -v docker-compose &> /dev/null; then DOCKER_COMPOSE_CMD="docker-compose"; elif docker compose version &> /dev/null; then DOCKER_COMPOSE_CMD="docker compose"; else fn_print_error "未检测到 Docker Compose。"; fi
-    if command -v yq &> /dev/null; then USE_YQ=true; fn_print_success "检测到 yq，将使用 yq 修改配置 (更稳定)。"; else fn_print_warning "未检测到 yq。将使用 sed 修改配置，在 SillyTavern 更新后可能失效。"; fi
+    
+    if command -v yq &> /dev/null; then
+        # 【关键修复】检查 yq 版本是否为 v4+
+        if yq --version | grep -q 'version v4'; then
+            USE_YQ=true
+            fn_print_success "检测到 yq v4+，将使用 yq 修改配置 (更稳定)。"
+        else
+            fn_print_warning "检测到 yq，但版本过低 (需要 v4+)。将回退到 sed 方案。"
+        fi
+    else
+        fn_print_warning "未检测到 yq。将使用 sed 修改配置，在 SillyTavern 更新后可能失效。"
+    fi
+
     if command -v jq &> /dev/null; then USE_JQ=true; fi
     fn_print_success "核心依赖检查通过！"
 }
@@ -72,7 +83,6 @@ fn_speed_test_and_configure_mirrors() {
     local mirrors=("docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live" "https://dockerproxy.1panel.live" "https://hub.rat.dev")
     docker rmi hello-world > /dev/null 2>&1 || true
 
-    # 【关键修复】使用子 shell 和管道，确保数据流干净、可靠
     local sorted_results=$(
     (
         for mirror in "${mirrors[@]}"; do
@@ -127,7 +137,11 @@ fn_speed_test_and_configure_mirrors() {
 }
 
 fn_apply_config_changes() {
-    fn_print_info "正在使用 ${BOLD}${USE_YQ:+yq}${USE_YQ:-sed}${NC} 精准修改配置并添加注释..."
+    # 【关键修复】修复显示 "yqtrue" 的 bug
+    local tool_name
+    if [ "$USE_YQ" = true ]; then tool_name="yq"; else tool_name="sed"; fi
+    fn_print_info "正在使用 ${BOLD}${tool_name}${NC} 精准修改配置并添加注释..."
+
     if [ "$USE_YQ" = true ]; then
         yq e -i '(.listen = true) | (.listen | line_comment = "* 允许外部访问")' "$CONFIG_FILE"
         yq e -i '(.whitelistMode = false) | (.whitelistMode | line_comment = "* 关闭IP白名单模式")' "$CONFIG_FILE"
@@ -135,7 +149,7 @@ fn_apply_config_changes() {
         yq e -i '(.backups.common.numberOfBackups = 5) | (.backups.common.numberOfBackups | line_comment = "* 单文件保留的备份数量")' "$CONFIG_FILE"
         yq e -i '(.backups.chat.maxTotalBackups = 30) | (.backups.chat.maxTotalBackups | line_comment = "* 总聊天文件数量上限")' "$CONFIG_FILE"
         yq e -i '(.performance.lazyLoadCharacters = true) | (.performance.lazyLoadCharacters | line_comment = "* 懒加载、点击角色卡才加载")' "$CONFIG_FILE"
-        yq e -i '(.performance.memoryCacheCapacity = "128mb") | (.performance.memoryCacheCapacity | line_comment = "* 角色卡内存缓存 (根据2G内存推荐)")' "$CONFIG_FILE"
+        yq e -i '(.performance.memoryCacheCapacity = "'\''128mb'\''") | (.performance.memoryCacheCapacity | line_comment = "* 角色卡内存缓存 (根据2G内存推荐)")' "$CONFIG_FILE"
         if [[ "$run_mode" == "1" ]]; then
             yq e -i '(.basicAuthMode = true) | (.basicAuthMode | line_comment = "* 启用基础认证")' "$CONFIG_FILE"
             yq e -i ".basicAuthUser.username = \"$single_user\"" "$CONFIG_FILE"
@@ -144,7 +158,7 @@ fn_apply_config_changes() {
             yq e -i '(.basicAuthMode = true) | (.basicAuthMode | line_comment = "* 临时开启基础认证以设置管理员")' "$CONFIG_FILE"
             yq e -i '(.enableUserAccounts = true) | (.enableUserAccounts | line_comment = "* 启用多用户模式")' "$CONFIG_FILE"
         fi
-    else # 【关键修复】sed 后备方案，为每个配置编写独立的、精确的命令
+    else
         sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # * 允许外部访问/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false # * 关闭IP白名单模式/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400 # * 24小时退出登录/" "$CONFIG_FILE"
@@ -174,7 +188,7 @@ fn_create_project_structure() { fn_print_info "正在创建项目目录结构...
 
 clear
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v11.0${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v11.1${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
@@ -196,7 +210,6 @@ if [[ "$run_mode" == "1" ]]; then read -p "请输入您的自定义用户名: " 
 fn_print_step "[ 3 / 5 ] 创建项目文件"
 if [ -d "$INSTALL_DIR" ]; then fn_confirm_and_delete_dir "$INSTALL_DIR"; fi
 fn_create_project_structure
-# 【关键修复】使用正确的、多行的 YAML 列表语法
 cat <<EOF > "$COMPOSE_FILE"
 services:
   sillytavern:
