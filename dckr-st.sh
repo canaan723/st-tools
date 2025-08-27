@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.4 (交互修复版)
+# 版本: 1.5 (yq 依赖修复版)
 # 功能: 自动化部署 SillyTavern Docker 版，为新手用户提供极致的自动化安装体验。
 
 # --- 初始化与环境设置 ---
@@ -88,21 +88,28 @@ else
     fn_print_error "未检测到 Docker Compose。\n  请确保 Docker Compose v2 (插件模式) 或 v1 (独立命令) 已正确安装。"
 fi
 
-if ! command -v yq &> /dev/null; then
-    fn_print_info "未检测到 yq，正在为您自动安装..."
-    if command -v apt-get &> /dev/null; then
-        (apt-get update && apt-get install -y yq) || fn_print_error "使用 apt 安装 yq 失败。"
-    elif command -v yum &> /dev/null; then
-        yum install -y yq || fn_print_error "使用 yum 安装 yq 失败。"
-    elif command -v dnf &> /dev/null; then
-        dnf install -y yq || fn_print_error "使用 dnf 安装 yq 失败。"
-    else
-        fn_print_error "不支持的操作系统，请手动安装 yq 后再运行本脚本。"
+# 检查 yq 是否为正确的 Go 版本，如果不是或不存在，则自动下载安装
+if ! yq --version 2>/dev/null | grep -q 'mikefarah'; then
+    fn_print_info "未检测到正确的 yq 版本，正在为您自动下载安装..."
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64) ARCH="amd64" ;;
+        aarch64) ARCH="arm64" ;;
+        *) fn_print_error "不支持的系统架构: $ARCH" ;;
+    esac
+    
+    YQ_VERSION="v4.44.2" # 固定一个稳定版本
+    YQ_URL="https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${ARCH}"
+    
+    if ! curl -L "$YQ_URL" -o /usr/local/bin/yq; then
+        fn_print_error "下载 yq 失败。请检查网络连接或 GitHub 访问。"
     fi
-    if ! command -v yq &> /dev/null; then
-        fn_print_error "yq 自动安装失败，请检查系统环境或手动安装。"
+    chmod +x /usr/local/bin/yq
+    
+    if ! yq --version 2>/dev/null | grep -q 'mikefarah'; then
+         fn_print_error "yq 安装后仍无法正常运行。"
     fi
-    fn_print_success "依赖工具 yq 安装成功！"
+    fn_print_success "依赖工具 yq (Go 版本) 安装成功！"
 fi
 fn_print_success "核心依赖检查通过！"
 
@@ -219,18 +226,11 @@ fn_yq_mod() {
     local key="$1"
     local value="$2"
     local comment="$3"
-    local value_type
     
     if [[ "$value" == "true" || "$value" == "false" || "$value" =~ ^[0-9]+$ ]]; then
-        value_type="literal"
+        yq e "(${key} = ${value}) | line_comment(.) = \"${comment}\"" -i "$CONFIG_FILE"
     else
-        value_type="string"
-    fi
-
-    if [ "$value_type" == "string" ]; then
-        yq e "(${key} = \"${value}\") | ${key} line_comment = \"${comment}\"" -i "$CONFIG_FILE"
-    else
-        yq e "(${key} = ${value}) | ${key} line_comment = \"${comment}\"" -i "$CONFIG_FILE"
+        yq e "(${key} = \"${value}\") | line_comment(.) = \"${comment}\"" -i "$CONFIG_FILE"
     fi
 }
 
@@ -306,4 +306,5 @@ echo -e "║                      部署成功！尽情享受吧！             
 echo -e "╚════════════════════════════════════════════════════════════╝${NC}"
 echo -e "\n  ${CYAN}访问地址:${NC} http://${SERVER_IP}:8000"
 echo -e "  ${CYAN}管理方式:${NC} 请登录 1Panel 服务器面板，在“容器”菜单中管理您的 SillyTavern。"
-echo -e "  ${
+echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
+echo -e "\n"
