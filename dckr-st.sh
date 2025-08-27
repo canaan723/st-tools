@@ -208,4 +208,21 @@ SillyTavern 已临时启动，请完成管理员的初始设置：
       ② 自定义您的日常使用账号和密码（建议账号用纯英文）。
       ③ 创建后，点击新账户旁的【↑】箭头，将其提升为 Admin (管理员)。
 4. ${CYAN}【需要帮助？】${NC}
-   可访问图文教程： ${GREEN}https://stdocs.723
+   可访问图文教程： ${GREEN}https://stdocs.723123.xyz${NC} (按住 Ctrl 并单击鼠标左键打开)
+${YELLOW}>>> 完成以上所有步骤后，请回到本窗口，然后按下【回车键】继续 <<<${NC}
+EOF
+); echo -e "${MULTI_USER_GUIDE}"; read -p "" < /dev/tty
+    fn_print_info "正在切换到多用户登录页模式..."; fn_update_yaml '.basicAuthMode' 'false' '* 关闭基础认证，启用登录页'; fn_update_yaml '.enableDiscreetLogin' 'true' '* 隐藏登录用户列表'; fn_print_success "多用户模式配置写入完成！"
+fi
+
+# --- 阶段五：最终启动 ---
+fn_print_step "[ 5 / 5 ] 最终启动"
+fn_print_info "正在应用最终配置并重启服务..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate > /dev/null
+SERVER_IP=$(fn_get_public_ip)
+echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗"
+echo -e "║                      部署成功！尽情享受吧！                      ║"
+echo -e "╚════════════════════════════════════════════════════════════╝${NC}"
+echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC} (按住 Ctrl 并单击)"
+if [[ "$run_mode" == "1" ]]; then echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"; echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"; elif [[ "$run_mode" == "2" ]]; then echo -e "  ${YELLOW}首次登录:${NC} 为确保看到新的登录页，请访问 ${GREEN}http://${SERVER_IP}:8000/login${NC} (按住 Ctrl 并单击)"; fi
+echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
+echo -e "\n"
