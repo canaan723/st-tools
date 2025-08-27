@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 4.0 (稳定·重构版)
+# 版本: 4.1 (最终稳定版)
 # 功能: 自动化部署 SillyTavern Docker 版，提供极致的自动化、健壮性和用户体验。
 
 # --- 初始化与环境设置 ---
@@ -179,6 +179,10 @@ if [ -d "$INSTALL_DIR" ]; then
 fi
 
 mkdir -p "$INSTALL_DIR"
+# 【关键修复】在容器启动前，立即修正目录权限
+chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
+fn_print_success "项目目录创建并授权成功！"
+
 cat <<EOF > "$COMPOSE_FILE"
 services:
   sillytavern:
@@ -197,7 +201,7 @@ services:
       - "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party"
     restart: unless-stopped
 EOF
-fn_print_success "项目目录和 docker-compose.yml 文件创建成功！"
+fn_print_success "docker-compose.yml 文件创建成功！"
 
 # --- 阶段四：初始化与配置 ---
 
@@ -291,9 +295,6 @@ fi
 # --- 阶段五：最终启动 ---
 
 fn_print_step "[ 5 / 5 ] 最终启动"
-fn_print_info "正在修正文件权限..."
-chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
-fn_print_success "文件权限已设置为 '$TARGET_USER' 用户。"
 
 fn_print_info "正在应用最终配置并重启服务..."
 $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate > /dev/null
