@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 5.6 (最终稳定版)
+# 版本: 5.7 (最终稳定版)
 # 作者: Qingjue
 # 功能: 自动化部署 SillyTavern Docker 版，提供极致的自动化、健壮性和用户体验。
 
@@ -95,7 +95,6 @@ fn_configure_docker_mirror() {
     
     echo -e "  ${YELLOW}检测结果: ${location_display}${NC}"
 
-    # 【关键修复】使用 if/elif/else 保证逻辑互斥
     if [[ "$country_code" == "CN" ]]; then
         echo "请选择操作："
         echo -e "  [1] ${GREEN}配置国内加速镜像 (推荐)${NC}"
@@ -109,7 +108,7 @@ fn_configure_docker_mirror() {
             3) fn_handle_mirror_config "overseas" ;;
             *) fn_print_warning "无效输入，已跳过。" ;;
         esac
-    elif [[ "$country_code" != "UNKNOWN" ]]; then # 明确是海外
+    elif [[ "$country_code" != "UNKNOWN" ]]; then
         echo "请选择操作："
         echo -e "  [1] 清除可能存在的国内镜像配置"
         echo -e "  [2] ${GREEN}跳过 (推荐)${NC}"
@@ -122,7 +121,7 @@ fn_configure_docker_mirror() {
             3) fn_handle_mirror_config "mainland" ;;
             *) fn_print_warning "无效输入，已跳过。" ;;
         esac
-    else # 确实无法确定位置
+    else
         echo "无法自动判断，请手动选择您的服务器位置："
         echo -e "  [1] 我在中国大陆"
         echo -e "  [2] 我在海外"
@@ -232,30 +231,32 @@ done
 $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down > /dev/null
 fn_print_success "最新的 config.yaml 文件已生成！"
 fn_print_info "正在使用 sed 精准修改配置..."
-sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true/" "$CONFIG_FILE"
-sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false/" "$CONFIG_FILE"
-sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400/" "$CONFIG_FILE"
-sed -i -E "s/^([[:space:]]*)lazyLoadCharacters: .*/\1lazyLoadCharacters: true/" "$CONFIG_FILE"
+# 【关键修复】恢复所有配置项的中文注释
+sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # * 允许外部访问/" "$CONFIG_FILE"
+sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false # * 关闭IP白名单模式/" "$CONFIG_FILE"
+sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400 # * 24小时退出登录/" "$CONFIG_FILE"
+sed -i -E "s/^([[:space:]]*)lazyLoadCharacters: .*/\1lazyLoadCharacters: true # * 懒加载、点击角色卡才加载/" "$CONFIG_FILE"
 if [[ "$run_mode" == "1" ]]; then
-    sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # * 启用基础认证/" "$CONFIG_FILE"
     sed -i -E "s/^([[:space:]]*)username: .*/\1username: \"$single_user\"/" "$CONFIG_FILE"
     sed -i -E "s/^([[:space:]]*)password: .*/\1password: \"$single_pass\"/" "$CONFIG_FILE"
     fn_print_success "单用户模式配置写入完成！"
 else
-    sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true/" "$CONFIG_FILE"
-    sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # * 临时开启基础认证/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # * 启用多用户模式/" "$CONFIG_FILE"
     fn_print_info "正在临时启动服务以设置管理员..."
     $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
     SERVER_IP=$(fn_get_public_ip)
+    # 【关键修复】确保所有带颜色变量的 echo 命令都使用 -e 参数
     echo -e "\n${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}"
-    echo "1. ${CYAN}【开放端口】${NC} 请确保您已在服务器后台开放了 ${GREEN}8000${NC} 端口。"
-    echo "2. ${CYAN}【访问并登录】${NC} 请访问: ${GREEN}http://${SERVER_IP}:8000${NC} (按住 Ctrl 并单击)"
-    echo "   使用默认凭据登录: 账号: ${YELLOW}user${NC} 密码: ${YELLOW}password${NC}"
-    echo "3. ${CYAN}【设置管理员】${NC} 登录后，请在右上角【管理员面板】中创建您的管理员账号。"
+    echo -e "1. ${CYAN}【开放端口】${NC} 请确保您已在服务器后台开放了 ${GREEN}8000${NC} 端口。"
+    echo -e "2. ${CYAN}【访问并登录】${NC} 请访问: ${GREEN}http://${SERVER_IP}:8000${NC} (按住 Ctrl 并单击)"
+    echo -e "   使用默认凭据登录: 账号: ${YELLOW}user${NC} 密码: ${YELLOW}password${NC}"
+    echo -e "3. ${CYAN}【设置管理员】${NC} 登录后，请在右上角【管理员面板】中创建您的管理员账号。"
     echo -e "${YELLOW}>>> 完成以上所有步骤后，请回到本窗口，然后按下【回车键】继续 <<<${NC}"
     read -p "" < /dev/tty
-    sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false/" "$CONFIG_FILE"
-    sed -i -E "s/^([[:space:]]*)enableDiscreetLogin: .*/\1enableDiscreetLogin: true/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false # * 关闭基础认证，启用登录页/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)enableDiscreetLogin: .*/\1enableDiscreetLogin: true # * 隐藏登录用户列表/" "$CONFIG_FILE"
     fn_print_success "多用户模式配置写入完成！"
 fi
 
