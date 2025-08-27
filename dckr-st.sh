@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 2.2 (最终稳定版)
+# 版本: 2.3 (最终稳定版)
 # 功能: 自动化部署 SillyTavern Docker 版，提供极致的自动化、健壮性和用户体验。
 
 # --- 初始化与环境设置 ---
@@ -148,7 +148,7 @@ if [[ "$use_mirror" =~ ^[yY]$ ]]; then
     fn_print_info "正在为您配置国内 Docker 加速镜像..."
     
     MIRROR_LIST='
-"https://docker.m.daoud.io",
+"https://docker.m.daocloud.io",
 "https://docker.1ms.run",
 "https://hub1.nat.tf",
 "https://docker.1panel.live",
@@ -268,30 +268,32 @@ fn_print_step "[ 5 / 5 ] 应用配置并最终启动"
 
 if [[ "$run_mode" == "1" ]]; then
     # 单用户模式配置
-    fn_yq_mod 'listen' 'true' '# * 允许外部访问'
-    fn_yq_mod 'whitelistMode' 'false' '# * 关闭IP白名单模式'
-    fn_yq_mod 'basicAuthMode' 'true' '# * 启用基础认证 (单用户模式下保持开启)'
-    fn_yq_mod 'basicAuthUser.username' "$single_user" '# TODO 请修改为自己的用户名'
-    fn_yq_mod 'basicAuthUser.password' "$single_pass" '# TODO 请修改为自己的密码'
-    fn_yq_mod 'sessionTimeout' '86400' '# * 24小时退出登录'
-    fn_yq_mod 'numberOfBackups' '5' '# * 单文件保留的备份数量'
-    fn_yq_mod 'maxTotalBackups' '30' '# * 总聊天文件数量上限'
-    fn_yq_mod 'lazyLoadCharacters' 'true' '# * 懒加载、点击角色卡才加载'
-    fn_yq_mod 'memoryCacheCapacity' "'128mb'" '# * 角色卡内存缓存 (根据2G内存推荐)'
+    fn_yq_mod 'listen' 'true' '* 允许外部访问'
+    fn_yq_mod 'whitelistMode' 'false' '* 关闭IP白名单模式'
+    fn_yq_mod 'basicAuthMode' 'true' '* 启用基础认证 (单用户模式下保持开启)'
+    fn_yq_mod 'basicAuthUser.username' "$single_user" 'TODO 请修改为自己的用户名'
+    fn_yq_mod 'basicAuthUser.password' "$single_pass" 'TODO 请修改为自己的密码'
+    fn_yq_mod 'sessionTimeout' '86400' '* 24小时退出登录'
+    fn_yq_mod 'numberOfBackups' '5' '* 单文件保留的备份数量'
+    fn_yq_mod 'maxTotalBackups' '30' '* 总聊天文件数量上限'
+    fn_yq_mod 'lazyLoadCharacters' 'true' '* 懒加载、点击角色卡才加载'
+    fn_yq_mod 'memoryCacheCapacity' "'128mb'" '* 角色卡内存缓存 (根据2G内存推荐)'
     fn_print_success "单用户模式配置写入完成！"
 else
     # 多用户模式第一阶段配置
-    fn_yq_mod 'listen' 'true' '# * 允许外部访问'
-    fn_yq_mod 'whitelistMode' 'false' '# * 关闭IP白名单模式'
-    fn_yq_mod 'basicAuthMode' 'true' '# TODO 基础认证模式 初始化结束改回 false'
-    fn_yq_mod 'enableUserAccounts' 'true' '# * 多用户模式'
+    fn_yq_mod 'listen' 'true' '* 允许外部访问'
+    fn_yq_mod 'whitelistMode' 'false' '* 关闭IP白名单模式'
+    fn_yq_mod 'basicAuthMode' 'true' 'TODO 基础认证模式 初始化结束改回 false'
+    fn_yq_mod 'enableUserAccounts' 'true' '* 多用户模式'
     
     fn_print_info "正在临时启动服务以设置管理员..."
     $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
     
     SERVER_IP=$(fn_get_public_ip)
-    echo -e "\n"
-    cat <<EOF
+    
+    # 使用变量和 echo -e 来确保颜色代码被正确渲染
+    MULTI_USER_GUIDE=$(cat <<'EOF'
+
 ${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}
 
 SillyTavern 已临时启动，请完成管理员的初始设置：
@@ -318,17 +320,19 @@ SillyTavern 已临时启动，请完成管理员的初始设置：
 
 ${YELLOW}>>> 完成以上所有步骤后，请回到本窗口，然后按下【回车键】继续 <<<${NC}
 EOF
+)
+    echo -e "${MULTI_USER_GUIDE}"
     read -p "" < /dev/tty
 
     # 多用户模式第二阶段配置
     fn_print_info "正在应用最终配置..."
-    fn_yq_mod 'basicAuthMode' 'false' '# TODO 基础认证模式 初始化结束改回 false'
-    fn_yq_mod 'enableDiscreetLogin' 'true' '# * 隐藏登录用户列表'
-    fn_yq_mod 'sessionTimeout' '86400' '# * 24小时退出登录'
-    fn_yq_mod 'numberOfBackups' '5' '# * 单文件保留的备份数量'
-    fn_yq_mod 'maxTotalBackups' '30' '# * 总聊天文件数量上限'
-    fn_yq_mod 'lazyLoadCharacters' 'true' '# * 懒加载、点击角色卡才加载'
-    fn_yq_mod 'memoryCacheCapacity' "'128mb'" '# * 角色卡内存缓存 (根据2G内存推荐)'
+    fn_yq_mod 'basicAuthMode' 'false' 'TODO 基础认证模式 初始化结束改回 false'
+    fn_yq_mod 'enableDiscreetLogin' 'true' '* 隐藏登录用户列表'
+    fn_yq_mod 'sessionTimeout' '86400' '* 24小时退出登录'
+    fn_yq_mod 'numberOfBackups' '5' '* 单文件保留的备份数量'
+    fn_yq_mod 'maxTotalBackups' '30' '* 总聊天文件数量上限'
+    fn_yq_mod 'lazyLoadCharacters' 'true' '* 懒加载、点击角色卡才加载'
+    fn_yq_mod 'memoryCacheCapacity' "'128mb'" '* 角色卡内存缓存 (根据2G内存推荐)'
     fn_print_success "多用户模式配置写入完成！"
 fi
 
