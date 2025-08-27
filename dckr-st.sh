@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 2.1 (稳定修复版)
+# 版本: 2.2 (最终稳定版)
 # 功能: 自动化部署 SillyTavern Docker 版，提供极致的自动化、健壮性和用户体验。
 
 # --- 初始化与环境设置 ---
@@ -46,13 +46,13 @@ fn_confirm_and_delete_dir() {
 
     fn_print_warning "目录 '$dir_to_delete' 已存在，其中可能包含您之前的聊天记录和角色卡。"
 
-    echo -ne "您确定要删除此目录并继续安装吗？(y/n): "
+    echo -ne "您确定要删除此目录并继续安装吗？(${GREEN}y${NC}/${RED}n${NC}): "
     read -r confirm1 < /dev/tty
     if [[ "$confirm1" != "y" ]]; then
         fn_print_error "操作被用户取消。"
     fi
 
-    echo -ne "${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 (y/n): ${NC}"
+    echo -ne "${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 (${GREEN}y${NC}/${RED}n${NC}): ${NC}"
     read -r confirm2 < /dev/tty
     if [[ "$confirm2" != "y" ]]; then
         fn_print_error "操作被用户取消。"
@@ -148,7 +148,7 @@ if [[ "$use_mirror" =~ ^[yY]$ ]]; then
     fn_print_info "正在为您配置国内 Docker 加速镜像..."
     
     MIRROR_LIST='
-"https://docker.m.daocloud.io",
+"https://docker.m.daoud.io",
 "https://docker.1ms.run",
 "https://hub1.nat.tf",
 "https://docker.1panel.live",
@@ -177,8 +177,8 @@ fi
 fn_print_step "[ 2 / 5 ] 选择运行模式"
 
 echo "请选择您希望的运行模式："
-echo "  [1] 单用户模式 (简单，适合个人使用，通过浏览器弹窗认证)"
-echo "  [2] 多用户模式 (推荐，功能完整，拥有独立的登录页面)"
+echo -e "  [1] ${CYAN}单用户模式${NC} (简单，适合个人使用，通过浏览器弹窗认证)"
+echo -e "  [2] ${CYAN}多用户模式${NC} (推荐，功能完整，拥有独立的登录页面)"
 read -p "请输入选项数字 [默认为 2]: " run_mode < /dev/tty
 run_mode=${run_mode:-2}
 
@@ -256,77 +256,84 @@ fn_yq_mod() {
     local comment="$3"
     
     if [[ "$value" == "true" || "$value" == "false" || "$value" =~ ^[0-9]+$ ]]; then
-        yq e "(${key} = ${value}) | ${key} line_comment = \"${comment}\"" -i "$CONFIG_FILE"
+        yq e "(.${key} = ${value}) | .${key} line_comment = \"${comment}\"" -i "$CONFIG_FILE"
     else
-        yq e "(${key} = \"${value}\") | ${key} line_comment = \"${comment}\"" -i "$CONFIG_FILE"
+        yq e "(.${key} = \"${value}\") | .${key} line_comment = \"${comment}\"" -i "$CONFIG_FILE"
     fi
 }
 
-# 通用基础配置
-fn_yq_mod '.listen' 'true' '* 允许外部访问'
-fn_yq_mod '.whitelistMode' 'false' '* 关闭IP白名单模式'
-fn_yq_mod '.sessionTimeout' '86400' '* 24小时退出登录'
-fn_yq_mod '.numberOfBackups' '5' '* 单文件保留的备份数量'
-fn_yq_mod '.maxTotalBackups' '30' '* 总聊天文件数量上限'
-fn_yq_mod '.lazyLoadCharacters' 'true' '* 懒加载、点击角色卡才加载'
-fn_yq_mod '.memoryCacheCapacity' "'128mb'" '* 角色卡内存缓存 (根据2G内存推荐)'
+# --- 阶段五：应用配置并最终启动 ---
+
+fn_print_step "[ 5 / 5 ] 应用配置并最终启动"
 
 if [[ "$run_mode" == "1" ]]; then
     # 单用户模式配置
-    fn_yq_mod '.basicAuthMode' 'true' '* 启用基础认证 (单用户模式下保持开启)'
-    fn_yq_mod '.basicAuthUser.username' "$single_user" '* 请修改为自己的用户名'
-    fn_yq_mod '.basicAuthUser.password' "$single_pass" '* 请修改为自己的密码'
+    fn_yq_mod 'listen' 'true' '# * 允许外部访问'
+    fn_yq_mod 'whitelistMode' 'false' '# * 关闭IP白名单模式'
+    fn_yq_mod 'basicAuthMode' 'true' '# * 启用基础认证 (单用户模式下保持开启)'
+    fn_yq_mod 'basicAuthUser.username' "$single_user" '# TODO 请修改为自己的用户名'
+    fn_yq_mod 'basicAuthUser.password' "$single_pass" '# TODO 请修改为自己的密码'
+    fn_yq_mod 'sessionTimeout' '86400' '# * 24小时退出登录'
+    fn_yq_mod 'numberOfBackups' '5' '# * 单文件保留的备份数量'
+    fn_yq_mod 'maxTotalBackups' '30' '# * 总聊天文件数量上限'
+    fn_yq_mod 'lazyLoadCharacters' 'true' '# * 懒加载、点击角色卡才加载'
+    fn_yq_mod 'memoryCacheCapacity' "'128mb'" '# * 角色卡内存缓存 (根据2G内存推荐)'
     fn_print_success "单用户模式配置写入完成！"
 else
     # 多用户模式第一阶段配置
-    fn_yq_mod '.basicAuthMode' 'true' '# 临时开启，用于初始化管理员密码'
-    fn_yq_mod '.enableUserAccounts' 'true' '* 多用户模式'
+    fn_yq_mod 'listen' 'true' '# * 允许外部访问'
+    fn_yq_mod 'whitelistMode' 'false' '# * 关闭IP白名单模式'
+    fn_yq_mod 'basicAuthMode' 'true' '# TODO 基础认证模式 初始化结束改回 false'
+    fn_yq_mod 'enableUserAccounts' 'true' '# * 多用户模式'
     
+    fn_print_info "正在临时启动服务以设置管理员..."
     $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
     
-    # 显示引导文字并暂停
     SERVER_IP=$(fn_get_public_ip)
     echo -e "\n"
     cat <<EOF
----【 重要：请按以下步骤设置管理员 】---
+${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}
 
 SillyTavern 已临时启动，请完成管理员的初始设置：
 
-1. 【开放端口】
-   请确保您已在服务器后台（如阿里云/腾讯云安全组）开放了 8000 端口。
+1. ${CYAN}【开放端口】${NC}
+   请确保您已在服务器后台（如阿里云/腾讯云安全组）开放了 ${GREEN}8000${NC} 端口。
 
-2. 【访问并登录】
-   请打开浏览器，访问: http://${SERVER_IP}:8000
+2. ${CYAN}【访问并登录】${NC}
+   请打开浏览器，访问: ${GREEN}http://${SERVER_IP}:8000${NC}
    使用以下默认凭据登录：
-     ▶ 账号: user
-     ▶ 密码: password
+     ▶ 账号: ${YELLOW}user${NC}
+     ▶ 密码: ${YELLOW}password${NC}
 
-3. 【设置管理员】
+3. ${CYAN}【设置管理员】${NC}
    登录后，请立即在右上角的【管理员面板】中操作：
-   A. 设置密码：为默认账户 \`default-user\` 设置一个强大的新密码。
-   B. 创建新账户 (推荐)：
+   A. ${GREEN}设置密码${NC}：为默认账户 \`default-user\` 设置一个强大的新密码。
+   B. ${GREEN}创建新账户 (推荐)${NC}：
       ① 点击“创建用户”。
       ② 自定义您的日常使用账号和密码（建议账号用纯英文）。
       ③ 创建后，点击新账户旁的【↑】箭头，将其提升为 Admin (管理员)。
 
-4. 【需要帮助？】
+4. ${CYAN}【需要帮助？】${NC}
    如对以上步骤不熟，可访问图文教程： https://stdocs.723123.xyz
 
->>> 完成以上所有步骤后，请回到本窗口，然后按下【回车键】继续 <<<
+${YELLOW}>>> 完成以上所有步骤后，请回到本窗口，然后按下【回车键】继续 <<<${NC}
 EOF
     read -p "" < /dev/tty
 
     # 多用户模式第二阶段配置
-    fn_yq_mod '.basicAuthMode' 'false' '# 初始化完成，关闭基础认证'
-    fn_yq_mod '.enableDiscreetLogin' 'true' '* 隐藏登录用户列表'
+    fn_print_info "正在应用最终配置..."
+    fn_yq_mod 'basicAuthMode' 'false' '# TODO 基础认证模式 初始化结束改回 false'
+    fn_yq_mod 'enableDiscreetLogin' 'true' '# * 隐藏登录用户列表'
+    fn_yq_mod 'sessionTimeout' '86400' '# * 24小时退出登录'
+    fn_yq_mod 'numberOfBackups' '5' '# * 单文件保留的备份数量'
+    fn_yq_mod 'maxTotalBackups' '30' '# * 总聊天文件数量上限'
+    fn_yq_mod 'lazyLoadCharacters' 'true' '# * 懒加载、点击角色卡才加载'
+    fn_yq_mod 'memoryCacheCapacity' "'128mb'" '# * 角色卡内存缓存 (根据2G内存推荐)'
     fn_print_success "多用户模式配置写入完成！"
 fi
 
-# --- 阶段五：最终启动 ---
-
-fn_print_step "[ 5 / 5 ] 完成部署"
-fn_print_info "正在应用最终配置并启动服务..."
-$DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
+fn_print_info "正在应用最终配置并重启服务..."
+$DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate > /dev/null
 
 SERVER_IP=$(fn_get_public_ip)
 echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗"
