@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 2.5 (最终稳定版)
+# 版本: 4.0 (稳定·重构版)
 # 功能: 自动化部署 SillyTavern Docker 版，提供极致的自动化、健壮性和用户体验。
 
 # --- 初始化与环境设置 ---
@@ -104,7 +104,7 @@ INSTALL_DIR="$USER_HOME/sillytavern"
 CONFIG_FILE="$INSTALL_DIR/config.yaml"
 COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 
-# 1.2 检查并自动安装依赖
+# 1.2 检查核心依赖
 fn_print_info "正在检查核心依赖..."
 if ! command -v docker &> /dev/null; then
     fn_print_error "未检测到 Docker。\n  请先根据您服务器的操作系统安装 Docker，或使用 1Panel 面板的 Docker 管理功能。"
@@ -115,29 +115,6 @@ elif docker compose version &> /dev/null; then
     DOCKER_COMPOSE_CMD="docker compose"
 else
     fn_print_error "未检测到 Docker Compose。\n  请确保 Docker Compose v2 (插件模式) 或 v1 (独立命令) 已正确安装。"
-fi
-
-if ! yq --version 2>/dev/null | grep -q 'mikefarah'; then
-    fn_print_info "未检测到正确的 yq 版本，正在为您自动下载安装..."
-    ARCH=$(uname -m)
-    case "$ARCH" in
-        x86_64) ARCH="amd64" ;;
-        aarch64) ARCH="arm64" ;;
-        *) fn_print_error "不支持的系统架构: $ARCH" ;;
-    esac
-    
-    YQ_VERSION="v4.44.2"
-    YQ_URL="https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${ARCH}"
-    
-    if ! curl -sL "$YQ_URL" -o /usr/local/bin/yq; then
-        fn_print_error "下载 yq 失败。请检查网络连接或 GitHub 访问。"
-    fi
-    chmod +x /usr/local/bin/yq
-    
-    if ! yq --version 2>/dev/null | grep -q 'mikefarah'; then
-         fn_print_error "yq 安装后仍无法正常运行。"
-    fi
-    fn_print_success "依赖工具 yq (Go 版本) 安装成功！"
 fi
 fn_print_success "核心依赖检查通过！"
 
@@ -185,8 +162,7 @@ run_mode=${run_mode:-2}
 if [[ "$run_mode" == "1" ]]; then
     fn_print_info "您选择了单用户模式。"
     read -p "请输入您的自定义用户名: " single_user < /dev/tty
-    read -sp "请输入您的自定义密码: " single_pass < /dev/tty
-    echo
+    read -p "请输入您的自定义密码 (密码将明文显示): " single_pass < /dev/tty
     if [ -z "$single_user" ] || [ -z "$single_pass" ]; then
         fn_print_error "用户名和密码不能为空！"
     fi
@@ -223,12 +199,14 @@ services:
 EOF
 fn_print_success "项目目录和 docker-compose.yml 文件创建成功！"
 
+# --- 阶段四：初始化与配置 ---
+
 fn_print_step "[ 4 / 5 ] 初始化与配置"
 
 fn_print_info "正在拉取 SillyTavern 镜像，可能需要几分钟，请耐心等待..."
 $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" pull || fn_print_error "拉取 Docker 镜像失败！请检查网络连接或 Docker 加速镜像配置。"
 
-fn_print_info "正在进行首次启动以生成初始配置文件..."
+fn_print_info "正在进行首次启动以生成最新的配置文件..."
 $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
 
 timeout=60
@@ -241,69 +219,36 @@ while [ ! -f "$CONFIG_FILE" ]; do
 done
 
 $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down > /dev/null
-fn_print_success "初始配置文件生成成功！"
+fn_print_success "最新的 config.yaml 文件已生成！"
 
-fn_print_info "正在修正文件权限..."
-chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
-fn_print_success "文件权限已设置为 '$TARGET_USER' 用户。"
+fn_print_info "正在使用 sed 精准修改配置..."
 
-# yq 修改函数（带注释）
-fn_yq_mod() {
-    local key="$1"
-    local value="$2"
-    local comment="$3"
-    
-    if [[ "$value" == "true" || "$value" == "false" || "$value" =~ ^[0-9]+$ ]]; then
-        yq e "(.${key} = ${value}) | .${key} line_comment = \"${comment}\"" -i "$CONFIG_FILE"
-    else
-        yq e "(.${key} = \"${value}\") | .${key} line_comment = \"${comment}\"" -i "$CONFIG_FILE"
-    fi
-}
-
-# yq 修改函数（不带注释）
-fn_yq_mod_no_comment() {
-    local key="$1"
-    local value="$2"
-    
-    if [[ "$value" == "true" || "$value" == "false" || "$value" =~ ^[0-9]+$ ]]; then
-        yq e ".${key} = ${value}" -i "$CONFIG_FILE"
-    else
-        yq e ".${key} = \"${value}\"" -i "$CONFIG_FILE"
-    fi
-}
-
-# --- 阶段五：应用配置并最终启动 ---
-
-fn_print_step "[ 5 / 5 ] 应用配置并最终启动"
+# 通用基础配置
+sed -i 's/^listen: false/listen: true/' "$CONFIG_FILE"
+sed -i 's/^whitelistMode: true/whitelistMode: false/' "$CONFIG_FILE"
+sed -i 's/^sessionTimeout: 3600/sessionTimeout: 86400/' "$CONFIG_FILE"
+sed -i 's/^numberOfBackups: 3/numberOfBackups: 5/' "$CONFIG_FILE"
+sed -i 's/^maxTotalBackups: 10/maxTotalBackups: 30/' "$CONFIG_FILE"
+sed -i 's/^lazyLoadCharacters: false/lazyLoadCharacters: true/' "$CONFIG_FILE"
+sed -i 's/^memoryCacheCapacity: "64mb"/memoryCacheCapacity: "128mb"/' "$CONFIG_FILE"
 
 if [[ "$run_mode" == "1" ]]; then
-    # 单用户模式：一次性完成所有配置和注释
-    fn_print_info "正在写入单用户模式配置..."
-    fn_yq_mod 'listen' 'true' '* 允许外部访问'
-    fn_yq_mod 'whitelistMode' 'false' '* 关闭IP白名单模式'
-    fn_yq_mod 'basicAuthMode' 'true' '* 启用基础认证 (单用户模式下保持开启)'
-    fn_yq_mod 'basicAuthUser.username' "$single_user" 'TODO 请修改为自己的用户名'
-    fn_yq_mod 'basicAuthUser.password' "$single_pass" 'TODO 请修改为自己的密码'
-    fn_yq_mod 'sessionTimeout' '86400' '* 24小时退出登录'
-    fn_yq_mod 'numberOfBackups' '5' '* 单文件保留的备份数量'
-    fn_yq_mod 'maxTotalBackups' '30' '* 总聊天文件数量上限'
-    fn_yq_mod 'lazyLoadCharacters' 'true' '* 懒加载、点击角色卡才加载'
-    fn_yq_mod 'memoryCacheCapacity' "'128mb'" '* 角色卡内存缓存 (根据2G内存推荐)'
+    # 单用户模式配置
+    sed -i 's/^basicAuthMode: false/basicAuthMode: true/' "$CONFIG_FILE"
+    # 精准替换并确保值被双引号包裹
+    sed -i "s/^  username: .*/  username: \"$single_user\"/" "$CONFIG_FILE"
+    sed -i "s/^  password: .*/  password: \"$single_pass\"/" "$CONFIG_FILE"
     fn_print_success "单用户模式配置写入完成！"
 else
-    # 多用户模式第一阶段：写入无注释的临时配置
-    fn_print_info "正在写入多用户模式临时配置..."
-    fn_yq_mod_no_comment 'listen' 'true'
-    fn_yq_mod_no_comment 'whitelistMode' 'false'
-    fn_yq_mod_no_comment 'basicAuthMode' 'true'
-    fn_yq_mod_no_comment 'enableUserAccounts' 'true'
+    # 多用户模式第一阶段
+    sed -i 's/^basicAuthMode: false/basicAuthMode: true/' "$CONFIG_FILE"
+    sed -i 's/^enableUserAccounts: false/enableUserAccounts: true/' "$CONFIG_FILE"
     
     fn_print_info "正在临时启动服务以设置管理员..."
     $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
     
     SERVER_IP=$(fn_get_public_ip)
     
-    # 使用 command substitution 和 cat <<EOF 来安全地创建带变量的多行字符串
     MULTI_USER_GUIDE=$(cat <<EOF
 
 ${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}
@@ -336,20 +281,19 @@ EOF
     echo -e "${MULTI_USER_GUIDE}"
     read -p "" < /dev/tty
 
-    # 多用户模式第二阶段：一次性写入所有最终配置和注释
+    # 多用户模式第二阶段
     fn_print_info "正在应用最终配置..."
-    fn_yq_mod 'listen' 'true' '* 允许外部访问'
-    fn_yq_mod 'whitelistMode' 'false' '* 关闭IP白名单模式'
-    fn_yq_mod 'basicAuthMode' 'false' 'TODO 基础认证模式 初始化结束改回 false'
-    fn_yq_mod 'enableUserAccounts' 'true' '* 多用户模式'
-    fn_yq_mod 'enableDiscreetLogin' 'true' '* 隐藏登录用户列表'
-    fn_yq_mod 'sessionTimeout' '86400' '* 24小时退出登录'
-    fn_yq_mod 'numberOfBackups' '5' '* 单文件保留的备份数量'
-    fn_yq_mod 'maxTotalBackups' '30' '* 总聊天文件数量上限'
-    fn_yq_mod 'lazyLoadCharacters' 'true' '* 懒加载、点击角色卡才加载'
-    fn_yq_mod 'memoryCacheCapacity' "'128mb'" '* 角色卡内存缓存 (根据2G内存推荐)'
+    sed -i 's/^basicAuthMode: true/basicAuthMode: false/' "$CONFIG_FILE"
+    sed -i 's/^enableDiscreetLogin: false/enableDiscreetLogin: true/' "$CONFIG_FILE"
     fn_print_success "多用户模式配置写入完成！"
 fi
+
+# --- 阶段五：最终启动 ---
+
+fn_print_step "[ 5 / 5 ] 最终启动"
+fn_print_info "正在修正文件权限..."
+chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
+fn_print_success "文件权限已设置为 '$TARGET_USER' 用户。"
 
 fn_print_info "正在应用最终配置并重启服务..."
 $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate > /dev/null
