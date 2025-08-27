@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 4.9 (最终稳定版)
+# 版本: 5.0 (最终稳定版)
 # 作者: Qingjue
 # 功能: 自动化部署 SillyTavern Docker 版，提供极致的自动化、健壮性和用户体验。
 
@@ -104,7 +104,10 @@ fn_configure_docker_mirror() {
 "https://hub.rat.dev",
 "https://docker.amingg.com"
 '
-        DAEMON_JSON_CONTENT="{\n  \"registry-mirrors\": [\n    $(echo "$MIRROR_LIST" | sed '$d')\n  ]\n}"
+        # 【关键修复】确保生成的 JSON 数组语法正确，移除最后一个元素后的逗号
+        MIRROR_JSON_ARRAY=$(echo "$MIRROR_LIST" | sed '$d' | sed '$s/,$//')
+        DAEMON_JSON_CONTENT="{\n  \"registry-mirrors\": [\n    ${MIRROR_JSON_ARRAY}\n  ]\n}"
+        
         tee /etc/docker/daemon.json <<< "$DAEMON_JSON_CONTENT" > /dev/null
         fn_print_info "配置文件 /etc/docker/daemon.json 已更新。"
         systemctl restart docker || fn_print_error "Docker 服务重启失败！请手动排查。"
