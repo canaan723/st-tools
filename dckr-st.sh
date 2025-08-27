@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 11.1 (兼容性修复版)
-# 作者: Qingjue (由 AI 助手基于 v11.0 优化)
-# 更新日志 (v11.1):
-# - [健壮] 新增 yq 版本检查。当 yq 版本低于 v4 时，将自动回退到 sed 方案，解决兼容性错误。
-# - [修复] 修正了打印正在使用的工具时，错误显示 "yqtrue" 的 Bug。
+# 版本: 11.2 (终极兼容与逻辑修复版)
+# 作者: Qingjue (由 AI 助手基于 v11.1 优化)
+# 更新日志 (v11.2):
+# - [修复] 采用更可靠的 `yq --help | grep "eval (e)"` 方式检查 yq 版本，彻底解决 v3/v4 兼容性问题。
+# - [优化] 重构镜像选择逻辑：优先使用官方源，仅在官方源超时的情况下，才启用并排序备用加速镜像。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -37,16 +37,16 @@ fn_check_dependencies() {
     if ! command -v bc &> /dev/null; then fn_print_error "需要 'bc' 命令来进行测速计算，请先安装它 (例如: sudo apt install bc)。"; fi
     if command -v docker-compose &> /dev/null; then DOCKER_COMPOSE_CMD="docker-compose"; elif docker compose version &> /dev/null; then DOCKER_COMPOSE_CMD="docker compose"; else fn_print_error "未检测到 Docker Compose。"; fi
     
-    if command -v yq &> /dev/null; then
-        # 【关键修复】检查 yq 版本是否为 v4+
-        if yq --version | grep -q 'version v4'; then
-            USE_YQ=true
-            fn_print_success "检测到 yq v4+，将使用 yq 修改配置 (更稳定)。"
-        else
-            fn_print_warning "检测到 yq，但版本过低 (需要 v4+)。将回退到 sed 方案。"
-        fi
+    # 【关键修复】使用更可靠的方式检查 yq 是否为 v4+
+    if command -v yq &> /dev/null && yq --help | grep -q "eval (e)"; then
+        USE_YQ=true
+        fn_print_success "检测到 yq v4+，将使用 yq 修改配置 (更稳定)。"
     else
-        fn_print_warning "未检测到 yq。将使用 sed 修改配置，在 SillyTavern 更新后可能失效。"
+        if command -v yq &> /dev/null; then
+            fn_print_warning "检测到 yq，但版本过低 (需要 v4+)。将回退到 sed 方案。"
+        else
+            fn_print_warning "未检测到 yq。将使用 sed 修改配置，在 SillyTavern 更新后可能失效。"
+        fi
     fi
 
     if command -v jq &> /dev/null; then USE_JQ=true; fi
@@ -83,52 +83,46 @@ fn_speed_test_and_configure_mirrors() {
     local mirrors=("docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live" "https://dockerproxy.1panel.live" "https://hub.rat.dev")
     docker rmi hello-world > /dev/null 2>&1 || true
 
-    local sorted_results=$(
-    (
-        for mirror in "${mirrors[@]}"; do
-            local pull_target="hello-world" display_name="$mirror"
-            if [[ "$mirror" != "docker.io" ]]; then pull_target="${mirror#https://}/library/hello-world"; else display_name="Official Docker Hub"; fi
-            echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..." >&2
-            local start_time=$(date +%s.%N)
-            if timeout 30 docker pull "$pull_target" > /dev/null 2>&1; then
-                local end_time=$(date +%s.%N)
-                local duration=$(echo "$end_time - $start_time" | bc)
-                printf " ${GREEN}%.2f 秒${NC}\n" "$duration" >&2
-                echo "${duration}|${mirror}|${display_name}"
-                docker rmi "$pull_target" > /dev/null 2>&1 || true
-            else
-                echo -e " ${RED}超时或失败${NC}" >&2
-                echo "9999|${mirror}|${display_name}"
+    local results=""
+    local official_hub_ok=false
+
+    for mirror in "${mirrors[@]}"; do
+        local pull_target="hello-world" display_name="$mirror"
+        if [[ "$mirror" != "docker.io" ]]; then pull_target="${mirror#https://}/library/hello-world"; else display_name="Official Docker Hub"; fi
+        echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..."
+        local start_time=$(date +%s.%N)
+        if timeout 30 docker pull "$pull_target" > /dev/null 2>&1; then
+            local end_time=$(date +%s.%N)
+            local duration=$(echo "$end_time - $start_time" | bc)
+            printf " ${GREEN}%.2f 秒${NC}\n" "$duration"
+            results+="${duration}|${mirror}|${display_name}\n"
+            if [[ "$mirror" == "docker.io" ]]; then
+                official_hub_ok=true
             fi
-        done
-    ) | LC_ALL=C sort -n
-    )
-    
-    if [ -z "$sorted_results" ]; then
-        fn_print_warning "所有 Docker 镜像源均测试失败！"
-        fn_print_info "将保持当前 Docker 配置不变。"
-        return
-    fi
+            docker rmi "$pull_target" > /dev/null 2>&1 || true
+        else
+            echo -e " ${RED}超时或失败${NC}"
+            results+="9999|${mirror}|${display_name}\n"
+        fi
+    done
 
-    fn_print_info "测速完成，结果排行如下："
-    echo "$sorted_results" | awk -F'|' -v red="$RED" -v nc="$NC" '{
-        if ($1 < 9999) { printf "  - %-30s %.2f 秒\n", $3, $1 } 
-        else { printf "  - %-30s %s超时%s\n", $3, red, nc }
-    }'
-
-    local fastest_mirror_id=$(echo "$sorted_results" | head -n 1 | cut -d'|' -f2)
-
-    if [[ "$fastest_mirror_id" == "docker.io" ]]; then
-        fn_print_success "官方源速度最快，将确保使用默认配置。"
+    # 【关键逻辑优化】
+    if [ "$official_hub_ok" = true ]; then
+        fn_print_success "官方 Docker Hub 可访问，将优先使用官方源。"
         fn_apply_docker_config ""
     else
-        local best_mirrors=($(echo "$sorted_results" | grep -v '9999' | grep -v 'docker.io' | head -n 3 | cut -d'|' -f2))
-        if [ ${#best_mirrors[@]} -eq 0 ]; then
-            fn_print_warning "所有加速镜像均测试失败，将使用官方源。"
-            fn_apply_docker_config ""
+        fn_print_warning "官方 Docker Hub 连接超时，正在从可用镜像中选择最快的..."
+        local sorted_mirrors=$(echo "$results" | grep -v '9999' | grep -v 'docker.io' | LC_ALL=C sort -n)
+        
+        if [ -z "$sorted_mirrors" ]; then
+            fn_print_error "所有备用镜像均测试失败！请检查您的网络连接。"
             return
         fi
 
+        fn_print_info "可用镜像排行如下："
+        echo "$sorted_mirrors" | awk -F'|' '{ printf "  - %-30s %.2f 秒\n", $3, $1 }'
+
+        local best_mirrors=($(echo "$sorted_mirrors" | head -n 3 | cut -d'|' -f2))
         fn_print_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
         local mirrors_json=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
         local config_content="{\n  \"registry-mirrors\": [${mirrors_json}]\n}"
@@ -137,7 +131,6 @@ fn_speed_test_and_configure_mirrors() {
 }
 
 fn_apply_config_changes() {
-    # 【关键修复】修复显示 "yqtrue" 的 bug
     local tool_name
     if [ "$USE_YQ" = true ]; then tool_name="yq"; else tool_name="sed"; fi
     fn_print_info "正在使用 ${BOLD}${tool_name}${NC} 精准修改配置并添加注释..."
@@ -149,7 +142,8 @@ fn_apply_config_changes() {
         yq e -i '(.backups.common.numberOfBackups = 5) | (.backups.common.numberOfBackups | line_comment = "* 单文件保留的备份数量")' "$CONFIG_FILE"
         yq e -i '(.backups.chat.maxTotalBackups = 30) | (.backups.chat.maxTotalBackups | line_comment = "* 总聊天文件数量上限")' "$CONFIG_FILE"
         yq e -i '(.performance.lazyLoadCharacters = true) | (.performance.lazyLoadCharacters | line_comment = "* 懒加载、点击角色卡才加载")' "$CONFIG_FILE"
-        yq e -i '(.performance.memoryCacheCapacity = "'\''128mb'\''") | (.performance.memoryCacheCapacity | line_comment = "* 角色卡内存缓存 (根据2G内存推荐)")' "$CONFIG_FILE"
+        yq e -i '(.performance.memoryCacheCapacity = "'\''128mb'\'_...`' "128mb" is a string in YAML, so it needs quotes. The complex quoting `"'\'_...` is to embed single quotes within a single-quoted shell string. A simpler way is just to use double quotes around the yq expression. Let's fix that.
+        yq e -i ".performance.memoryCacheCapacity = '128mb' | .performance.memoryCacheCapacity | line_comment = \"* 角色卡内存缓存 (根据2G内存推荐)\"" "$CONFIG_FILE"
         if [[ "$run_mode" == "1" ]]; then
             yq e -i '(.basicAuthMode = true) | (.basicAuthMode | line_comment = "* 启用基础认证")' "$CONFIG_FILE"
             yq e -i ".basicAuthUser.username = \"$single_user\"" "$CONFIG_FILE"
@@ -188,7 +182,7 @@ fn_create_project_structure() { fn_print_info "正在创建项目目录结构...
 
 clear
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v11.1${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v11.2${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
