@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 4.6 (最终稳定版)
+# 版本: 4.8 (最终稳定版)
 # 作者: Qingjue
 # 功能: 自动化部署 SillyTavern Docker 版，提供极致的自动化、健壮性和用户体验。
 
@@ -43,29 +43,76 @@ fn_get_public_ip() {
     echo "$ip"
 }
 
+fn_check_china() {
+    fn_print_info "正在检测服务器地理位置..."
+    local country_code
+    country_code=$(curl -s --max-time 5 https://ipinfo.io/country)
+
+    if [[ "$country_code" == "CN" ]]; then
+        fn_print_success "检测到服务器位于中国大陆。"
+        return 0 # Bash convention for success/true
+    else
+        fn_print_success "检测到服务器位于海外。"
+        return 1 # Bash convention for failure/false
+    fi
+}
+
+fn_configure_docker_mirror() {
+    if fn_check_china; then
+        # 中国大陆服务器逻辑
+        read -p "检测到您可能在中国大陆服务器，是否需要配置 Docker 加速镜像？(Y/n): " use_mirror < /dev/tty
+        use_mirror=${use_mirror:-Y}
+        if [[ "$use_mirror" =~ ^[yY]$ ]]; then
+            fn_print_info "正在为您配置国内 Docker 加速镜像..."
+            MIRROR_LIST='
+"https://docker.m.daocloud.io",
+"https://docker.1ms.run",
+"https://hub1.nat.tf",
+"https://docker.1panel.live",
+"https://dockerproxy.1panel.live",
+"https://hub.rat.dev",
+"https://docker.amingg.com"
+'
+            DAEMON_JSON_CONTENT="{\n  \"registry-mirrors\": [\n    $(echo "$MIRROR_LIST" | sed '$d')\n  ]\n}"
+            tee /etc/docker/daemon.json <<< "$DAEMON_JSON_CONTENT" > /dev/null
+            fn_print_info "配置文件 /etc/docker/daemon.json 已更新。"
+            if ! systemctl restart docker; then
+                fn_print_warning "Docker 服务重启失败！可能是因为海外服务器无法访问国内镜像。"
+                fn_print_info "正在尝试移除配置文件并再次重启..."
+                rm -f /etc/docker/daemon.json
+                systemctl restart docker || fn_print_error "移除配置文件后 Docker 仍然启动失败！请手动排查。"
+                fn_print_success "已自动移除镜像配置，Docker 服务恢复正常。"
+            else
+                fn_print_success "Docker 服务已重启，加速配置生效！"
+            fi
+        fi
+    else
+        # 海外服务器逻辑
+        if [ -f "/etc/docker/daemon.json" ]; then
+            read -p "检测到您在海外服务器，但存在 Docker 镜像配置，是否需要清除它以优化速度？(Y/n): " clear_mirror < /dev/tty
+            clear_mirror=${clear_mirror:-Y}
+            if [[ "$clear_mirror" =~ ^[yY]$ ]]; then
+                fn_print_info "正在清除旧的 Docker 镜像配置..."
+                rm -f /etc/docker/daemon.json
+                systemctl restart docker || fn_print_warning "Docker 重启失败，可能无需操作。"
+                fn_print_success "Docker 镜像配置已清除。"
+            fi
+        fi
+    fi
+}
+
 fn_confirm_and_delete_dir() {
     local dir_to_delete="$1"
-
     fn_print_warning "目录 '$dir_to_delete' 已存在，其中可能包含您之前的聊天记录和角色卡。"
-
     echo -ne "您确定要删除此目录并继续安装吗？(${GREEN}y${NC}/${RED}n${NC}): "
     read -r confirm1 < /dev/tty
-    if [[ "$confirm1" != "y" ]]; then
-        fn_print_error "操作被用户取消。"
-    fi
-
+    if [[ "$confirm1" != "y" ]]; then fn_print_error "操作被用户取消。"; fi
     echo -ne "${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 (${GREEN}y${NC}/${RED}n${NC}): ${NC}"
     read -r confirm2 < /dev/tty
-    if [[ "$confirm2" != "y" ]]; then
-        fn_print_error "操作被用户取消。"
-    fi
-
+    if [[ "$confirm2" != "y" ]]; then fn_print_error "操作被用户取消。"; fi
     echo -ne "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}"
     read -r confirm3 < /dev/tty
-    if [[ "$confirm3" != "yes" ]]; then
-        fn_print_error "操作被用户取消。"
-    fi
-
+    if [[ "$confirm3" != "yes" ]]; then fn_print_error "操作被用户取消。"; fi
     fn_print_info "正在删除旧目录: $dir_to_delete..."
     rm -rf "$dir_to_delete"
     fn_print_success "旧目录已删除。"
@@ -121,36 +168,8 @@ else
 fi
 fn_print_success "核心依赖检查通过！"
 
-# 1.3 (可选) Docker 镜像加速
-fn_print_warning "接下来的选项仅适用于【中国大陆】服务器，海外服务器请直接按回车跳过！"
-read -p "您是否在中国大陆服务器上运行，需要配置 Docker 加速镜像？(y/N): " use_mirror < /dev/tty
-if [[ "$use_mirror" =~ ^[yY]$ ]]; then
-    fn_print_info "正在为您配置国内 Docker 加速镜像..."
-    
-    MIRROR_LIST='
-"https://docker.m.daocloud.io",
-"https://docker.1ms.run",
-"https://hub1.nat.tf",
-"https://docker.1panel.live",
-"https://dockerproxy.1panel.live",
-"https://hub.rat.dev",
-"https://docker.amingg.com"
-'
-    DAEMON_JSON_CONTENT="{\n  \"registry-mirrors\": [\n    $(echo "$MIRROR_LIST" | sed '$d')\n  ]\n}"
-
-    tee /etc/docker/daemon.json <<< "$DAEMON_JSON_CONTENT" > /dev/null
-    fn_print_info "配置文件 /etc/docker/daemon.json 已更新。"
-    
-    if ! systemctl restart docker; then
-        fn_print_warning "Docker 服务重启失败！可能是因为海外服务器无法访问国内镜像。"
-        fn_print_info "正在尝试移除配置文件并再次重启..."
-        rm -f /etc/docker/daemon.json
-        systemctl restart docker || fn_print_error "移除配置文件后 Docker 仍然启动失败！请手动排查。"
-        fn_print_success "已自动移除镜像配置，Docker 服务恢复正常。"
-    else
-        fn_print_success "Docker 服务已重启，加速配置生效！"
-    fi
-fi
+# 1.3 智能 Docker 镜像配置
+fn_configure_docker_mirror
 
 # --- 阶段二：交互式配置 ---
 
@@ -183,7 +202,6 @@ fi
 
 mkdir -p "$INSTALL_DIR"
 chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
-# 【关键修复】赋予目录通用写入权限，以解决容器内外用户UID不匹配问题
 chmod 777 "$INSTALL_DIR"
 fn_print_success "项目目录创建并授权成功！"
 
@@ -231,7 +249,6 @@ fn_print_success "最新的 config.yaml 文件已生成！"
 
 fn_print_info "正在使用 sed 精准修改配置..."
 
-# 使用能保留缩进的 sed 命令进行修改和注释
 sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # * 允许外部访问/" "$CONFIG_FILE"
 sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false # * 关闭IP白名单模式/" "$CONFIG_FILE"
 sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400 # * 24小时退出登录/" "$CONFIG_FILE"
@@ -241,13 +258,11 @@ sed -i -E "s/^([[:space:]]*)lazyLoadCharacters: .*/\1lazyLoadCharacters: true # 
 sed -i -E "s/^([[:space:]]*)memoryCacheCapacity: .*/\1memoryCacheCapacity: '128mb' # * 角色卡内存缓存 (根据2G内存推荐)/" "$CONFIG_FILE"
 
 if [[ "$run_mode" == "1" ]]; then
-    # 单用户模式配置
     sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # * 启用基础认证 (单用户模式下保持开启)/" "$CONFIG_FILE"
     sed -i -E "s/^([[:space:]]*)username: .*/\1username: \"$single_user\" # TODO 请修改为自己的用户名/" "$CONFIG_FILE"
     sed -i -E "s/^([[:space:]]*)password: .*/\1password: \"$single_pass\" # TODO 请修改为自己的密码/" "$CONFIG_FILE"
     fn_print_success "单用户模式配置写入完成！"
 else
-    # 多用户模式第一阶段
     sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # TODO 基础认证模式 初始化结束改回 false/" "$CONFIG_FILE"
     sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # * 多用户模式/" "$CONFIG_FILE"
     
@@ -288,8 +303,6 @@ EOF
     echo -e "${MULTI_USER_GUIDE}"
     read -p "" < /dev/tty
 
-    # 多用户模式第二阶段
-    fn_print_info "正在应用最终配置..."
     sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false # TODO 基础认证模式 初始化结束改回 false/" "$CONFIG_FILE"
     sed -i -E "s/^([[:space:]]*)enableDiscreetLogin: .*/\1enableDiscreetLogin: true # * 隐藏登录用户列表/" "$CONFIG_FILE"
     fn_print_success "多用户模式配置写入完成！"
