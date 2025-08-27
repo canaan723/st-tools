@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 2.3 (最终稳定版)
+# 版本: 2.4 (最终稳定版)
 # 功能: 自动化部署 SillyTavern Docker 版，提供极致的自动化、健壮性和用户体验。
 
 # --- 初始化与环境设置 ---
@@ -247,9 +247,7 @@ fn_print_info "正在修正文件权限..."
 chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
 fn_print_success "文件权限已设置为 '$TARGET_USER' 用户。"
 
-fn_print_info "正在根据您的选择修改配置文件..."
-
-# yq 修改函数，支持添加注释
+# yq 修改函数（带注释）
 fn_yq_mod() {
     local key="$1"
     local value="$2"
@@ -262,12 +260,25 @@ fn_yq_mod() {
     fi
 }
 
+# yq 修改函数（不带注释）
+fn_yq_mod_no_comment() {
+    local key="$1"
+    local value="$2"
+    
+    if [[ "$value" == "true" || "$value" == "false" || "$value" =~ ^[0-9]+$ ]]; then
+        yq e ".${key} = ${value}" -i "$CONFIG_FILE"
+    else
+        yq e ".${key} = \"${value}\"" -i "$CONFIG_FILE"
+    fi
+}
+
 # --- 阶段五：应用配置并最终启动 ---
 
 fn_print_step "[ 5 / 5 ] 应用配置并最终启动"
 
 if [[ "$run_mode" == "1" ]]; then
-    # 单用户模式配置
+    # 单用户模式：一次性完成所有配置和注释
+    fn_print_info "正在写入单用户模式配置..."
     fn_yq_mod 'listen' 'true' '* 允许外部访问'
     fn_yq_mod 'whitelistMode' 'false' '* 关闭IP白名单模式'
     fn_yq_mod 'basicAuthMode' 'true' '* 启用基础认证 (单用户模式下保持开启)'
@@ -280,19 +291,20 @@ if [[ "$run_mode" == "1" ]]; then
     fn_yq_mod 'memoryCacheCapacity' "'128mb'" '* 角色卡内存缓存 (根据2G内存推荐)'
     fn_print_success "单用户模式配置写入完成！"
 else
-    # 多用户模式第一阶段配置
-    fn_yq_mod 'listen' 'true' '* 允许外部访问'
-    fn_yq_mod 'whitelistMode' 'false' '* 关闭IP白名单模式'
-    fn_yq_mod 'basicAuthMode' 'true' 'TODO 基础认证模式 初始化结束改回 false'
-    fn_yq_mod 'enableUserAccounts' 'true' '* 多用户模式'
+    # 多用户模式第一阶段：写入无注释的临时配置
+    fn_print_info "正在写入多用户模式临时配置..."
+    fn_yq_mod_no_comment 'listen' 'true'
+    fn_yq_mod_no_comment 'whitelistMode' 'false'
+    fn_yq_mod_no_comment 'basicAuthMode' 'true'
+    fn_yq_mod_no_comment 'enableUserAccounts' 'true'
     
     fn_print_info "正在临时启动服务以设置管理员..."
     $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
     
     SERVER_IP=$(fn_get_public_ip)
     
-    # 使用变量和 echo -e 来确保颜色代码被正确渲染
-    MULTI_USER_GUIDE=$(cat <<'EOF'
+    # 定义引导文本模板
+    read -r -d '' MULTI_USER_GUIDE_TPL <<'EOF'
 
 ${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}
 
@@ -320,13 +332,16 @@ SillyTavern 已临时启动，请完成管理员的初始设置：
 
 ${YELLOW}>>> 完成以上所有步骤后，请回到本窗口，然后按下【回车键】继续 <<<${NC}
 EOF
-)
-    echo -e "${MULTI_USER_GUIDE}"
+    # 使用 eval 和 echo -e 来确保颜色代码被正确渲染
+    eval "echo -e \"${MULTI_USER_GUIDE_TPL}\""
     read -p "" < /dev/tty
 
-    # 多用户模式第二阶段配置
+    # 多用户模式第二阶段：一次性写入所有最终配置和注释
     fn_print_info "正在应用最终配置..."
+    fn_yq_mod 'listen' 'true' '* 允许外部访问'
+    fn_yq_mod 'whitelistMode' 'false' '* 关闭IP白名单模式'
     fn_yq_mod 'basicAuthMode' 'false' 'TODO 基础认证模式 初始化结束改回 false'
+    fn_yq_mod 'enableUserAccounts' 'true' '* 多用户模式'
     fn_yq_mod 'enableDiscreetLogin' 'true' '* 隐藏登录用户列表'
     fn_yq_mod 'sessionTimeout' '86400' '* 24小时退出登录'
     fn_yq_mod 'numberOfBackups' '5' '* 单文件保留的备份数量'
