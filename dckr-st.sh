@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 2.4 (最终稳定版)
+# 版本: 2.5 (最终稳定版)
 # 功能: 自动化部署 SillyTavern Docker 版，提供极致的自动化、健壮性和用户体验。
 
 # --- 初始化与环境设置 ---
@@ -303,8 +303,8 @@ else
     
     SERVER_IP=$(fn_get_public_ip)
     
-    # 定义引导文本模板
-    read -r -d '' MULTI_USER_GUIDE_TPL <<'EOF'
+    # 使用 command substitution 和 cat <<EOF 来安全地创建带变量的多行字符串
+    MULTI_USER_GUIDE=$(cat <<EOF
 
 ${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}
 
@@ -332,8 +332,8 @@ SillyTavern 已临时启动，请完成管理员的初始设置：
 
 ${YELLOW}>>> 完成以上所有步骤后，请回到本窗口，然后按下【回车键】继续 <<<${NC}
 EOF
-    # 使用 eval 和 echo -e 来确保颜色代码被正确渲染
-    eval "echo -e \"${MULTI_USER_GUIDE_TPL}\""
+)
+    echo -e "${MULTI_USER_GUIDE}"
     read -p "" < /dev/tty
 
     # 多用户模式第二阶段：一次性写入所有最终配置和注释
