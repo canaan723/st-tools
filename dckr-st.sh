@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 9.0 (健壮修复版)
-# 作者: Qingjue (由 AI 助手基于 v8.0 优化)
-# 更新日志 (v9.0):
-# - [修复] 修正了当官方源最快时，仍错误配置镜像的严重逻辑 Bug。
-# - [修复] 确保 "docker.io" 标识符永远不会被写入 daemon.json，避免 Docker 崩溃。
-# - [健壮] 新增 Docker 配置安全应用与自动回滚机制，重启失败时会尝试移除配置并重试。
-# - [修复] 修正了测速结果中可能出现空白 "0.00 秒" 条目的显示问题。
+# 版本: 10.0 (稳定修复版)
+# 作者: Qingjue (由 AI 助手基于 v9.0 优化)
+# 更新日志 (v10.0):
+# - [修复] 修正了因 `printf` 处理多行变量不当导致的测速数据流污染问题。
+# - [修复] 解决了测速结果显示错乱和决策逻辑错误的连锁 Bug。
+# - [修复] 修正了 `awk` 脚本以正确显示带颜色的“超时”信息。
+# - [健壮] 增加了对 `bc` 命令的依赖检查。
+# - [健壮] 增加了所有镜像测速均失败时的 fallback 处理逻辑。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -36,6 +37,7 @@ fn_print_info() { echo -e "  $1"; }
 fn_check_dependencies() {
     fn_print_info "正在检查核心依赖..."
     if ! command -v docker &> /dev/null; then fn_print_error "未检测到 Docker。"; fi
+    if ! command -v bc &> /dev/null; then fn_print_error "需要 'bc' 命令来进行测速计算，请先安装它 (例如: sudo apt install bc)。"; fi
     if command -v docker-compose &> /dev/null; then DOCKER_COMPOSE_CMD="docker-compose"; elif docker compose version &> /dev/null; then DOCKER_COMPOSE_CMD="docker compose"; else fn_print_error "未检测到 Docker Compose。"; fi
     if command -v yq &> /dev/null; then USE_YQ=true; fn_print_success "检测到 yq，将使用 yq 修改配置 (更稳定)。"; else fn_print_warning "未检测到 yq。将使用 sed 修改配置，在 SillyTavern 更新后可能失效。"; fi
     if command -v jq &> /dev/null; then USE_JQ=true; fi
@@ -50,19 +52,14 @@ fn_update_yaml() {
 
 fn_apply_docker_config() {
     local config_content="$1"
-    
     if [[ -z "$config_content" ]]; then
         fn_print_info "正在清除 Docker 镜像配置..."
-        if [ ! -f "/etc/docker/daemon.json" ]; then
-            fn_print_success "无需操作，配置已是默认。"
-            return
-        fi
+        if [ ! -f "/etc/docker/daemon.json" ]; then fn_print_success "无需操作，配置已是默认。"; return; fi
         rm -f /etc/docker/daemon.json
     else
         fn_print_info "正在写入新的 Docker 镜像配置..."
-        echo "$config_content" > /etc/docker/daemon.json
+        echo -e "$config_content" > /etc/docker/daemon.json
     fi
-    
     fn_print_info "正在重启 Docker 服务以应用配置..."
     if systemctl restart docker; then
         fn_print_success "Docker 服务已重启，新配置生效！"
@@ -80,7 +77,6 @@ fn_apply_docker_config() {
 
 fn_speed_test_and_configure_mirrors() {
     fn_print_info "正在智能检测并配置最佳 Docker 镜像..."
-    
     local mirrors=("docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live" "https://dockerproxy.1panel.live" "https://hub.rat.dev")
     local results=""
     docker rmi hello-world > /dev/null 2>&1 || true
@@ -102,11 +98,19 @@ fn_speed_test_and_configure_mirrors() {
         fi
     done
 
-    local sorted_results=$(printf "%s" "$results" | sort -n)
+    # 使用 echo "$results" 来正确处理多行变量
+    local sorted_results=$(echo "$results" | sed '/^$/d' | sort -n)
+    
+    if [ -z "$sorted_results" ]; then
+        fn_print_warning "所有 Docker 镜像源均测试失败！"
+        fn_print_info "将保持当前 Docker 配置不变。"
+        return
+    fi
+
     fn_print_info "测速完成，结果排行如下："
-    echo "$sorted_results" | awk -F'|' '{
+    echo "$sorted_results" | awk -F'|' -v red="$RED" -v nc="$NC" '{
         if ($1 < 9999) { printf "  - %-30s %.2f 秒\n", $3, $1 } 
-        else { printf "  - %-30s ${RED}超时${NC}\n", $3 }
+        else { printf "  - %-30s %s超时%s\n", $3, red, nc }
     }'
 
     local fastest_mirror_id=$(echo "$sorted_results" | head -n 1 | cut -d'|' -f2)
@@ -115,7 +119,7 @@ fn_speed_test_and_configure_mirrors() {
         fn_print_success "官方源速度最快，将确保使用默认配置。"
         fn_apply_docker_config ""
     else
-        local best_mirrors=($(printf "%s" "$sorted_results" | grep -v '9999' | grep -v 'docker.io' | head -n 3 | cut -d'|' -f2))
+        local best_mirrors=($(echo "$sorted_results" | grep -v '9999' | grep -v 'docker.io' | head -n 3 | cut -d'|' -f2))
         if [ ${#best_mirrors[@]} -eq 0 ]; then
             fn_print_warning "所有加速镜像均测试失败，将使用官方源。"
             fn_apply_docker_config ""
@@ -141,7 +145,7 @@ fn_apply_config_changes() { fn_print_info "正在使用 ${BOLD}${USE_YQ:+yq}${US
 
 clear
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║      ${BOLD}SillyTavern 助手 v9.0${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║      ${BOLD}SillyTavern 助手 v10.0${NC}     ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
@@ -204,21 +208,4 @@ SillyTavern 已临时启动，请完成管理员的初始设置：
       ② 自定义您的日常使用账号和密码（建议账号用纯英文）。
       ③ 创建后，点击新账户旁的【↑】箭头，将其提升为 Admin (管理员)。
 4. ${CYAN}【需要帮助？】${NC}
-   可访问图文教程： ${GREEN}https://stdocs.723123.xyz${NC} (按住 Ctrl 并单击鼠标左键打开)
-${YELLOW}>>> 完成以上所有步骤后，请回到本窗口，然后按下【回车键】继续 <<<${NC}
-EOF
-); echo -e "${MULTI_USER_GUIDE}"; read -p "" < /dev/tty
-    fn_print_info "正在切换到多用户登录页模式..."; fn_update_yaml '.basicAuthMode' 'false' '* 关闭基础认证，启用登录页'; fn_update_yaml '.enableDiscreetLogin' 'true' '* 隐藏登录用户列表'; fn_print_success "多用户模式配置写入完成！"
-fi
-
-# --- 阶段五：最终启动 ---
-fn_print_step "[ 5 / 5 ] 最终启动"
-fn_print_info "正在应用最终配置并重启服务..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate > /dev/null
-SERVER_IP=$(fn_get_public_ip)
-echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗"
-echo -e "║                      部署成功！尽情享受吧！                      ║"
-echo -e "╚════════════════════════════════════════════════════════════╝${NC}"
-echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC} (按住 Ctrl 并单击)"
-if [[ "$run_mode" == "1" ]]; then echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"; echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"; elif [[ "$run_mode" == "2" ]]; then echo -e "  ${YELLOW}首次登录:${NC} 为确保看到新的登录页，请访问 ${GREEN}http://${SERVER_IP}:8000/login${NC} (按住 Ctrl 并单击)"; fi
-echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
-echo -e "\n"
+   可访问图文教程： ${GREEN}https://stdocs.723
