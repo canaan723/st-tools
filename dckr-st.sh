@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 5.4 (最终稳定版)
+# 版本: 5.5 (最终稳定版)
 # 作者: Qingjue
 # 功能: 自动化部署 SillyTavern Docker 版，提供极致的自动化、健壮性和用户体验。
 
@@ -57,7 +57,6 @@ fn_handle_mirror_config() {
         tee /etc/docker/daemon.json > /dev/null <<EOF
 {
   "registry-mirrors": [
-    "https://docker.m.daocloud.io",
     "https://docker.1ms.run",
     "https://hub1.nat.tf",
     "https://docker.1panel.live",
@@ -88,6 +87,20 @@ fn_configure_docker_mirror() {
     
     echo -e "  ${YELLOW}检测结果: ${location_display}${NC}"
 
+    # 【关键修复】如果位置未知，先让用户手动确认
+    if [[ "$country_code" == "UNKNOWN" ]]; then
+        echo "无法自动判断，请手动选择您的服务器位置："
+        echo -e "  [1] 我在中国大陆"
+        echo -e "  [2] 我在海外"
+        read -p "请输入选项数字: " manual_choice < /dev/tty
+        if [[ "$manual_choice" == "1" ]]; then
+            country_code="CN"
+        else
+            country_code="OVERSEAS" # 使用一个非CN的占位符
+        fi
+    fi
+
+    # 【关键修复】统一的、带完整选项的菜单逻辑
     if [[ "$country_code" == "CN" ]]; then
         echo "请选择操作："
         echo -e "  [1] ${GREEN}配置国内加速镜像 (推荐)${NC}"
@@ -101,7 +114,7 @@ fn_configure_docker_mirror() {
             3) fn_handle_mirror_config "overseas" ;;
             *) fn_print_warning "无效输入，已跳过。" ;;
         esac
-    elif [[ "$country_code" != "UNKNOWN" ]]; then
+    else # 海外或手动选择的海外
         echo "请选择操作："
         echo -e "  [1] 清除可能存在的国内镜像配置"
         echo -e "  [2] ${GREEN}跳过 (推荐)${NC}"
@@ -112,16 +125,6 @@ fn_configure_docker_mirror() {
             1) fn_handle_mirror_config "overseas" ;;
             2) fn_print_info "已跳过镜像配置。" ;;
             3) fn_handle_mirror_config "mainland" ;;
-            *) fn_print_warning "无效输入，已跳过。" ;;
-        esac
-    else # UNKNOWN
-        echo "无法自动判断，请手动选择您的服务器位置："
-        echo -e "  [1] 我在中国大陆"
-        echo -e "  [2] 我在海外"
-        read -p "请输入选项数字: " choice < /dev/tty
-        case "$choice" in
-            1) fn_handle_mirror_config "mainland" ;;
-            2) fn_handle_mirror_config "overseas" ;;
             *) fn_print_warning "无效输入，已跳过。" ;;
         esac
     fi
@@ -188,12 +191,10 @@ elif [[ "$run_mode" != "2" ]]; then fn_print_error "无效输入，脚本已终�
 # --- 阶段三：自动化部署 ---
 fn_print_step "[ 3 / 5 ] 创建项目文件"
 if [ -d "$INSTALL_DIR" ]; then fn_confirm_and_delete_dir "$INSTALL_DIR"; fi
-# 【关键修复】预先创建所有 Docker 将要挂载的子目录
 fn_print_info "正在创建项目目录结构..."
 mkdir -p "$INSTALL_DIR/data"
 mkdir -p "$INSTALL_DIR/plugins"
 mkdir -p "$INSTALL_DIR/public/scripts/extensions/third-party"
-# 【关键修复】对所有目录和未来将要创建的文件赋予通用权限
 chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
 chmod -R 777 "$INSTALL_DIR"
 fn_print_success "项目目录创建并授权成功！"
