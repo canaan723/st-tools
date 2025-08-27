@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 2.0 (稳定版)
+# 版本: 2.1 (稳定修复版)
 # 功能: 自动化部署 SillyTavern Docker 版，提供极致的自动化、健壮性和用户体验。
 
 # --- 初始化与环境设置 ---
@@ -43,41 +43,30 @@ fn_get_public_ip() {
 
 fn_confirm_and_delete_dir() {
     local dir_to_delete="$1"
-    local confirmed=false
 
     fn_print_warning "目录 '$dir_to_delete' 已存在，其中可能包含您之前的聊天记录和角色卡。"
 
-    for i in {1..3}; do
-        local prompt_msg
-        if [ "$i" -eq 1 ]; then
-            prompt_msg="您确定要删除此目录并继续安装吗？(yes/no): "
-        elif [ "$i" -eq 2 ]; then
-            prompt_msg="${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 (yes/no): ${NC}"
-        else
-            prompt_msg="${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}"
-        fi
-
-        echo -ne "$prompt_msg"
-        read -r user_confirmation < /dev/tty
-
-        if [[ "$user_confirmation" == "yes" ]]; then
-            if [ "$i" -eq 3 ] || [ "$i" -lt 3 ]; then # 任何时候输入yes都直接确认
-                confirmed=true
-                break
-            fi
-        elif [[ "$user_confirmation" == "no" ]]; then
-            confirmed=false
-            break
-        fi
-    done
-
-    if [ "$confirmed" = true ]; then
-        fn_print_info "正在删除旧目录: $dir_to_delete..."
-        rm -rf "$dir_to_delete"
-        fn_print_success "旧目录已删除。"
-    else
+    echo -ne "您确定要删除此目录并继续安装吗？(y/n): "
+    read -r confirm1 < /dev/tty
+    if [[ "$confirm1" != "y" ]]; then
         fn_print_error "操作被用户取消。"
     fi
+
+    echo -ne "${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 (y/n): ${NC}"
+    read -r confirm2 < /dev/tty
+    if [[ "$confirm2" != "y" ]]; then
+        fn_print_error "操作被用户取消。"
+    fi
+
+    echo -ne "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}"
+    read -r confirm3 < /dev/tty
+    if [[ "$confirm3" != "yes" ]]; then
+        fn_print_error "操作被用户取消。"
+    fi
+
+    fn_print_info "正在删除旧目录: $dir_to_delete..."
+    rm -rf "$dir_to_delete"
+    fn_print_success "旧目录已删除。"
 }
 
 
@@ -167,7 +156,7 @@ if [[ "$use_mirror" =~ ^[yY]$ ]]; then
 "https://hub.rat.dev",
 "https://docker.amingg.com"
 '
-    DAEMON_JSON_CONTENT="{\n  \"registry-mirrors\": [\n    $(echo "$LIST" | sed '$d')\n  ]\n}"
+    DAEMON_JSON_CONTENT="{\n  \"registry-mirrors\": [\n    $(echo "$MIRROR_LIST" | sed '$d')\n  ]\n}"
 
     tee /etc/docker/daemon.json <<< "$DAEMON_JSON_CONTENT" > /dev/null
     fn_print_info "配置文件 /etc/docker/daemon.json 已更新。"
@@ -267,9 +256,9 @@ fn_yq_mod() {
     local comment="$3"
     
     if [[ "$value" == "true" || "$value" == "false" || "$value" =~ ^[0-9]+$ ]]; then
-        yq e "(${key} = ${value}) | line_comment(.) = \"${comment}\"" -i "$CONFIG_FILE"
+        yq e "(${key} = ${value}) | ${key} line_comment = \"${comment}\"" -i "$CONFIG_FILE"
     else
-        yq e "(${key} = \"${value}\") | line_comment(.) = \"${comment}\"" -i "$CONFIG_FILE"
+        yq e "(${key} = \"${value}\") | ${key} line_comment = \"${comment}\"" -i "$CONFIG_FILE"
     fi
 }
 
