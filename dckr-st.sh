@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 4.2 (最终稳定版)
+# 版本: 4.3 (最终稳定版)
 # 功能: 自动化部署 SillyTavern Docker 版，提供极致的自动化、健壮性和用户体验。
 
 # --- 初始化与环境设置 ---
@@ -76,8 +76,7 @@ fn_confirm_and_delete_dir() {
 
 clear
 echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗"
-echo -e "║            ${BOLD}Silly
-Tavern Docker 版保姆级部署脚本${NC}           ${CYAN}║"
+echo -e "║            ${BOLD}SillyTavern Docker 版保姆级部署脚本${NC}           ${CYAN}║"
 echo -e "╚════════════════════════════════════════════════════════════╝${NC}"
 echo -e "\n本脚本将引导您完成 SillyTavern 的自动化安装。"
 
@@ -134,7 +133,7 @@ if [[ "$use_mirror" =~ ^[yY]$ ]]; then
 "https://hub.rat.dev",
 "https://docker.amingg.com"
 '
-    DAEMON_JSON_CONTENT="{\n  \"registry-mirrors\": [\n    $(echo "$MIRROR_LIST" | sed '$d')\n  ]\n}"
+    DAEMON_JSON_CONTENT="{\n  \"registry-mirrors\": [\n    $(echo "$LIST" | sed '$d')\n  ]\n}"
 
     tee /etc/docker/daemon.json <<< "$DAEMON_JSON_CONTENT" > /dev/null
     fn_print_info "配置文件 /etc/docker/daemon.json 已更新。"
@@ -180,7 +179,6 @@ if [ -d "$INSTALL_DIR" ]; then
 fi
 
 mkdir -p "$INSTALL_DIR"
-# 【关键修复】在容器启动前，立即修正目录权限
 chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
 fn_print_success "项目目录创建并授权成功！"
 
@@ -228,26 +226,25 @@ fn_print_success "最新的 config.yaml 文件已生成！"
 
 fn_print_info "正在使用 sed 精准修改配置..."
 
-# 通用基础配置
-sed -i 's/^listen: .*/listen: true # * 允许外部访问/' "$CONFIG_FILE"
-sed -i 's/^whitelistMode: .*/whitelistMode: false # * 关闭IP白名单模式/' "$CONFIG_FILE"
-sed -i 's/^sessionTimeout: .*/sessionTimeout: 86400 # * 24小时退出登录/' "$CONFIG_FILE"
-sed -i 's/^numberOfBackups: .*/numberOfBackups: 5 # * 单文件保留的备份数量/' "$CONFIG_FILE"
-sed -i 's/^maxTotalBackups: .*/maxTotalBackups: 30 # * 总聊天文件数量上限/' "$CONFIG_FILE"
-sed -i 's/^lazyLoadCharacters: .*/lazyLoadCharacters: true # * 懒加载、点击角色卡才加载/' "$CONFIG_FILE"
-sed -i "s/^memoryCacheCapacity: .*/memoryCacheCapacity: '128mb' # * 角色卡内存缓存 (根据2G内存推荐)/" "$CONFIG_FILE"
+# 使用能保留缩进的 sed 命令进行修改和注释
+sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # * 允许外部访问/" "$CONFIG_FILE"
+sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false # * 关闭IP白名单模式/" "$CONFIG_FILE"
+sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400 # * 24小时退出登录/" "$CONFIG_FILE"
+sed -i -E "s/^([[:space:]]*)numberOfBackups: .*/\1numberOfBackups: 5 # * 单文件保留的备份数量/" "$CONFIG_FILE"
+sed -i -E "s/^([[:space:]]*)maxTotalBackups: .*/\1maxTotalBackups: 30 # * 总聊天文件数量上限/" "$CONFIG_FILE"
+sed -i -E "s/^([[:space:]]*)lazyLoadCharacters: .*/\1lazyLoadCharacters: true # * 懒加载、点击角色卡才加载/" "$CONFIG_FILE"
+sed -i -E "s/^([[:space:]]*)memoryCacheCapacity: .*/\1memoryCacheCapacity: '128mb' # * 角色卡内存缓存 (根据2G内存推荐)/" "$CONFIG_FILE"
 
 if [[ "$run_mode" == "1" ]]; then
     # 单用户模式配置
-    sed -i 's/^basicAuthMode: .*/basicAuthMode: true # * 启用基础认证 (单用户模式下保持开启)/' "$CONFIG_FILE"
-    # 精准替换并确保值被双引号包裹
-    sed -i "s/^  username: .*/  username: \"$single_user\" # TODO 请修改为自己的用户名/" "$CONFIG_FILE"
-    sed -i "s/^  password: .*/  password: \"$single_pass\" # TODO 请修改为自己的密码/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # * 启用基础认证 (单用户模式下保持开启)/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)username: .*/\1username: \"$single_user\" # TODO 请修改为自己的用户名/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)password: .*/\1password: \"$single_pass\" # TODO 请修改为自己的密码/" "$CONFIG_FILE"
     fn_print_success "单用户模式配置写入完成！"
 else
     # 多用户模式第一阶段
-    sed -i 's/^basicAuthMode: .*/basicAuthMode: true # TODO 基础认证模式 初始化结束改回 false/' "$CONFIG_FILE"
-    sed -i 's/^enableUserAccounts: .*/enableUserAccounts: true # * 多用户模式/' "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # TODO 基础认证模式 初始化结束改回 false/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # * 多用户模式/" "$CONFIG_FILE"
     
     fn_print_info "正在临时启动服务以设置管理员..."
     $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
@@ -288,8 +285,8 @@ EOF
 
     # 多用户模式第二阶段
     fn_print_info "正在应用最终配置..."
-    sed -i 's/^basicAuthMode: .*/basicAuthMode: false # TODO 基础认证模式 初始化结束改回 false/' "$CONFIG_FILE"
-    sed -i 's/^enableDiscreetLogin: .*/enableDiscreetLogin: true # * 隐藏登录用户列表/' "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false # TODO 基础认证模式 初始化结束改回 false/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)enableDiscreetLogin: .*/\1enableDiscreetLogin: true # * 隐藏登录用户列表/" "$CONFIG_FILE"
     fn_print_success "多用户模式配置写入完成！"
 fi
 
