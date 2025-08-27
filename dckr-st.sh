@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 4.5 (最终稳定版)
+# 版本: 4.6 (最终稳定版)
 # 作者: Qingjue
 # 功能: 自动化部署 SillyTavern Docker 版，提供极致的自动化、健壮性和用户体验。
 
@@ -183,6 +183,8 @@ fi
 
 mkdir -p "$INSTALL_DIR"
 chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
+# 【关键修复】赋予目录通用写入权限，以解决容器内外用户UID不匹配问题
+chmod 777 "$INSTALL_DIR"
 fn_print_success "项目目录创建并授权成功！"
 
 cat <<EOF > "$COMPOSE_FILE"
