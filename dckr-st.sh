@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 10.0 (稳定修复版)
-# 作者: Qingjue (由 AI 助手基于 v9.0 优化)
-# 更新日志 (v10.0):
-# - [修复] 修正了因 `printf` 处理多行变量不当导致的测速数据流污染问题。
-# - [修复] 解决了测速结果显示错乱和决策逻辑错误的连锁 Bug。
-# - [修复] 修正了 `awk` 脚本以正确显示带颜色的“超时”信息。
-# - [健壮] 增加了对 `bc` 命令的依赖检查。
-# - [健壮] 增加了所有镜像测速均失败时的 fallback 处理逻辑。
+# 版本: 10.1 (区域设置修复版)
+# 作者: Qingjue (由 AI 助手基于 v10.0 优化)
+# 更新日志 (v10.1):
+# - [修复] 解决了 `sort -n` 在特定系统区域设置下因小数点识别问题导致的排序失效 Bug。
+# - [健壮] 通过强制 `LC_ALL=C`，确保数值排序在任何系统环境下都能正确执行。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -98,8 +95,8 @@ fn_speed_test_and_configure_mirrors() {
         fi
     done
 
-    # 使用 echo "$results" 来正确处理多行变量
-    local sorted_results=$(echo "$results" | sed '/^$/d' | sort -n)
+    # 【关键修复】使用 LC_ALL=C sort -n 来确保数值排序的正确性
+    local sorted_results=$(echo "$results" | sed '/^$/d' | LC_ALL=C sort -n)
     
     if [ -z "$sorted_results" ]; then
         fn_print_warning "所有 Docker 镜像源均测试失败！"
@@ -145,7 +142,7 @@ fn_apply_config_changes() { fn_print_info "正在使用 ${BOLD}${USE_YQ:+yq}${US
 
 clear
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║      ${BOLD}SillyTavern 助手 v10.0${NC}     ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v10.1${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
