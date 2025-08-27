@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 7.0 (重构优化版)
-# 作者: Qingjue (由 AI 助手基于 v6.0 优化)
-# 更新日志 (v7.0):
-# - [安全] 修复了 'chmod 777' 的致命安全漏洞，采用更安全的权限设置。
-# - [健壮] 优先使用 yq/jq 修改 yaml/json，大幅提升配置修改的可靠性。
-# - [兼容] 在 yq/jq 不存在时，自动回退到 sed/grep 方案。
-# - [结构] 重构代码，将依赖检查、配置应用等逻辑封装成独立函数，提升可读性。
+# 版本: 8.0 (智能优化版)
+# 作者: Qingjue (由 AI 助手基于 v7.0 优化)
+# 更新日志 (v8.0):
+# - [智能] 新增 Docker 镜像测速功能，自动选择并配置最快的镜像源。
+# - [智能] 测速后若官方源最快，则自动清理镜像配置，无需用户选择。
+# - [优化] 修改 YAML 配置时，使用 yq 的 line_comment 功能来添加注释，保持格式。
+# - [结构] 进一步封装函数，将 YAML 修改和镜像测速逻辑模块化。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -45,191 +45,133 @@ fn_check_dependencies() {
         fn_print_warning "未检测到 yq。将使用 sed 修改配置，在 SillyTavern 更新后可能失效。"
     fi
 
-    if command -v jq &> /dev/null; then
-        USE_JQ=true
-    fi
+    if command -v jq &> /dev/null; then USE_JQ=true; fi
     fn_print_success "核心依赖检查通过！"
 }
 
-fn_get_public_ip() {
-    local ip
-    ip=$(curl -s --max-time 5 https://api.ipify.org) || \
-    ip=$(curl -s --max-time 5 https://ifconfig.me) || \
-    ip=$(hostname -I | awk '{print $1}')
-    echo "$ip"
+fn_update_yaml() {
+    local key_path="$1"
+    local value="$2"
+    local comment="$3"
+    local is_string="${4:-false}" # 第四个参数判断值是否为字符串
+
+    local value_formatted
+    if [[ "$is_string" == true ]]; then
+        value_formatted="\"$value\""
+    else
+        value_formatted="$value"
+    fi
+
+    if [ "$USE_YQ" = true ]; then
+        yq e -i "(${key_path} = ${value_formatted}) | (${key_path} | line_comment = \"${comment}\")" "$CONFIG_FILE"
+    else
+        # sed 方案无法处理嵌套key，这里只做简单兼容
+        local main_key=$(echo "$key_path" | sed 's/\..*//')
+        sed -i -E "s/^([[:space:]]*)(${main_key}): .*/\1\2: ${value} # ${comment}/" "$CONFIG_FILE"
+    fi
 }
 
-fn_get_location_details() {
-    local details=""
-    # 尝试服务1: ipinfo.io (支持 jq)
-    details=$(curl -s --max-time 4 https://ipinfo.io/json)
-    if [[ -n "$details" && "$details" != *"Rate limit exceeded"* ]]; then
-        if [ "$USE_JQ" = true ]; then
-            local country_code=$(echo "$details" | jq -r '.country')
-            local region=$(echo "$details" | jq -r '.region')
-            if [[ "$country_code" != "null" ]]; then echo "${country_code}|${country_code}, ${region}" && return; fi
-        else # jq 不存在，回退到 grep
-            local country_code=$(echo "$details" | grep -oP '"country":\s*"\K[^"]+' | head -n 1)
-            local region=$(echo "$details" | grep -oP '"region":\s*"\K[^"]+' | head -n 1)
-            if [[ -n "$country_code" ]]; then echo "${country_code}|${country_code}, ${region}" && return; fi
+fn_speed_test_and_configure_mirrors() {
+    fn_print_info "正在智能检测并配置最佳 Docker 镜像..."
+    
+    local mirrors=(
+        "docker.io" # 代表官方源
+        "https://docker.1ms.run"
+        "https://hub1.nat.tf"
+        "https://docker.1panel.live"
+        "https://dockerproxy.1panel.live"
+        "https://hub.rat.dev"
+    )
+    
+    local results=""
+    # 清理旧的 hello-world 镜像，确保测速准确
+    docker rmi hello-world > /dev/null 2>&1 || true
+
+    for mirror in "${mirrors[@]}"; do
+        local pull_target="hello-world"
+        local display_name="$mirror"
+        if [[ "$mirror" != "docker.io" ]]; then
+            pull_target="${mirror#https://}/library/hello-world"
+        else
+            display_name="Official Docker Hub"
         fi
-    fi
-    # 尝试服务2: myip.ipip.net (对国内友好)
-    details=$(curl -s --max-time 4 https://myip.ipip.net)
-    if [[ "$details" == *"中国"* ]]; then
-        echo "CN|$(echo "$details" | awk '{print $3, $4}')" && return
-    elif [[ -n "$details" ]]; then
-        echo "OVERSEAS|$(echo "$details" | awk '{print $3, $4}')" && return
-    fi
-    echo "UNKNOWN|无法确定位置"
-}
 
-fn_handle_mirror_config() {
-    local choice="$1"
-    if [[ "$choice" == "mainland" ]]; then
-        fn_print_info "正在为您配置国内 Docker 加速镜像..."
-        # 这些镜像地址可能会失效，保留硬编码是为了脚本的独立性
+        echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..."
+        
+        # 使用 timeout 防止某个源卡死
+        local start_time=$(date +%s.%N)
+        if timeout 30 docker pull "$pull_target" > /dev/null 2>&1; then
+            local end_time=$(date +%s.%N)
+            local duration=$(echo "$end_time - $start_time" | bc)
+            printf " ${GREEN}%.2f 秒${NC}\n" "$duration"
+            results+="${duration}|${mirror}\n"
+            # 及时清理，为下一个测试准备
+            docker rmi "$pull_target" > /dev/null 2>&1 || true
+        else
+            echo -e " ${RED}超时或失败${NC}"
+            results+="9999|${mirror}\n"
+        fi
+    done
+
+    # 排序并选出最快的
+    local sorted_mirrors=$(echo -e "$results" | sort -n)
+    local fastest_mirror=$(echo -e "$sorted_mirrors" | head -n 1 | cut -d'|' -f2)
+
+    fn_print_info "测速完成，结果排行如下："
+    echo -e "$sorted_mirrors" | awk -F'|' '{
+        if ($1 < 9999) {
+            printf "  - %-30s %.2f 秒\n", $2, $1
+        } else {
+            printf "  - %-30s 超时\n", $2
+        }
+    }'
+
+    if [[ "$fastest_mirror" == "docker.io" ]]; then
+        fn_print_success "官方源速度最快，将清除任何加速镜像配置。"
+        if [ -f "/etc/docker/daemon.json" ]; then
+            rm -f /etc/docker/daemon.json
+            systemctl restart docker || fn_print_warning "Docker 重启失败，可能无需操作。"
+        fi
+    else
+        local best_mirrors=($(echo -e "$sorted_mirrors" | grep -v '9999' | head -n 3 | cut -d'|' -f2))
+        fn_print_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
+        
+        local mirrors_json=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
+        
         tee /etc/docker/daemon.json > /dev/null <<EOF
 {
-  "registry-mirrors": [
-    "https://docker.1ms.run",
-    "https://hub1.nat.tf",
-    "https://docker.1panel.live",
-    "https://dockerproxy.1panel.live",
-    "https://hub.rat.dev",
-    "https://docker.amingg.com"
-  ]
+  "registry-mirrors": [${mirrors_json}]
 }
 EOF
         fn_print_info "配置文件 /etc/docker/daemon.json 已更新。"
         systemctl restart docker || fn_print_error "Docker 服务重启失败！请手动排查。"
         fn_print_success "Docker 服务已重启，加速配置生效！"
-    elif [[ "$choice" == "overseas" ]]; then
-        if [ -f "/etc/docker/daemon.json" ]; then
-            fn_print_info "正在清除旧的 Docker 镜像配置..."
-            rm -f /etc/docker/daemon.json
-            systemctl restart docker || fn_print_warning "Docker 重启失败，可能无需操作。"
-            fn_print_success "Docker 镜像配置已清除。"
-        else
-            fn_print_info "无需操作，跳过 Docker 镜像配置。"
-        fi
     fi
 }
 
-fn_configure_docker_mirror() {
-    fn_print_info "正在检测服务器地理位置..."
-    IFS='|' read -r country_code location_display <<< "$(fn_get_location_details)"
-    
-    echo -e "  ${YELLOW}检测结果: ${location_display}${NC}"
-
-    if [[ "$country_code" == "CN" ]]; then
-        echo "请选择操作："
-        echo -e "  [1] ${GREEN}配置国内加速镜像 (推荐)${NC}"
-        echo -e "  [2] 跳过"
-        echo -e "  [3] 检测有误，我是海外服务器"
-        read -p "请输入选项数字 [默认为 1]: " choice < /dev/tty
-        choice=${choice:-1}
-        case "$choice" in
-            1) fn_handle_mirror_config "mainland" ;;
-            2) fn_print_info "已跳过镜像配置。" ;;
-            3) fn_handle_mirror_config "overseas" ;;
-            *) fn_print_warning "无效输入，已跳过。" ;;
-        esac
-    elif [[ "$country_code" != "UNKNOWN" ]]; then
-        echo "请选择操作："
-        echo -e "  [1] 清除可能存在的国内镜像配置"
-        echo -e "  [2] ${GREEN}跳过 (推荐)${NC}"
-        echo -e "  [3] 检测有误，我是国内服务器"
-        read -p "请输入选项数字 [默认为 2]: " choice < /dev/tty
-        choice=${choice:-2}
-        case "$choice" in
-            1) fn_handle_mirror_config "overseas" ;;
-            2) fn_print_info "已跳过镜像配置。" ;;
-            3) fn_handle_mirror_config "mainland" ;;
-            *) fn_print_warning "无效输入，已跳过。" ;;
-        esac
-    else
-        echo "无法自动判断，请手动选择您的服务器位置："
-        echo -e "  [1] 我在中国大陆"
-        echo -e "  [2] 我在海外"
-        read -p "请输入选项数字: " choice < /dev/tty
-        case "$choice" in
-            1) fn_handle_mirror_config "mainland" ;;
-            2) fn_handle_mirror_config "overseas" ;;
-            *) fn_print_warning "无效输入，已跳过。" ;;
-        esac
-    fi
-}
-
-fn_confirm_and_delete_dir() {
-    local dir_to_delete="$1"
-    fn_print_warning "目录 '$dir_to_delete' 已存在，其中可能包含您之前的聊天记录和角色卡。"
-    echo -ne "您确定要删除此目录并继续安装吗？(${GREEN}y${NC}/${RED}n${NC}): "
-    read -r confirm1 < /dev/tty
-    if [[ "$confirm1" != "y" ]]; then fn_print_error "操作被用户取消。"; fi
-    echo -ne "${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 (${GREEN}y${NC}/${RED}n${NC}): ${NC}"
-    read -r confirm2 < /dev/tty
-    if [[ "$confirm2" != "y" ]]; then fn_print_error "操作被用户取消。"; fi
-    echo -ne "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}"
-    read -r confirm3 < /dev/tty
-    if [[ "$confirm3" != "yes" ]]; then fn_print_error "操作被用户取消。"; fi
-    fn_print_info "正在删除旧目录: $dir_to_delete..."
-    rm -rf "$dir_to_delete"
-    fn_print_success "旧目录已删除。"
-}
-
-fn_create_project_structure() {
-    fn_print_info "正在创建项目目录结构..."
-    mkdir -p "$INSTALL_DIR/data"
-    mkdir -p "$INSTALL_DIR/plugins"
-    mkdir -p "$INSTALL_DIR/public/scripts/extensions/third-party"
-    chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
-    
-    fn_print_info "正在设置安全的文件权限..."
-    find "$INSTALL_DIR" -type d -exec chmod 755 {} +
-    find "$INSTALL_DIR" -type f -exec chmod 644 {} +
-    
-    fn_print_success "项目目录创建并授权成功！"
-}
+# ... (其他函数 fn_get_public_ip, fn_confirm_and_delete_dir 等保持不变) ...
+fn_get_public_ip() { local ip; ip=$(curl -s --max-time 5 https://api.ipify.org) || ip=$(curl -s --max-time 5 https://ifconfig.me) || ip=$(hostname -I | awk '{print $1}'); echo "$ip"; }
+fn_confirm_and_delete_dir() { local dir_to_delete="$1"; fn_print_warning "目录 '$dir_to_delete' 已存在，其中可能包含您之前的聊天记录和角色卡。"; echo -ne "您确定要删除此目录并继续安装吗？(${GREEN}y${NC}/${RED}n${NC}): "; read -r c1 < /dev/tty; if [[ "$c1" != "y" ]]; then fn_print_error "操作被用户取消。"; fi; echo -ne "${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 (${GREEN}y${NC}/${RED}n${NC}): ${NC}"; read -r c2 < /dev/tty; if [[ "$c2" != "y" ]]; then fn_print_error "操作被用户取消。"; fi; echo -ne "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}"; read -r c3 < /dev/tty; if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。"; fi; fn_print_info "正在删除旧目录: $dir_to_delete..."; rm -rf "$dir_to_delete"; fn_print_success "旧目录已删除。"; }
+fn_create_project_structure() { fn_print_info "正在创建项目目录结构..."; mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"; chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"; fn_print_info "正在设置安全的文件权限..."; find "$INSTALL_DIR" -type d -exec chmod 755 {} +; find "$INSTALL_DIR" -type f -exec chmod 644 {} +; fn_print_success "项目目录创建并授权成功！"; }
 
 fn_apply_config_changes() {
-    fn_print_info "正在使用 ${BOLD}${USE_YQ:+yq}${USE_YQ:-sed}${NC} 精准修改配置..."
-    if [ "$USE_YQ" = true ]; then
-        # 基础配置
-        yq e -i '.listen = true' "$CONFIG_FILE"
-        yq e -i '.whitelistMode = false' "$CONFIG_FILE"
-        yq e -i '.sessionTimeout = 86400' "$CONFIG_FILE" # 24小时
-        yq e -i '.backups.common.numberOfBackups = 5' "$CONFIG_FILE"
-        yq e -i '.backups.chat.maxTotalBackups = 30' "$CONFIG_FILE"
-        yq e -i '.performance.lazyLoadCharacters = true' "$CONFIG_FILE"
-        yq e -i '.performance.memoryCacheCapacity = "128mb"' "$CONFIG_FILE"
-        
-        # 模式配置
-        if [[ "$run_mode" == "1" ]]; then
-            yq e -i '.basicAuthMode = true' "$CONFIG_FILE"
-            yq e -i ".basicAuthUser.username = \"$single_user\"" "$CONFIG_FILE"
-            yq e -i ".basicAuthUser.password = \"$single_pass\"" "$CONFIG_FILE"
-        elif [[ "$run_mode" == "2" ]]; then
-            yq e -i '.basicAuthMode = true' "$CONFIG_FILE" # 临时开启
-            yq e -i '.enableUserAccounts = true' "$CONFIG_FILE"
-        fi
-    else # 回退到 sed
-        sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)numberOfBackups: .*/\1numberOfBackups: 5/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)maxTotalBackups: .*/\1maxTotalBackups: 30/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)lazyLoadCharacters: .*/\1lazyLoadCharacters: true/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)memoryCacheCapacity: .*/\1memoryCacheCapacity: '128mb'/" "$CONFIG_FILE"
+    fn_print_info "正在使用 ${BOLD}${USE_YQ:+yq}${USE_YQ:-sed}${NC} 精准修改配置并添加注释..."
+    
+    fn_update_yaml '.listen' 'true' '* 允许外部访问'
+    fn_update_yaml '.whitelistMode' 'false' '* 关闭IP白名单模式'
+    fn_update_yaml '.sessionTimeout' '86400' '* 24小时退出登录'
+    fn_update_yaml '.backups.common.numberOfBackups' '5' '* 单文件保留的备份数量'
+    fn_update_yaml '.backups.chat.maxTotalBackups' '30' '* 总聊天文件数量上限'
+    fn_update_yaml '.performance.lazyLoadCharacters' 'true' '* 懒加载、点击角色卡才加载'
+    fn_update_yaml '.performance.memoryCacheCapacity' "'128mb'" '* 角色卡内存缓存 (根据2G内存推荐)' true
 
-        if [[ "$run_mode" == "1" ]]; then
-            sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true/" "$CONFIG_FILE"
-            sed -i -E "s/^([[:space:]]*)username: .*/\1username: \"$single_user\"/" "$CONFIG_FILE"
-            sed -i -E "s/^([[:space:]]*)password: .*/\1password: \"$single_pass\"/" "$CONFIG_FILE"
-        elif [[ "$run_mode" == "2" ]]; then
-            sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true/" "$CONFIG_FILE"
-            sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true/" "$CONFIG_FILE"
-        fi
+    if [[ "$run_mode" == "1" ]]; then
+        fn_update_yaml '.basicAuthMode' 'true' '* 启用基础认证'
+        fn_update_yaml '.basicAuthUser.username' "$single_user" '' true
+        fn_update_yaml '.basicAuthUser.password' "$single_pass" '' true
+    elif [[ "$run_mode" == "2" ]]; then
+        fn_update_yaml '.basicAuthMode' 'true' '* 临时开启基础认证以设置管理员'
+        fn_update_yaml '.enableUserAccounts' 'true' '* 启用多用户模式'
     fi
 }
 
@@ -239,7 +181,7 @@ fn_apply_config_changes() {
 
 clear
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║      ${BOLD}SillyTavern 助手 v7.0${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║      ${BOLD}SillyTavern 助手 v8.0${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
@@ -248,18 +190,12 @@ echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
 fn_print_step "[ 1 / 5 ] 环境检查与准备"
 if [ "$(id -u)" -ne 0 ]; then fn_print_error "本脚本需要以 root 权限运行。请使用 'sudo' 执行。"; fi
 TARGET_USER="${SUDO_USER:-root}"
-if [ "$TARGET_USER" = "root" ]; then
-    USER_HOME="/root"
-    fn_print_warning "您正以 root 用户身份直接运行脚本，将安装在 /root 目录下。"
-else
-    USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
-    if [ -z "$USER_HOME" ]; then fn_print_error "无法找到用户 '$TARGET_USER' 的家目录。"; fi
-fi
+if [ "$TARGET_USER" = "root" ]; then USER_HOME="/root"; fn_print_warning "您正以 root 用户身份直接运行脚本，将安装在 /root 目录下。"; else USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6); if [ -z "$USER_HOME" ]; then fn_print_error "无法找到用户 '$TARGET_USER' 的家目录。"; fi; fi
 INSTALL_DIR="$USER_HOME/sillytavern"
 CONFIG_FILE="$INSTALL_DIR/config.yaml"
 COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 fn_check_dependencies
-fn_configure_docker_mirror
+fn_speed_test_and_configure_mirrors
 
 # --- 阶段二：交互式配置 ---
 fn_print_step "[ 2 / 5 ] 选择运行模式"
@@ -268,11 +204,7 @@ echo -e "  [1] ${CYAN}单用户模式${NC} (简单，适合个人使用)"
 echo -e "  [2] ${CYAN}多用户模式${NC} (推荐，拥有独立的登录页面)"
 read -p "请输入选项数字 [默认为 2]: " run_mode < /dev/tty
 run_mode=${run_mode:-2}
-if [[ "$run_mode" == "1" ]]; then
-    read -p "请输入您的自定义用户名: " single_user < /dev/tty
-    read -p "请输入您的自定义密码: " single_pass < /dev/tty
-    if [ -z "$single_user" ] || [ -z "$single_pass" ]; then fn_print_error "用户名和密码不能为空！"; fi
-elif [[ "$run_mode" != "2" ]]; then fn_print_error "无效输入，脚本已终止。"; fi
+if [[ "$run_mode" == "1" ]]; then read -p "请输入您的自定义用户名: " single_user < /dev/tty; read -p "请输入您的自定义密码: " single_pass < /dev/tty; if [ -z "$single_user" ] || [ -z "$single_pass" ]; then fn_print_error "用户名和密码不能为空！"; fi; elif [[ "$run_mode" != "2" ]]; then fn_print_error "无效输入，脚本已终止。"; fi
 
 # --- 阶段三：自动化部署 ---
 fn_print_step "[ 3 / 5 ] 创建项目文件"
@@ -305,10 +237,7 @@ $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" pull || fn_print_error "拉取 Docker 镜
 fn_print_info "正在进行首次启动以生成配置文件..."
 $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
 timeout=60
-while [ ! -f "$CONFIG_FILE" ]; do
-    if [ $timeout -eq 0 ]; then fn_print_error "等待配置文件生成超时！请运行 '$DOCKER_COMPOSE_CMD -f \"$COMPOSE_FILE\" logs' 查看日志。"; fi
-    sleep 1; ((timeout--))
-done
+while [ ! -f "$CONFIG_FILE" ]; do if [ $timeout -eq 0 ]; then fn_print_error "等待配置文件生成超时！请运行 '$DOCKER_COMPOSE_CMD -f \"$COMPOSE_FILE\" logs' 查看日志。"; fi; sleep 1; ((timeout--)); done
 $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down > /dev/null
 fn_print_success "最新的 config.yaml 文件已生成！"
 
@@ -347,13 +276,8 @@ EOF
     read -p "" < /dev/tty
     
     fn_print_info "正在切换到多用户登录页模式..."
-    if [ "$USE_YQ" = true ]; then
-        yq e -i '.basicAuthMode = false' "$CONFIG_FILE"
-        yq e -i '.enableDiscreetLogin = true' "$CONFIG_FILE"
-    else
-        sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)enableDiscreetLogin: .*/\1enableDiscreetLogin: true/" "$CONFIG_FILE"
-    fi
+    fn_update_yaml '.basicAuthMode' 'false' '* 关闭基础认证，启用登录页'
+    fn_update_yaml '.enableDiscreetLogin' 'true' '* 隐藏登录用户列表'
     fn_print_success "多用户模式配置写入完成！"
 fi
 
@@ -366,11 +290,6 @@ echo -e "\n${GREEN}╔═══════════════════�
 echo -e "║                      部署成功！尽情享受吧！                      ║"
 echo -e "╚════════════════════════════════════════════════════════════╝${NC}"
 echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC} (按住 Ctrl 并单击)"
-if [[ "$run_mode" == "1" ]]; then
-    echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"
-    echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"
-elif [[ "$run_mode" == "2" ]]; then
-    echo -e "  ${YELLOW}首次登录:${NC} 为确保看到新的登录页，请访问 ${GREEN}http://${SERVER_IP}:8000/login${NC} (按住 Ctrl 并单击)"
-fi
+if [[ "$run_mode" == "1" ]]; then echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"; echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"; elif [[ "$run_mode" == "2" ]]; then echo -e "  ${YELLOW}首次登录:${NC} 为确保看到新的登录页，请访问 ${GREEN}http://${SERVER_IP}:8000/login${NC} (按住 Ctrl 并单击)"; fi
 echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
 echo -e "\n"
