@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 4.3 (最终稳定版)
+# 版本: 4.5 (最终稳定版)
+# 作者: Qingjue
 # 功能: 自动化部署 SillyTavern Docker 版，提供极致的自动化、健壮性和用户体验。
 
 # --- 初始化与环境设置 ---
@@ -12,6 +13,7 @@ GREEN='\033[1;32m'
 RED='\033[1;31m'
 YELLOW='\033[1;33m'
 CYAN='\033[1;36m'
+BOLD='\033[1m'
 NC='\033[0m' # No Color
 
 # --- 辅助函数 ---
@@ -75,10 +77,11 @@ fn_confirm_and_delete_dir() {
 # ==============================================================================
 
 clear
-echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗"
-echo -e "║            ${BOLD}SillyTavern Docker 版保姆级部署脚本${NC}           ${CYAN}║"
-echo -e "╚════════════════════════════════════════════════════════════╝${NC}"
-echo -e "\n本脚本将引导您完成 SillyTavern 的自动化安装。"
+echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
+echo -e "${CYAN}║      ${BOLD}SillyTavern 助手 v1.0${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
+echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
+echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
 
 # --- 阶段一：环境自检与准备 ---
 
@@ -133,7 +136,7 @@ if [[ "$use_mirror" =~ ^[yY]$ ]]; then
 "https://hub.rat.dev",
 "https://docker.amingg.com"
 '
-    DAEMON_JSON_CONTENT="{\n  \"registry-mirrors\": [\n    $(echo "$LIST" | sed '$d')\n  ]\n}"
+    DAEMON_JSON_CONTENT="{\n  \"registry-mirrors\": [\n    $(echo "$MIRROR_LIST" | sed '$d')\n  ]\n}"
 
     tee /etc/docker/daemon.json <<< "$DAEMON_JSON_CONTENT" > /dev/null
     fn_print_info "配置文件 /etc/docker/daemon.json 已更新。"
@@ -261,7 +264,7 @@ SillyTavern 已临时启动，请完成管理员的初始设置：
    请确保您已在服务器后台（如阿里云/腾讯云安全组）开放了 ${GREEN}8000${NC} 端口。
 
 2. ${CYAN}【访问并登录】${NC}
-   请打开浏览器，访问: ${GREEN}http://${SERVER_IP}:8000${NC}
+   请打开浏览器，访问: ${GREEN}http://${SERVER_IP}:8000${NC} (按住 Ctrl 并单击鼠标左键打开)
    使用以下默认凭据登录：
      ▶ 账号: ${YELLOW}user${NC}
      ▶ 密码: ${YELLOW}password${NC}
@@ -275,7 +278,7 @@ SillyTavern 已临时启动，请完成管理员的初始设置：
       ③ 创建后，点击新账户旁的【↑】箭头，将其提升为 Admin (管理员)。
 
 4. ${CYAN}【需要帮助？】${NC}
-   如对以上步骤不熟，可访问图文教程： https://stdocs.723123.xyz
+   如对以上步骤不熟，可访问图文教程： ${GREEN}https://stdocs.723123.xyz${NC} (按住 Ctrl 并单击鼠标左键打开)
 
 ${YELLOW}>>> 完成以上所有步骤后，请回到本窗口，然后按下【回车键】继续 <<<${NC}
 EOF
@@ -301,7 +304,15 @@ SERVER_IP=$(fn_get_public_ip)
 echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗"
 echo -e "║                      部署成功！尽情享受吧！                      ║"
 echo -e "╚════════════════════════════════════════════════════════════╝${NC}"
-echo -e "\n  ${CYAN}访问地址:${NC} http://${SERVER_IP}:8000"
+echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC} (按住 Ctrl 并单击鼠标左键打开)"
+
+if [[ "$run_mode" == "1" ]]; then
+    echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"
+    echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"
+elif [[ "$run_mode" == "2" ]]; then
+    echo -e "  ${YELLOW}首次登录:${NC} 为确保看到新的登录页，请访问 ${GREEN}http://${SERVER_IP}:8000/login${NC} (按住 Ctrl 并单击鼠标左键打开)"
+fi
+
 echo -e "  ${CYAN}管理方式:${NC} 请登录 1Panel 服务器面板，在“容器”菜单中管理您的 SillyTavern。"
 echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
 echo -e "\n"
