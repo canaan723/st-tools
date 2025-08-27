@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 5.5 (最终稳定版)
+# 版本: 5.6 (最终稳定版)
 # 作者: Qingjue
 # 功能: 自动化部署 SillyTavern Docker 版，提供极致的自动化、健壮性和用户体验。
 
@@ -33,21 +33,29 @@ fn_get_public_ip() {
 }
 
 fn_get_location_details() {
-    local details
-    details=$(curl -s --max-time 4 https://ipinfo.io/json) || echo ""
-    if [[ -z "$details" ]]; then
-        details=$(curl -s --max-time 4 https://ip.sb/geoip/) || echo ""
+    local details=""
+    # 尝试服务1: ipinfo.io
+    details=$(curl -s --max-time 4 https://ipinfo.io/json)
+    if [[ -n "$details" && "$details" != *"Rate limit exceeded"* ]]; then
+        local country_code=$(echo "$details" | grep -oP '"country":\s*"\K[^"]+' | head -n 1)
+        local region=$(echo "$details" | grep -oP '"region":\s*"\K[^"]+' | head -n 1)
+        echo "${country_code}|${country_code}, ${region}" && return
     fi
-    
-    local country_code=$(echo "$details" | grep -oP '"country_code":\s*"\K[^"]+' | head -n 1)
-    local country=$(echo "$details" | grep -oP '"country":\s*"\K[^"]+' | head -n 1)
-    local region=$(echo "$details" | grep -oP '"region":\s*"\K[^"]+' | head -n 1)
-
-    if [[ -n "$country_code" ]]; then
-        echo "${country_code}|${country}, ${region}"
-    else
-        echo "UNKNOWN|无法确定位置"
+    # 尝试服务2: ip.sb
+    details=$(curl -s --max-time 4 https://ip.sb/geoip/)
+    if [[ -n "$details" ]]; then
+        local country_code=$(echo "$details" | grep -oP '"country_code":\s*"\K[^"]+' | head -n 1)
+        local region=$(echo "$details" | grep -oP '"region":\s*"\K[^"]+' | head -n 1)
+        echo "${country_code}|${country_code}, ${region}" && return
     fi
+    # 尝试服务3: myip.ipip.net (对国内友好)
+    details=$(curl -s --max-time 4 https://myip.ipip.net)
+    if [[ "$details" == *"中国"* ]]; then
+        echo "CN|$(echo "$details" | awk '{print $3, $4}')" && return
+    elif [[ -n "$details" ]]; then
+        echo "OVERSEAS|$(echo "$details" | awk '{print $3, $4}')" && return
+    fi
+    echo "UNKNOWN|无法确定位置"
 }
 
 fn_handle_mirror_config() {
@@ -87,20 +95,7 @@ fn_configure_docker_mirror() {
     
     echo -e "  ${YELLOW}检测结果: ${location_display}${NC}"
 
-    # 【关键修复】如果位置未知，先让用户手动确认
-    if [[ "$country_code" == "UNKNOWN" ]]; then
-        echo "无法自动判断，请手动选择您的服务器位置："
-        echo -e "  [1] 我在中国大陆"
-        echo -e "  [2] 我在海外"
-        read -p "请输入选项数字: " manual_choice < /dev/tty
-        if [[ "$manual_choice" == "1" ]]; then
-            country_code="CN"
-        else
-            country_code="OVERSEAS" # 使用一个非CN的占位符
-        fi
-    fi
-
-    # 【关键修复】统一的、带完整选项的菜单逻辑
+    # 【关键修复】使用 if/elif/else 保证逻辑互斥
     if [[ "$country_code" == "CN" ]]; then
         echo "请选择操作："
         echo -e "  [1] ${GREEN}配置国内加速镜像 (推荐)${NC}"
@@ -114,7 +109,7 @@ fn_configure_docker_mirror() {
             3) fn_handle_mirror_config "overseas" ;;
             *) fn_print_warning "无效输入，已跳过。" ;;
         esac
-    else # 海外或手动选择的海外
+    elif [[ "$country_code" != "UNKNOWN" ]]; then # 明确是海外
         echo "请选择操作："
         echo -e "  [1] 清除可能存在的国内镜像配置"
         echo -e "  [2] ${GREEN}跳过 (推荐)${NC}"
@@ -125,6 +120,16 @@ fn_configure_docker_mirror() {
             1) fn_handle_mirror_config "overseas" ;;
             2) fn_print_info "已跳过镜像配置。" ;;
             3) fn_handle_mirror_config "mainland" ;;
+            *) fn_print_warning "无效输入，已跳过。" ;;
+        esac
+    else # 确实无法确定位置
+        echo "无法自动判断，请手动选择您的服务器位置："
+        echo -e "  [1] 我在中国大陆"
+        echo -e "  [2] 我在海外"
+        read -p "请输入选项数字: " choice < /dev/tty
+        case "$choice" in
+            1) fn_handle_mirror_config "mainland" ;;
+            2) fn_handle_mirror_config "overseas" ;;
             *) fn_print_warning "无效输入，已跳过。" ;;
         esac
     fi
