@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.6 (目录冲突处理优化版)
-# 功能: 自动化部署 SillyTavern Docker 版，为新手用户提供极致的自动化安装体验。
+# 版本: 2.0 (稳定版)
+# 功能: 自动化部署 SillyTavern Docker 版，提供极致的自动化、健壮性和用户体验。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -57,10 +57,16 @@ fn_confirm_and_delete_dir() {
             prompt_msg="${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}"
         fi
 
-        read -p "$prompt_msg" user_confirmation < /dev/tty
+        echo -ne "$prompt_msg"
+        read -r user_confirmation < /dev/tty
 
         if [[ "$user_confirmation" == "yes" ]]; then
-            confirmed=true
+            if [ "$i" -eq 3 ] || [ "$i" -lt 3 ]; then # 任何时候输入yes都直接确认
+                confirmed=true
+                break
+            fi
+        elif [[ "$user_confirmation" == "no" ]]; then
+            confirmed=false
             break
         fi
     done
@@ -134,7 +140,7 @@ if ! yq --version 2>/dev/null | grep -q 'mikefarah'; then
     YQ_VERSION="v4.44.2"
     YQ_URL="https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${ARCH}"
     
-    if ! curl -L "$YQ_URL" -o /usr/local/bin/yq; then
+    if ! curl -sL "$YQ_URL" -o /usr/local/bin/yq; then
         fn_print_error "下载 yq 失败。请检查网络连接或 GitHub 访问。"
     fi
     chmod +x /usr/local/bin/yq
@@ -161,7 +167,7 @@ if [[ "$use_mirror" =~ ^[yY]$ ]]; then
 "https://hub.rat.dev",
 "https://docker.amingg.com"
 '
-    DAEMON_JSON_CONTENT="{\n  \"registry-mirrors\": [\n    $(echo "$MIRROR_LIST" | sed '$d')\n  ]\n}"
+    DAEMON_JSON_CONTENT="{\n  \"registry-mirrors\": [\n    $(echo "$LIST" | sed '$d')\n  ]\n}"
 
     tee /etc/docker/daemon.json <<< "$DAEMON_JSON_CONTENT" > /dev/null
     fn_print_info "配置文件 /etc/docker/daemon.json 已更新。"
