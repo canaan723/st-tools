@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.2 (安全修复版)
+# 版本: 1.3 (语法修复版)
 # 功能: 自动化部署 SillyTavern Docker 版，为新手用户提供极致的自动化安装体验。
 
 # --- 初始化与环境设置 ---
@@ -94,7 +94,8 @@ if ! command -v yq &> /dev/null; then
         (apt-get update && apt-get install -y yq) || fn_print_error "使用 apt 安装 yq 失败。"
     elif command -v yum &> /dev/null; then
         yum install -y yq || fn_print_error "使用 yum 安装 yq 失败。"
-    elif command -v dnf &> /dev/null;        dnf install -y yq || fn_print_error "使用 dnf 安装 yq 失败。"
+    elif command -v dnf &> /dev/null; then
+        dnf install -y yq || fn_print_error "使用 dnf 安装 yq 失败。"
     else
         fn_print_error "不支持的操作系统，请手动安装 yq 后再运行本脚本。"
     fi
@@ -105,7 +106,7 @@ if ! command -v yq &> /dev/null; then
 fi
 fn_print_success "核心依赖检查通过！"
 
-# 1.3 (可选) Docker 镜像加速 - **已修复输入判断逻辑**
+# 1.3 (可选) Docker 镜像加速
 fn_print_warning "接下来的选项仅适用于【中国大陆】服务器，海外服务器请直接按回车跳过！"
 read -p "您是否在中国大陆服务器上运行，需要配置 Docker 加速镜像？(y/N): " use_mirror
 if [[ "$use_mirror" =~ ^[yY]$ ]]; then
