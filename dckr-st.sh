@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 10.1 (区域设置修复版)
-# 作者: Qingjue (由 AI 助手基于 v10.0 优化)
-# 更新日志 (v10.1):
-# - [修复] 解决了 `sort -n` 在特定系统区域设置下因小数点识别问题导致的排序失效 Bug。
-# - [健壮] 通过强制 `LC_ALL=C`，确保数值排序在任何系统环境下都能正确执行。
+# 版本: 11.0 (终极稳定版)
+# 作者: Qingjue (由 AI 助手基于 v10.1 优化)
+# 更新日志 (v11.0):
+# - [修复] 彻底修复了 docker-compose.yml 的 YAML 语法错误，解决了 `pull` 失败问题。
+# - [修复] 彻底修复了 `sed` 后备方案中对嵌套键修改和添加注释失败的 Bug。
+# - [修复] 采用子 shell 和管道重构测速数据流，从根本上解决了排序和决策在不同环境下失效的问题。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -41,12 +42,6 @@ fn_check_dependencies() {
     fn_print_success "核心依赖检查通过！"
 }
 
-fn_update_yaml() {
-    local key_path="$1" value="$2" comment="$3" is_string="${4:-false}"
-    local value_formatted; if [[ "$is_string" == true ]]; then value_formatted="\"$value\""; else value_formatted="$value"; fi
-    if [ "$USE_YQ" = true ]; then yq e -i "(${key_path} = ${value_formatted}) | (${key_path} | line_comment = \"${comment}\")" "$CONFIG_FILE"; else local main_key=$(echo "$key_path" | sed 's/\..*//'); sed -i -E "s/^([[:space:]]*)(${main_key}): .*/\1\2: ${value} # ${comment}/" "$CONFIG_FILE"; fi
-}
-
 fn_apply_docker_config() {
     local config_content="$1"
     if [[ -z "$config_content" ]]; then
@@ -75,28 +70,29 @@ fn_apply_docker_config() {
 fn_speed_test_and_configure_mirrors() {
     fn_print_info "正在智能检测并配置最佳 Docker 镜像..."
     local mirrors=("docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live" "https://dockerproxy.1panel.live" "https://hub.rat.dev")
-    local results=""
     docker rmi hello-world > /dev/null 2>&1 || true
 
-    for mirror in "${mirrors[@]}"; do
-        local pull_target="hello-world" display_name="$mirror"
-        if [[ "$mirror" != "docker.io" ]]; then pull_target="${mirror#https://}/library/hello-world"; else display_name="Official Docker Hub"; fi
-        echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..."
-        local start_time=$(date +%s.%N)
-        if timeout 30 docker pull "$pull_target" > /dev/null 2>&1; then
-            local end_time=$(date +%s.%N)
-            local duration=$(echo "$end_time - $start_time" | bc)
-            printf " ${GREEN}%.2f 秒${NC}\n" "$duration"
-            results+="${duration}|${mirror}|${display_name}\n"
-            docker rmi "$pull_target" > /dev/null 2>&1 || true
-        else
-            echo -e " ${RED}超时或失败${NC}"
-            results+="9999|${mirror}|${display_name}\n"
-        fi
-    done
-
-    # 【关键修复】使用 LC_ALL=C sort -n 来确保数值排序的正确性
-    local sorted_results=$(echo "$results" | sed '/^$/d' | LC_ALL=C sort -n)
+    # 【关键修复】使用子 shell 和管道，确保数据流干净、可靠
+    local sorted_results=$(
+    (
+        for mirror in "${mirrors[@]}"; do
+            local pull_target="hello-world" display_name="$mirror"
+            if [[ "$mirror" != "docker.io" ]]; then pull_target="${mirror#https://}/library/hello-world"; else display_name="Official Docker Hub"; fi
+            echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..." >&2
+            local start_time=$(date +%s.%N)
+            if timeout 30 docker pull "$pull_target" > /dev/null 2>&1; then
+                local end_time=$(date +%s.%N)
+                local duration=$(echo "$end_time - $start_time" | bc)
+                printf " ${GREEN}%.2f 秒${NC}\n" "$duration" >&2
+                echo "${duration}|${mirror}|${display_name}"
+                docker rmi "$pull_target" > /dev/null 2>&1 || true
+            else
+                echo -e " ${RED}超时或失败${NC}" >&2
+                echo "9999|${mirror}|${display_name}"
+            fi
+        done
+    ) | LC_ALL=C sort -n
+    )
     
     if [ -z "$sorted_results" ]; then
         fn_print_warning "所有 Docker 镜像源均测试失败！"
@@ -130,11 +126,47 @@ fn_speed_test_and_configure_mirrors() {
     fi
 }
 
+fn_apply_config_changes() {
+    fn_print_info "正在使用 ${BOLD}${USE_YQ:+yq}${USE_YQ:-sed}${NC} 精准修改配置并添加注释..."
+    if [ "$USE_YQ" = true ]; then
+        yq e -i '(.listen = true) | (.listen | line_comment = "* 允许外部访问")' "$CONFIG_FILE"
+        yq e -i '(.whitelistMode = false) | (.whitelistMode | line_comment = "* 关闭IP白名单模式")' "$CONFIG_FILE"
+        yq e -i '(.sessionTimeout = 86400) | (.sessionTimeout | line_comment = "* 24小时退出登录")' "$CONFIG_FILE"
+        yq e -i '(.backups.common.numberOfBackups = 5) | (.backups.common.numberOfBackups | line_comment = "* 单文件保留的备份数量")' "$CONFIG_FILE"
+        yq e -i '(.backups.chat.maxTotalBackups = 30) | (.backups.chat.maxTotalBackups | line_comment = "* 总聊天文件数量上限")' "$CONFIG_FILE"
+        yq e -i '(.performance.lazyLoadCharacters = true) | (.performance.lazyLoadCharacters | line_comment = "* 懒加载、点击角色卡才加载")' "$CONFIG_FILE"
+        yq e -i '(.performance.memoryCacheCapacity = "128mb") | (.performance.memoryCacheCapacity | line_comment = "* 角色卡内存缓存 (根据2G内存推荐)")' "$CONFIG_FILE"
+        if [[ "$run_mode" == "1" ]]; then
+            yq e -i '(.basicAuthMode = true) | (.basicAuthMode | line_comment = "* 启用基础认证")' "$CONFIG_FILE"
+            yq e -i ".basicAuthUser.username = \"$single_user\"" "$CONFIG_FILE"
+            yq e -i ".basicAuthUser.password = \"$single_pass\"" "$CONFIG_FILE"
+        elif [[ "$run_mode" == "2" ]]; then
+            yq e -i '(.basicAuthMode = true) | (.basicAuthMode | line_comment = "* 临时开启基础认证以设置管理员")' "$CONFIG_FILE"
+            yq e -i '(.enableUserAccounts = true) | (.enableUserAccounts | line_comment = "* 启用多用户模式")' "$CONFIG_FILE"
+        fi
+    else # 【关键修复】sed 后备方案，为每个配置编写独立的、精确的命令
+        sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # * 允许外部访问/" "$CONFIG_FILE"
+        sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false # * 关闭IP白名单模式/" "$CONFIG_FILE"
+        sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400 # * 24小时退出登录/" "$CONFIG_FILE"
+        sed -i -E "s/^([[:space:]]*)numberOfBackups: .*/\1numberOfBackups: 5 # * 单文件保留的备份数量/" "$CONFIG_FILE"
+        sed -i -E "s/^([[:space:]]*)maxTotalBackups: .*/\1maxTotalBackups: 30 # * 总聊天文件数量上限/" "$CONFIG_FILE"
+        sed -i -E "s/^([[:space:]]*)lazyLoadCharacters: .*/\1lazyLoadCharacters: true # * 懒加载、点击角色卡才加载/" "$CONFIG_FILE"
+        sed -i -E "s/^([[:space:]]*)memoryCacheCapacity: .*/\1memoryCacheCapacity: '128mb' # * 角色卡内存缓存 (根据2G内存推荐)/" "$CONFIG_FILE"
+        if [[ "$run_mode" == "1" ]]; then
+            sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # * 启用基础认证/" "$CONFIG_FILE"
+            sed -i -E "s/^([[:space:]]*)username: .*/\1username: \"$single_user\"/" "$CONFIG_FILE"
+            sed -i -E "s/^([[:space:]]*)password: .*/\1password: \"$single_pass\"/" "$CONFIG_FILE"
+        elif [[ "$run_mode" == "2" ]]; then
+            sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # * 临时开启基础认证以设置管理员/" "$CONFIG_FILE"
+            sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # * 启用多用户模式/" "$CONFIG_FILE"
+        fi
+    fi
+}
+
 # ... (其他函数 fn_get_public_ip, fn_confirm_and_delete_dir 等保持不变) ...
 fn_get_public_ip() { local ip; ip=$(curl -s --max-time 5 https://api.ipify.org) || ip=$(curl -s --max-time 5 https://ifconfig.me) || ip=$(hostname -I | awk '{print $1}'); echo "$ip"; }
 fn_confirm_and_delete_dir() { local dir_to_delete="$1"; fn_print_warning "目录 '$dir_to_delete' 已存在，其中可能包含您之前的聊天记录和角色卡。"; echo -ne "您确定要删除此目录并继续安装吗？(${GREEN}y${NC}/${RED}n${NC}): "; read -r c1 < /dev/tty; if [[ "$c1" != "y" ]]; then fn_print_error "操作被用户取消。"; fi; echo -ne "${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 (${GREEN}y${NC}/${RED}n${NC}): ${NC}"; read -r c2 < /dev/tty; if [[ "$c2" != "y" ]]; then fn_print_error "操作被用户取消。"; fi; echo -ne "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}"; read -r c3 < /dev/tty; if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。"; fi; fn_print_info "正在删除旧目录: $dir_to_delete..."; rm -rf "$dir_to_delete"; fn_print_success "旧目录已删除。"; }
 fn_create_project_structure() { fn_print_info "正在创建项目目录结构..."; mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"; chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"; fn_print_info "正在设置安全的文件权限..."; find "$INSTALL_DIR" -type d -exec chmod 755 {} +; find "$INSTALL_DIR" -type f -exec chmod 644 {} +; fn_print_success "项目目录创建并授权成功！"; }
-fn_apply_config_changes() { fn_print_info "正在使用 ${BOLD}${USE_YQ:+yq}${USE_YQ:-sed}${NC} 精准修改配置并添加注释..."; fn_update_yaml '.listen' 'true' '* 允许外部访问'; fn_update_yaml '.whitelistMode' 'false' '* 关闭IP白名单模式'; fn_update_yaml '.sessionTimeout' '86400' '* 24小时退出登录'; fn_update_yaml '.backups.common.numberOfBackups' '5' '* 单文件保留的备份数量'; fn_update_yaml '.backups.chat.maxTotalBackups' '30' '* 总聊天文件数量上限'; fn_update_yaml '.performance.lazyLoadCharacters' 'true' '* 懒加载、点击角色卡才加载'; fn_update_yaml '.performance.memoryCacheCapacity' "'128mb'" '* 角色卡内存缓存 (根据2G内存推荐)' true; if [[ "$run_mode" == "1" ]]; then fn_update_yaml '.basicAuthMode' 'true' '* 启用基础认证'; fn_update_yaml '.basicAuthUser.username' "$single_user" '' true; fn_update_yaml '.basicAuthUser.password' "$single_pass" '' true; elif [[ "$run_mode" == "2" ]]; then fn_update_yaml '.basicAuthMode' 'true' '* 临时开启基础认证以设置管理员'; fn_update_yaml '.enableUserAccounts' 'true' '* 启用多用户模式'; fi; }
 
 # ==============================================================================
 #   主逻辑开始
@@ -142,7 +174,7 @@ fn_apply_config_changes() { fn_print_info "正在使用 ${BOLD}${USE_YQ:+yq}${US
 
 clear
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v10.1${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v11.0${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
@@ -164,15 +196,23 @@ if [[ "$run_mode" == "1" ]]; then read -p "请输入您的自定义用户名: " 
 fn_print_step "[ 3 / 5 ] 创建项目文件"
 if [ -d "$INSTALL_DIR" ]; then fn_confirm_and_delete_dir "$INSTALL_DIR"; fi
 fn_create_project_structure
+# 【关键修复】使用正确的、多行的 YAML 列表语法
 cat <<EOF > "$COMPOSE_FILE"
 services:
   sillytavern:
     container_name: sillytavern
     hostname: sillytavern
     image: ghcr.io/sillytavern/sillytavern:latest
-    environment: [- NODE_ENV=production, - FORCE_COLOR=1]
-    ports: ["8000:8000"]
-    volumes: ["./:/home/node/app/config", "./data:/home/node/app/data", "./plugins:/home/node/app/plugins", "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party"]
+    environment:
+      - NODE_ENV=production
+      - FORCE_COLOR=1
+    ports:
+      - "8000:8000"
+    volumes:
+      - "./:/home/node/app/config"
+      - "./data:/home/node/app/data"
+      - "./plugins:/home/node/app/plugins"
+      - "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party"
     restart: unless-stopped
 EOF
 fn_print_success "docker-compose.yml 文件创建成功！"
@@ -209,7 +249,15 @@ SillyTavern 已临时启动，请完成管理员的初始设置：
 ${YELLOW}>>> 完成以上所有步骤后，请回到本窗口，然后按下【回车键】继续 <<<${NC}
 EOF
 ); echo -e "${MULTI_USER_GUIDE}"; read -p "" < /dev/tty
-    fn_print_info "正在切换到多用户登录页模式..."; fn_update_yaml '.basicAuthMode' 'false' '* 关闭基础认证，启用登录页'; fn_update_yaml '.enableDiscreetLogin' 'true' '* 隐藏登录用户列表'; fn_print_success "多用户模式配置写入完成！"
+    fn_print_info "正在切换到多用户登录页模式..."
+    if [ "$USE_YQ" = true ]; then
+        yq e -i '(.basicAuthMode = false) | (.basicAuthMode | line_comment = "* 关闭基础认证，启用登录页")' "$CONFIG_FILE"
+        yq e -i '(.enableDiscreetLogin = true) | (.enableDiscreetLogin | line_comment = "* 隐藏登录用户列表")' "$CONFIG_FILE"
+    else
+        sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false # * 关闭基础认证，启用登录页/" "$CONFIG_FILE"
+        sed -i -E "s/^([[:space:]]*)enableDiscreetLogin: .*/\1enableDiscreetLogin: true # * 隐藏登录用户列表/" "$CONFIG_FILE"
+    fi
+    fn_print_success "多用户模式配置写入完成！"
 fi
 
 # --- 阶段五：最终启动 ---
