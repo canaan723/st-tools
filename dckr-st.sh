@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.3 (语法修复版)
+# 版本: 1.4 (交互修复版)
 # 功能: 自动化部署 SillyTavern Docker 版，为新手用户提供极致的自动化安装体验。
 
 # --- 初始化与环境设置 ---
@@ -108,7 +108,7 @@ fn_print_success "核心依赖检查通过！"
 
 # 1.3 (可选) Docker 镜像加速
 fn_print_warning "接下来的选项仅适用于【中国大陆】服务器，海外服务器请直接按回车跳过！"
-read -p "您是否在中国大陆服务器上运行，需要配置 Docker 加速镜像？(y/N): " use_mirror
+read -p "您是否在中国大陆服务器上运行，需要配置 Docker 加速镜像？(y/N): " use_mirror < /dev/tty
 if [[ "$use_mirror" =~ ^[yY]$ ]]; then
     fn_print_info "正在为您配置国内 Docker 加速镜像..."
     
@@ -144,13 +144,13 @@ fn_print_step "[ 2 / 5 ] 选择运行模式"
 echo "请选择您希望的运行模式："
 echo "  [1] 单用户模式 (简单，适合个人使用，通过浏览器弹窗认证)"
 echo "  [2] 多用户模式 (推荐，功能完整，拥有独立的登录页面)"
-read -p "请输入选项数字 [默认为 2]: " run_mode
+read -p "请输入选项数字 [默认为 2]: " run_mode < /dev/tty
 run_mode=${run_mode:-2}
 
 if [[ "$run_mode" == "1" ]]; then
     fn_print_info "您选择了单用户模式。"
-    read -p "请输入您的自定义用户名: " single_user
-    read -sp "请输入您的自定义密码: " single_pass
+    read -p "请输入您的自定义用户名: " single_user < /dev/tty
+    read -sp "请输入您的自定义密码: " single_pass < /dev/tty
     echo
     if [ -z "$single_user" ] || [ -z "$single_pass" ]; then
         fn_print_error "用户名和密码不能为空！"
@@ -286,7 +286,7 @@ SillyTavern 已临时启动，请完成管理员的初始设置：
 
 >>> 完成以上所有步骤后，请回到本窗口，然后按下【回车键】继续 <<<
 EOF
-    read -p ""
+    read -p "" < /dev/tty
 
     # 多用户模式第二阶段配置
     fn_yq_mod '.basicAuthMode' 'false' '# 初始化完成，关闭基础认证'
@@ -306,5 +306,4 @@ echo -e "║                      部署成功！尽情享受吧！             
 echo -e "╚════════════════════════════════════════════════════════════╝${NC}"
 echo -e "\n  ${CYAN}访问地址:${NC} http://${SERVER_IP}:8000"
 echo -e "  ${CYAN}管理方式:${NC} 请登录 1Panel 服务器面板，在“容器”菜单中管理您的 SillyTavern。"
-echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
-echo -e "\n"
+echo -e "  ${
