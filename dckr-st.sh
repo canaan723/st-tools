@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.1
+# 版本: 1.2 (安全修复版)
 # 功能: 自动化部署 SillyTavern Docker 版，为新手用户提供极致的自动化安装体验。
 
 # --- 初始化与环境设置 ---
@@ -34,7 +34,6 @@ fn_print_info() {
 
 # --- 核心函数 ---
 fn_get_public_ip() {
-    # 尝试从多个服务获取公网IP，增加成功率
     local ip
     ip=$(curl -s --max-time 5 https://api.ipify.org) || \
     ip=$(curl -s --max-time 5 https://ifconfig.me) || \
@@ -95,8 +94,7 @@ if ! command -v yq &> /dev/null; then
         (apt-get update && apt-get install -y yq) || fn_print_error "使用 apt 安装 yq 失败。"
     elif command -v yum &> /dev/null; then
         yum install -y yq || fn_print_error "使用 yum 安装 yq 失败。"
-    elif command -v dnf &> /dev/null; then
-        dnf install -y yq || fn_print_error "使用 dnf 安装 yq 失败。"
+    elif command -v dnf &> /dev/null;        dnf install -y yq || fn_print_error "使用 dnf 安装 yq 失败。"
     else
         fn_print_error "不支持的操作系统，请手动安装 yq 后再运行本脚本。"
     fi
@@ -107,8 +105,9 @@ if ! command -v yq &> /dev/null; then
 fi
 fn_print_success "核心依赖检查通过！"
 
-# 1.3 (可选) Docker 镜像加速
-read -p "您是否在中国大陆服务器上运行，需要配置 Docker 加速镜像？(y/n): " use_mirror
+# 1.3 (可选) Docker 镜像加速 - **已修复输入判断逻辑**
+fn_print_warning "接下来的选项仅适用于【中国大陆】服务器，海外服务器请直接按回车跳过！"
+read -p "您是否在中国大陆服务器上运行，需要配置 Docker 加速镜像？(y/N): " use_mirror
 if [[ "$use_mirror" =~ ^[yY]$ ]]; then
     fn_print_info "正在为您配置国内 Docker 加速镜像..."
     
@@ -125,8 +124,16 @@ if [[ "$use_mirror" =~ ^[yY]$ ]]; then
 
     tee /etc/docker/daemon.json <<< "$DAEMON_JSON_CONTENT" > /dev/null
     fn_print_info "配置文件 /etc/docker/daemon.json 已更新。"
-    systemctl restart docker || fn_print_error "Docker 服务重启失败！请手动运行 'systemctl restart docker' 进行排查。"
-    fn_print_success "Docker 服务已重启，加速配置生效！"
+    
+    if ! systemctl restart docker; then
+        fn_print_warning "Docker 服务重启失败！可能是因为海外服务器无法访问国内镜像。"
+        fn_print_info "正在尝试移除配置文件并再次重启..."
+        rm -f /etc/docker/daemon.json
+        systemctl restart docker || fn_print_error "移除配置文件后 Docker 仍然启动失败！请手动排查。"
+        fn_print_success "已自动移除镜像配置，Docker 服务恢复正常。"
+    else
+        fn_print_success "Docker 服务已重启，加速配置生效！"
+    fi
 fi
 
 # --- 阶段二：交互式配置 ---
