@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.2.5 (由AI助手优化)
-# 作者: Qingjue
+# 版本: 1.3.0 (根据特定需求优化)
+# 作者: Qingjue (及AI助手)
 
 # --- 初始化与环境设置 ---
 set -e
@@ -23,6 +23,8 @@ DOCKER_VER="-" DOCKER_STATUS="-"
 COMPOSE_VER="-" COMPOSE_STATUS="-"
 CONTAINER_NAME="sillytavern"
 IMAGE_NAME="ghcr.io/sillytavern/sillytavern:latest"
+PUBLIC_IP="N/A"
+LOCAL_IP="N/A"
 
 # --- 辅助函数 ---
 fn_print_step() { echo -e "\n${CYAN}═══ $1 ═══${NC}"; }
@@ -30,6 +32,22 @@ fn_print_success() { echo -e "${GREEN}✓ $1${NC}"; }
 fn_print_error() { echo -e "\n${RED}✗ 错误: $1${NC}\n" >&2; exit 1; }
 fn_print_warning() { echo -e "${YELLOW}⚠ $1${NC}"; }
 fn_print_info() { echo -e "  $1"; }
+
+# ==============================================================================
+#   改进点 #3: Sudo 权限管理
+# ==============================================================================
+fn_init_sudo() {
+    fn_print_info "正在检查 sudo 权限..."
+    if ! command -v sudo &> /dev/null; then
+        fn_print_error "未找到 sudo 命令。本脚本需要 sudo 来执行特权操作。"
+    fi
+    # 预先获取 sudo 权限，避免后续操作中反复输入密码
+    sudo -v
+    if [ $? -ne 0 ]; then
+        fn_print_error "获取 sudo 权限失败。请确保您有权限执行 sudo 操作。"
+    fi
+    fn_print_success "Sudo 权限已确认。"
+}
 
 # --- 核心函数 ---
 
@@ -95,8 +113,12 @@ fn_apply_docker_config() {
         fi
     fi
 }
+
+# ==============================================================================
+#   改进点 #2: 镜像测速并行
+# ==============================================================================
 fn_speed_test_and_configure_mirrors() {
-    fn_print_info "正在智能检测 Docker 镜像源可用性..."
+    fn_print_info "正在并行检测 Docker 镜像源可用性..."
     local mirrors=(
         "docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live"
         "https://dockerproxy.1panel.live" "https://hub.rat.dev" "https://docker.m.ixdev.cn"
@@ -104,33 +126,52 @@ fn_speed_test_and_configure_mirrors() {
         "https://docker.xuanyuan.me" "https://dytt.online" "https://lispy.org"
         "https://docker.xiaogenban1993.com" "https://docker-0.unsee.tech" "https://666860.xyz"
     )
+    
     docker rmi hello-world > /dev/null 2>&1 || true
-    local results=""; local official_hub_ok=false
+    local official_hub_ok=false
+    
+    # 创建临时目录存放测速结果
+    local results_dir
+    results_dir=$(mktemp -d)
+    trap 'rm -rf "$results_dir"' EXIT # 确保脚本退出时清理临时目录
+
+    local test_count=0
     for mirror in "${mirrors[@]}"; do
-        local pull_target="hello-world" display_name="$mirror"
-        local timeout_duration
-        if [[ "$mirror" == "docker.io" ]]; then
-            timeout_duration=15
-            display_name="Official Docker Hub"
-        else
-            timeout_duration=10
-            pull_target="${mirror#https://}/library/hello-world"
-        fi
-        
-        echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..."; local start_time=$(date +%s.%N)
-        if timeout "$timeout_duration" docker pull "$pull_target" > /dev/null 2>&1; then
-            local end_time=$(date +%s.%N); local duration=$(echo "$end_time - $start_time" | bc)
-            printf " ${GREEN}%.2f 秒${NC}\n" "$duration"; results+="${duration}|${mirror}|${display_name}\n"
+        ((test_count++))
+        # 将每个测试任务放入后台并行执行
+        (
+            local pull_target="hello-world" display_name="$mirror"
+            local timeout_duration
             if [[ "$mirror" == "docker.io" ]]; then
-                official_hub_ok=true
-                docker rmi "$pull_target" > /dev/null 2>&1 || true
-                break
+                timeout_duration=15
+                display_name="Official Docker Hub"
+            else
+                timeout_duration=10
+                pull_target="${mirror#https://}/library/hello-world"
             fi
-            docker rmi "$pull_target" > /dev/null 2>&1 || true
-        else
-            echo -e " ${RED}超时或失败${NC}"; results+="9999|${mirror}|${display_name}\n"
-        fi
+            
+            local start_time=$(date +%s.%N)
+            if timeout "$timeout_duration" docker pull "$pull_target" > /dev/null 2>&1; then
+                local end_time=$(date +%s.%N); local duration=$(echo "$end_time - $start_time" | bc)
+                # 将成功结果写入临时文件
+                echo "${duration}|${mirror}|${display_name}" > "$results_dir/$test_count"
+                docker rmi "$pull_target" > /dev/null 2>&1 || true
+            fi
+        ) &
     done
+
+    # 等待所有后台测试任务完成
+    fn_print_info "测试正在进行中，请稍候..."
+    wait
+
+    # 收集并处理结果
+    local results
+    results=$(cat "$results_dir"/* 2>/dev/null)
+
+    if echo "$results" | grep -q "|docker.io|"; then
+        official_hub_ok=true
+    fi
+
     if [ "$official_hub_ok" = true ]; then
         if ! grep -q "registry-mirrors" /etc/docker/daemon.json 2>/dev/null; then
             fn_print_success "官方 Docker Hub 可访问，且您未配置任何镜像，无需操作。"
@@ -140,7 +181,7 @@ fn_speed_test_and_configure_mirrors() {
             if [[ "$confirm_clear" =~ ^[Yy]$ ]]; then fn_apply_docker_config ""; else fn_print_info "用户选择保留当前镜像配置，操作跳过。"; fi
         fi
     else
-        fn_print_warning "官方 Docker Hub 连接超时。"; local sorted_mirrors=$(echo -e "$results" | grep -v '^9999' | grep -v '|docker.io|' | LC_ALL=C sort -n)
+        fn_print_warning "官方 Docker Hub 连接超时或失败。"; local sorted_mirrors=$(echo -e "$results" | grep -v '|docker.io|' | LC_ALL=C sort -n)
         if [ -z "$sorted_mirrors" ]; then fn_print_error "所有备用镜像均测试失败！请检查您的网络连接。"; else
             fn_print_info "以下是可用的备用镜像及其速度："; echo "$sorted_mirrors" | grep . | awk -F'|' '{ printf "  - %-30s %.2f 秒\n", $3, $1 }'
             echo -ne "${YELLOW}是否配置最快的可用镜像? [Y/n]: ${NC}"; read -r confirm_config < /dev/tty; confirm_config=${confirm_config:-y}
@@ -173,7 +214,26 @@ fn_apply_config_changes() {
     fi
 }
 
-fn_get_public_ip() { local ip; ip=$(curl -s --max-time 5 https://api.ipify.org) || ip=$(curl -s --max-time 5 https://ifconfig.me) || ip=$(hostname -I | awk '{print $1}'); echo "$ip"; }
+# ==============================================================================
+#   改进点 #4: 同时获取公网与内网IP
+# ==============================================================================
+fn_get_network_info() {
+    fn_print_info "正在获取网络信息..."
+    # 尝试获取公网IP
+    PUBLIC_IP=$(curl -s --max-time 5 https://api.ipify.org || curl -s --max-time 5 https://ifconfig.me || echo "N/A")
+    # 获取内网IP
+    LOCAL_IP=$(hostname -I | awk '{print $1}')
+    
+    if [[ "$PUBLIC_IP" == "N/A" ]]; then
+        fn_print_warning "未能自动获取公网IP地址。将使用内网IP作为主要地址。"
+        DISPLAY_IP="$LOCAL_IP"
+    else
+        fn_print_success "公网IP: $PUBLIC_IP"
+        DISPLAY_IP="$PUBLIC_IP"
+    fi
+    fn_print_success "内网IP: $LOCAL_IP"
+}
+
 fn_confirm_and_delete_dir() {
     local dir_to_delete="$1"; local container_name="$2"
     fn_print_warning "目录 '$dir_to_delete' 已存在，其中可能包含您之前的聊天记录和角色卡。"
@@ -191,87 +251,32 @@ fn_confirm_and_delete_dir() {
 fn_create_project_structure() {
     fn_print_info "正在创建项目目录结构..."
     mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"
-    fn_print_info "正在设置文件所有权..."; chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
+    fn_print_info "正在设置文件所有权..."; sudo chown -R "$CURRENT_USER:$CURRENT_GROUP" "$INSTALL_DIR"
     fn_print_success "项目目录创建并授权成功！"
 }
 
-# ==================== MODIFICATION START ====================
-# 全新重写的总进度条函数
+# ==============================================================================
+#   改进点 #1: Docker 镜像拉取进度条使用稳定方式
+# ==============================================================================
 fn_pull_with_progress_bar() {
     local compose_file="$1"
     local docker_compose_cmd="$2"
-    local image_name="$3"
-
-    fn_print_info "正在计算镜像总大小..."
-    # 通过manifest获取所有层的size并求和，得到总字节数
-    local total_size_bytes
-    total_size_bytes=$(docker manifest inspect "$image_name" 2>/dev/null | grep '"size"' | awk '{s+=$2} END {print s}')
     
-    if [ -z "$total_size_bytes" ] || [ "$total_size_bytes" -eq 0 ]; then
-        fn_print_warning "无法预先计算镜像大小，将使用简易动画。"
-        # 降级为旋转动画
-        $docker_compose_cmd -f "$compose_file" pull > /dev/null 2>&1 &
-        local pid=$!
-        local spinner="/-\\|"
-        while kill -0 $pid 2>/dev/null; do
-            printf "\r  ${YELLOW}[%s]${NC} 正在拉取镜像，请耐心等待..." "${spinner:$((i++%4)):1}"
-            sleep 0.1
-        done
-        printf "\r%s\n" "                                                  "
-        wait $pid
-        local exit_code=$?
-    else
-        # 使用精确的总进度条
-        stdbuf -oL -eL $docker_compose_cmd -f "$compose_file" pull 2>&1 | \
-        awk -v total_bytes="$total_size_bytes" '
-        BEGIN {
-            bar_width = 30
-            GREEN = "\033[1;32m"; YELLOW = "\033[1;33m"; NC = "\033[0m"
-            total_kb = total_bytes / 1024
-        }
-        function size_to_kb(size_str,   val, unit) {
-            val = substr(size_str, 1, length(size_str)-2)
-            unit = substr(size_str, length(size_str)-1)
-            if (unit == "GB") return val * 1024 * 1024
-            if (unit == "MB") return val * 1024
-            if (unit == "kB") return val
-            return val / 1024
-        }
-        /Downloading/ && match($0, /[0-9.]+[kMGT]?B\/[0-9.]+[kMGT]?B/) {
-            split($0, id_part, ":"); layer_id = id_part[1]
-            progress_str = substr($0, RSTART, RLENGTH)
-            split(progress_str, parts, "/"); current_str = parts[1]
-            
-            layer_progress_kb[layer_id] = size_to_kb(current_str)
-            
-            total_progress_kb = 0
-            for (id in layer_progress_kb) { total_progress_kb += layer_progress_kb[id] }
-            
-            if (total_kb > 0) {
-                percent = int(total_progress_kb / total_kb * 100)
-                if (percent > 100) percent = 100;
-            } else { percent = 0 }
-            
-            filled_len = int(bar_width * percent / 100)
-            bar = ""
-            for (i = 1; i <= bar_width; i++) {
-                bar = bar (i <= filled_len ? "█" : "░")
-            }
-            
-            current_mb_str = sprintf("%.1fMB", total_progress_kb / 1024)
-            total_mb_str = sprintf("%.1fMB", total_kb / 1024)
-            
-            printf "\r  %s[%s]%s %d%% (%s/%s)        ", YELLOW, bar, NC, percent, current_mb_str, total_mb_str
-            fflush()
-        }
-        END {
-            bar = ""
-            for (i = 1; i <= bar_width; i++) bar = bar "█"
-            printf "\r  %s[%s]%s 100%% 完成                    \n", GREEN, bar, NC
-        }
-        '
-        local exit_code=${PIPESTATUS[0]}
-    fi
+    fn_print_info "正在拉取镜像，此过程可能需要几分钟，请耐心等待..."
+    
+    # 统一使用稳定的旋转动画，移除脆弱的awk解析
+    $docker_compose_cmd -f "$compose_file" pull > /dev/null 2>&1 &
+    local pid=$!
+    local spinner="/-\\|"
+    local i=0
+    while kill -0 $pid 2>/dev/null; do
+        printf "\r  ${YELLOW}[%s]${NC} 正在拉取镜像..." "${spinner:$((i++%4)):1}"
+        sleep 0.1
+    done
+    printf "\r%s\n" "                                                  " # 清除旋转动画行
+    
+    wait $pid
+    local exit_code=$?
 
     if [ $exit_code -ne 0 ]; then
         fn_print_error "拉取 Docker 镜像失败！请检查您的网络或镜像源配置。"
@@ -279,13 +284,12 @@ fn_pull_with_progress_bar() {
         fn_print_success "镜像拉取成功！"
     fi
 }
-# ===================== MODIFICATION END =====================
 
 fn_verify_container_health() {
     local container_name="$1"
     local retries=10
     local interval=3
-    local spinner="/-\|"
+    local spinner="/-\\|"
     fn_print_info "正在确认容器健康状态 (最多等待 ${retries}x${interval} 秒)..."
     echo -n "  "
     for i in $(seq 1 $retries); do
@@ -295,7 +299,7 @@ fn_verify_container_health() {
             echo -e "\r  ${GREEN}✓${NC} 容器已成功进入运行状态！"
             return 0
         fi
-        echo -ne "${spinner:i%4:1}\r"
+        printf "\r  ${YELLOW}[%s]${NC} 等待中..." "${spinner:$((i++%4)):1}"
         sleep $interval
     done
     echo -e "\r  ${RED}✗${NC} 容器未能进入健康运行状态！"
@@ -310,9 +314,7 @@ fn_wait_for_service() {
     local seconds="${1:-10}"
     echo -n "  "
     while [ $seconds -gt 0 ]; do
-        # ==================== MODIFICATION START ====================
         echo -ne "服务正在后台稳定，请稍候... ${YELLOW}${seconds}s${NC}  \r"
-        # ===================== MODIFICATION END =====================
         sleep 1
         ((seconds--))
     done
@@ -355,12 +357,21 @@ fn_display_final_info() {
     echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗"
     echo -e "║                      部署成功！尽情享受吧！                      ║"
     echo -e "╚════════════════════════════════════════════════════════════╝${NC}"
-    echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC}"
+    
+    if [[ "$PUBLIC_IP" != "N/A" ]]; then
+        echo -e "\n  ${CYAN}公网访问 (从任何地方):${NC} ${GREEN}http://${PUBLIC_IP}:8000${NC}"
+    fi
+    echo -e "  ${CYAN}内网访问 (在同一局域网):${NC} ${GREEN}http://${LOCAL_IP}:8000${NC}"
+
     if [[ "$run_mode" == "1" ]]; then 
         echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"
         echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"
     elif [[ "$run_mode" == "2" ]]; then 
-        echo -e "  ${YELLOW}首次登录:${NC} 为确保看到新的登录页，请访问 ${GREEN}http://${SERVER_IP}:8000/login${NC}"
+        if [[ "$PUBLIC_IP" != "N/A" ]]; then
+            echo -e "  ${YELLOW}首次登录:${NC} 为确保看到新的登录页，请访问 ${GREEN}http://${PUBLIC_IP}:8000/login${NC}"
+        else
+            echo -e "  ${YELLOW}首次登录:${NC} 为确保看到新的登录页，请访问 ${GREEN}http://${LOCAL_IP}:8000/login${NC}"
+        fi
     fi
     echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
 }
@@ -372,19 +383,22 @@ fn_display_final_info() {
 printf "\n" && tput reset
 
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.2${NC}       ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.3${NC}       ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的 Docker 自动化安装。"
 
 # --- 阶段一：环境检查与准备 ---
 fn_print_step "[ 1 / 5 ] 环境检查与准备"
-if [ "$(id -u)" -ne 0 ]; then fn_print_error "本脚本需要以 root 权限运行。请使用 'sudo' 执行。"; fi
-TARGET_USER="${SUDO_USER:-root}"; if [ "$TARGET_USER" = "root" ]; then USER_HOME="/root"; fn_print_warning "您正以 root 用户身份直接运行脚本，将安装在 /root 目录下。"; else USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6); if [ -z "$USER_HOME" ]; then fn_print_error "无法找到用户 '$TARGET_USER' 的家目录。"; fi; fi
+fn_init_sudo # 改进点 #3: 初始化sudo权限
+CURRENT_USER=$(whoami)
+CURRENT_GROUP=$(id -gn "$CURRENT_USER")
+USER_HOME=$(getent passwd "$CURRENT_USER" | cut -d: -f6)
+if [ -z "$USER_HOME" ]; then fn_print_error "无法找到当前用户 '$CURRENT_USER' 的家目录。"; fi
 INSTALL_DIR="$USER_HOME/sillytavern"; CONFIG_FILE="$INSTALL_DIR/config.yaml"; COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 fn_check_dependencies
 fn_speed_test_and_configure_mirrors
-SERVER_IP=$(fn_get_public_ip)
+fn_get_network_info # 改进点 #4: 获取网络信息
 
 # --- 阶段二：交互式配置 ---
 fn_print_step "[ 2 / 5 ] 选择运行模式"
@@ -434,7 +448,7 @@ echo -e "  ${YELLOW}│${NC} 3M 带宽   ${BOLD}|${NC} ~0.375 MB/s ${BOLD}|${NC}
 echo -e "  ${YELLOW}│${NC} 100M 带宽 ${BOLD}|${NC} ~12.5 MB/s  ${BOLD}|${NC} 约 16.2 秒             ${YELLOW}│${NC}"
 echo -e "  ${YELLOW}└──────────────────────────────────────────────────┘${NC}"
 
-fn_pull_with_progress_bar "$COMPOSE_FILE" "$DOCKER_COMPOSE_CMD" "$IMAGE_NAME"
+fn_pull_with_progress_bar "$COMPOSE_FILE" "$DOCKER_COMPOSE_CMD"
 
 fn_print_info "正在进行首次启动以生成最新的官方配置文件..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
 timeout=60; while [ ! -f "$CONFIG_FILE" ]; do if [ $timeout -eq 0 ]; then $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs; fn_print_error "等待配置文件生成超时！请检查以上日志输出。"; fi; sleep 1; ((timeout--)); done
@@ -449,9 +463,9 @@ if [[ "$run_mode" == "1" ]]; then fn_print_success "单用户模式配置写入�
 ${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}
 SillyTavern 已临时启动，请完成管理员的初始设置：
 1. ${CYAN}【开放端口】${NC}
-   请确保您已在服务器后台（如阿里云/腾讯云安全组）开放了 ${GREEN}8000${NC} 端口。
+   请确保您已在服务器后台（如阿里云/腾讯云安全组）或路由器上开放了 ${GREEN}8000${NC} 端口。
 2. ${CYAN}【访问并登录】${NC}
-   请打开浏览器，访问: ${GREEN}http://${SERVER_IP}:8000${NC}
+   请打开浏览器，访问: ${GREEN}http://${DISPLAY_IP}:8000${NC}
    使用以下默认凭据登录：
      ▶ 账号: ${YELLOW}user${NC}
      ▶ 密码: ${YELLOW}password${NC}
