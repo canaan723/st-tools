@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 16.0 (返璞归真版)
-# 作者: Qingjue (由 AI 助手基于 v15.0 优化)
-# 更新日志 (v16.0):
-# - [核心回归] 移除了 'user' 指令，让容器进程以默认的 root 身份运行，从根本上规避了由 SELinux/AppArmor 引起的复杂权限冲突。
-# - [最终形态] 此版本回归到与 Docker Compose 默认行为一致的模式，确保了最大兼容性和稳定性。
+# 版本: 16.1 (镜像检测修复版)
+# 作者: Qingjue (由 AI 助手基于 v16.0 优化)
+# 更新日志 (v16.1):
+# - [修复] 恢复了在 v16.0 中意外遗漏的 Docker 镜像加速检测功能。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -80,6 +79,60 @@ fn_check_dependencies() {
     fi
 }
 
+fn_apply_docker_config() {
+    local config_content="$1"
+    if [[ -z "$config_content" ]]; then
+        fn_print_info "正在清除 Docker 镜像配置..."; if [ ! -f "/etc/docker/daemon.json" ]; then fn_print_success "无需操作，配置已是默认。"; return; fi
+        sudo rm -f /etc/docker/daemon.json
+    else
+        fn_print_info "正在写入新的 Docker 镜像配置..."; echo -e "$config_content" | sudo tee /etc/docker/daemon.json > /dev/null
+    fi
+    fn_print_info "正在重启 Docker 服务以应用配置..."; if sudo systemctl restart docker; then
+        fn_print_success "Docker 服务已重启，新配置生效！"
+    else
+        fn_print_warning "Docker 服务重启失败！配置可能存在问题。"; fn_print_info "正在尝试自动回滚到默认配置..."; sudo rm -f /etc/docker/daemon.json
+        if sudo systemctl restart docker; then fn_print_success "自动回滚成功！Docker 已恢复并使用官方源。"; else
+            fn_print_error "自动回滚失败！请手动执行 'sudo systemctl status docker.service' 和 'sudo journalctl -xeu docker.service' 进行排查。"
+        fi
+    fi
+}
+fn_speed_test_and_configure_mirrors() {
+    fn_print_info "正在智能检测 Docker 镜像源可用性 (每个源超时 30 秒)..."
+    local mirrors=("docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live" "https://dockerproxy.1panel.live" "https://hub.rat.dev")
+    docker rmi hello-world > /dev/null 2>&1 || true
+    local results=""; local official_hub_ok=false
+    for mirror in "${mirrors[@]}"; do
+        local pull_target="hello-world" display_name="$mirror"
+        if [[ "$mirror" != "docker.io" ]]; then pull_target="${mirror#https://}/library/hello-world"; else display_name="Official Docker Hub"; fi
+        echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..."; local start_time=$(date +%s.%N)
+        if timeout 30 docker pull "$pull_target" > /dev/null 2>&1; then
+            local end_time=$(date +%s.%N); local duration=$(echo "$end_time - $start_time" | bc)
+            printf " ${GREEN}%.2f 秒${NC}\n" "$duration"; results+="${duration}|${mirror}|${display_name}\n"
+            if [[ "$mirror" == "docker.io" ]]; then official_hub_ok=true; fi
+            docker rmi "$pull_target" > /dev/null 2>&1 || true
+        else
+            echo -e " ${RED}超时或失败${NC}"; results+="9999|${mirror}|${display_name}\n"
+        fi
+    done
+    if [ "$official_hub_ok" = true ]; then
+        fn_print_success "官方 Docker Hub 可访问。"; echo -ne "${YELLOW}是否清除本地镜像配置并使用官方源? [Y/n]: ${NC}"
+        read -r confirm_clear < /dev/tty; confirm_clear=${confirm_clear:-y}
+        if [[ "$confirm_clear" =~ ^[Yy]$ ]]; then fn_apply_docker_config ""; else fn_print_info "用户选择保留当前镜像配置，操作跳过。"; fi
+    else
+        fn_print_warning "官方 Docker Hub 连接超时。"; local sorted_mirrors=$(echo -e "$results" | grep -v '^9999' | grep -v '|docker.io|' | LC_ALL=C sort -n)
+        if [ -z "$sorted_mirrors" ]; then fn_print_error "所有备用镜像均测试失败！请检查您的网络连接。"; else
+            fn_print_info "以下是可用的备用镜像及其速度："; echo "$sorted_mirrors" | awk -F'|' '{ printf "  - %-30s %.2f 秒\n", $3, $1 }'
+            echo -ne "${YELLOW}是否配置最快的可用镜像? [Y/n]: ${NC}"; read -r confirm_config < /dev/tty; confirm_config=${confirm_config:-y}
+            if [[ "$confirm_config" =~ ^[Yy]$ ]]; then
+                local best_mirrors=($(echo "$sorted_mirrors" | head -n 3 | cut -d'|' -f2))
+                fn_print_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"; local mirrors_json=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
+                local config_content="{\n  \"registry-mirrors\": [${mirrors_json}]\n}"; fn_apply_docker_config "$config_content"
+            else
+                fn_print_info "用户选择不配置镜像，操作跳过。"; fi
+        fi
+    fi
+}
+
 fn_apply_config_changes() {
     fn_print_info "正在使用 ${BOLD}sed${NC} 精准修改配置..."
     sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # * 允许外部访问/" "$CONFIG_FILE"
@@ -128,17 +181,18 @@ fn_create_project_structure() {
 printf "\n" && tput reset
 
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v16.0${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v16.1${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
 
 # --- 阶段一：环境自检与准备 ---
-fn_print_step "[ 1 / 4 ] 环境检查"
+fn_print_step "[ 1 / 4 ] 环境检查与准备"
 if [ "$(id -u)" -ne 0 ]; then fn_print_error "本脚本需要以 root 权限运行。请使用 'sudo' 执行。"; fi
 TARGET_USER="${SUDO_USER:-root}"; if [ "$TARGET_USER" = "root" ]; then USER_HOME="/root"; fn_print_warning "您正以 root 用户身份直接运行脚本，将安装在 /root 目录下。"; else USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6); if [ -z "$USER_HOME" ]; then fn_print_error "无法找到用户 '$TARGET_USER' 的家目录。"; fi; fi
 INSTALL_DIR="$USER_HOME/sillytavern"; CONFIG_FILE="$INSTALL_DIR/config.yaml"; COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 fn_check_dependencies
+fn_speed_test_and_configure_mirrors # <-- 修复：恢复此功能的调用
 
 # --- 阶段二：交互式配置 ---
 fn_print_step "[ 2 / 4 ] 选择运行模式"
@@ -152,7 +206,6 @@ if [ -d "$INSTALL_DIR" ]; then
 fi
 fn_create_project_structure
 
-## --- 修改开始: 移除 user 指令，回归默认行为 ---
 cat <<EOF > "$COMPOSE_FILE"
 services:
   sillytavern:
@@ -173,7 +226,6 @@ services:
       - "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party:Z"
     restart: unless-stopped
 EOF
-## --- 修改结束 ---
 fn_print_success "docker-compose.yml 文件创建成功！"
 
 # --- 阶段四：初始化与最终启动 ---
