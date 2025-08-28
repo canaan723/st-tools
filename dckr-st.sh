@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 17.0 (最终优化版)
-# 作者: Qingjue (由 AI 助手基于 v16.4 优化)
-# 更新日志 (v17.0):
-# - [体验优化] 增加了服务启动后的稳定等待期，并提供倒计时反馈，确保用户访问时服务已就绪。
-# - [代码优化] 统一代码风格，消除冗余调用，提升脚本整体质量和可读性。
+# 版本: 18.0 (交互式终局版)
+# 作者: Qingjue (由 AI 助手基于 v17.0 优化)
+# 更新日志 (v18.0):
+# - [核心升级] 引入“部署后操作”菜单，允许用户查看状态和日志，从根本上解决“假成功”问题。
+# - [视觉优化] 全面净化 Docker Compose 的输出，用旋转动画替代点状进度，修复UI Bug。
+# - [体验优化] 延长服务稳定等待期至10秒。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -88,11 +89,11 @@ fn_apply_docker_config() {
     else
         fn_print_info "正在写入新的 Docker 镜像配置..."; echo -e "$config_content" | sudo tee /etc/docker/daemon.json > /dev/null
     fi
-    fn_print_info "正在重启 Docker 服务以应用配置..."; if sudo systemctl restart docker; then
+    fn_print_info "正在重启 Docker 服务以应用配置..."; if sudo systemctl restart docker > /dev/null 2>&1; then
         fn_print_success "Docker 服务已重启，新配置生效！"
     else
         fn_print_warning "Docker 服务重启失败！配置可能存在问题。"; fn_print_info "正在尝试自动回滚到默认配置..."; sudo rm -f /etc/docker/daemon.json
-        if sudo systemctl restart docker; then fn_print_success "自动回滚成功！Docker 已恢复并使用官方源。"; else
+        if sudo systemctl restart docker > /dev/null 2>&1; then fn_print_success "自动回滚成功！Docker 已恢复并使用官方源。"; else
             fn_print_error "自动回滚失败！请手动执行 'sudo systemctl status docker.service' 和 'sudo journalctl -xeu docker.service' 进行排查。"
         fi
     fi
@@ -122,7 +123,7 @@ fn_speed_test_and_configure_mirrors() {
     else
         fn_print_warning "官方 Docker Hub 连接超时。"; local sorted_mirrors=$(echo -e "$results" | grep -v '^9999' | grep -v '|docker.io|' | LC_ALL=C sort -n)
         if [ -z "$sorted_mirrors" ]; then fn_print_error "所有备用镜像均测试失败！请检查您的网络连接。"; else
-            fn_print_info "以下是可用的备用镜像及其速度："; echo "$sorted_mirrors" | awk -F'|' '{ printf "  - %-30s %.2f 秒\n", $3, $1 }'
+            fn_print_info "以下是可用的备用镜像及其速度："; echo "$sorted_mirrors" | grep . | awk -F'|' '{ printf "  - %-30s %.2f 秒\n", $3, $1 }'
             echo -ne "${YELLOW}是否配置最快的可用镜像? [Y/n]: ${NC}"; read -r confirm_config < /dev/tty; confirm_config=${confirm_config:-y}
             if [[ "$confirm_config" =~ ^[Yy]$ ]]; then
                 local best_mirrors=($(echo "$sorted_mirrors" | head -n 3 | cut -d'|' -f2))
@@ -179,20 +180,20 @@ fn_verify_container_health() {
     local container_name="$1"
     local retries=10
     local interval=3
+    local spinner="/-\|"
     fn_print_info "正在确认容器健康状态 (最多等待 ${retries}x${interval} 秒)..."
+    echo -n "  "
     for i in $(seq 1 $retries); do
         local status
         status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || echo "error")
         if [[ "$status" == "running" ]]; then
-            echo # Newline after dots
-            fn_print_success "容器已成功进入运行状态！"
+            echo -e "\r  ${GREEN}✓${NC} 容器已成功进入运行状态！"
             return 0
         fi
-        echo -n "."
+        echo -ne "${spinner:i%4:1}\r"
         sleep $interval
     done
-    echo # Newline after dots
-    fn_print_warning "容器未能进入健康运行状态！"
+    echo -e "\r  ${RED}✗${NC} 容器未能进入健康运行状态！"
     fn_print_info "以下是容器的最新日志，以帮助诊断问题："
     echo -e "${YELLOW}--------------------- 容器日志开始 ---------------------${NC}"
     docker logs "$container_name" --tail 50 || echo "无法获取容器日志。"
@@ -200,16 +201,14 @@ fn_verify_container_health() {
     fn_print_error "部署失败。请检查以上日志以确定问题原因。"
 }
 
-## --- 新增函数: 稳定等待期 ---
 fn_wait_for_service() {
-    local seconds="${1:-5}" # Default to 5 seconds
+    local seconds="${1:-10}"
     echo -n "  "
     while [ $seconds -gt 0 ]; do
         echo -ne "服务正在后台稳定，请稍候... ${YELLOW}${seconds}${NC} 秒\r"
         sleep 1
         ((seconds--))
     done
-    # Clear the countdown line and add a newline for clean output
     echo -e "                                           \r"
 }
 
@@ -220,7 +219,7 @@ fn_wait_for_service() {
 printf "\n" && tput reset
 
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v17.0${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v18.0${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
@@ -271,7 +270,7 @@ fn_print_success "docker-compose.yml 文件创建成功！"
 
 # --- 阶段四：初始化与配置 ---
 fn_print_step "[ 4 / 5 ] 初始化与配置"
-fn_print_info "正在拉取 SillyTavern 镜像，可能需要几分钟..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" pull || fn_print_error "拉取 Docker 镜像失败！"
+fn_print_info "正在拉取 SillyTavern 镜像，可能需要几分钟..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" pull > /dev/null || fn_print_error "拉取 Docker 镜像失败！"
 fn_print_info "正在进行首次启动以生成最新的官方配置文件..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
 timeout=60; while [ ! -f "$CONFIG_FILE" ]; do if [ $timeout -eq 0 ]; then $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs; fn_print_error "等待配置文件生成超时！请检查以上日志输出。"; fi; sleep 1; ((timeout--)); done
 $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down > /dev/null; fn_print_success "最新的 config.yaml 文件已生成！"
@@ -279,7 +278,7 @@ fn_apply_config_changes
 if [[ "$run_mode" == "1" ]]; then fn_print_success "单用户模式配置写入完成！"; else
     fn_print_info "正在临时启动服务以设置管理员..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
     fn_verify_container_health "$CONTAINER_NAME"
-    fn_wait_for_service 5
+    fn_wait_for_service 10
     MULTI_USER_GUIDE=$(cat <<EOF
 
 ${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}
@@ -313,7 +312,7 @@ fi
 fn_print_step "[ 5 / 5 ] 启动并验证服务"
 fn_print_info "正在应用最终配置并重启服务..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate > /dev/null
 fn_verify_container_health "$CONTAINER_NAME"
-fn_wait_for_service 5
+fn_wait_for_service 10
 
 echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗"
 echo -e "║                      部署成功！尽情享受吧！                      ║"
@@ -321,4 +320,31 @@ echo -e "╚══════════════════════�
 echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC} (按住 Ctrl 并单击)"
 if [[ "$run_mode" == "1" ]]; then echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"; echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"; elif [[ "$run_mode" == "2" ]]; then echo -e "  ${YELLOW}首次登录:${NC} 为确保看到新的登录页，请访问 ${GREEN}http://${SERVER_IP}:8000/login${NC} (按住 Ctrl 并单击)"; fi
 echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
-echo -e "\n"
+
+# --- 交互式终局 ---
+while true; do
+    echo -e "\n${CYAN}--- 部署后操作 ---${NC}"
+    echo -e "  [1] 查看容器状态"
+    echo -e "  [2] 查看实时日志 ${YELLOW}(按 Ctrl+C 返回此菜单)${NC}"
+    echo -e "  [q] 退出脚本"
+    read -p "请输入选项: " choice < /dev/tty
+    case "$choice" in
+        1)
+            echo -e "\n${YELLOW}--- 容器当前状态 ---${NC}"
+            docker ps -a --filter "name=${CONTAINER_NAME}"
+            ;;
+        2)
+            echo -e "\n${YELLOW}--- 实时日志 (按 Ctrl+C 停止) ---${NC}"
+            docker logs -f "$CONTAINER_NAME"
+            ;;
+        q|Q)
+            echo -e "\n脚本执行完毕，祝您使用愉快！"
+            break
+            ;;
+        *)
+            fn_print_warning "无效输入，请输入 1, 2, 或 q。"
+            ;;
+    esac
+done
+
+echo ""
