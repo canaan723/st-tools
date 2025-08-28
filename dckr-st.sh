@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 12.3 (终极诊断与报告版)
-# 作者: Qingjue (由 AI 助手基于 v12.2 优化)
-# 更新日志 (v12.3):
-# - [核心] 重构依赖检查为“先诊断，后报告”模式，最后统一输出清晰、对齐的环境摘要。
-# - [核心] 修复了 yq 版本检测的致命缺陷，改用正则表达式精确提取版本号，极其稳健。
+# 版本: 12.4 (精准检测与可读性报告版)
+# 作者: Qingjue (由 AI 助手基于 v12.3 优化)
+# 更新日志 (v12.4):
+# - [核心修复] 修正了 Docker Compose 检测的致命逻辑 Bug，确保 v1 和 v2 都能被准确识别。
+# - [核心优化] 全面精简依赖报告中的版本号，实现完美对齐的清晰表格输出。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -19,14 +19,13 @@ BOLD='\033[1m'
 NC='\033[0m' # No Color
 
 # --- 全局变量 ---
-# 用于最终报告
-BC_VER="" BC_STATUS="-"
-CURL_VER="" CURL_STATUS="-"
-TAR_VER="" TAR_STATUS="-"
-DOCKER_VER="" DOCKER_STATUS="-"
-COMPOSE_VER="" COMPOSE_STATUS="-"
-YQ_VER="" YQ_STATUS="-"
-JQ_VER="" JQ_STATUS="-"
+BC_VER="-" BC_STATUS="-"
+CURL_VER="-" CURL_STATUS="-"
+TAR_VER="-" TAR_STATUS="-"
+DOCKER_VER="-" DOCKER_STATUS="-"
+COMPOSE_VER="-" COMPOSE_STATUS="-"
+YQ_VER="-" YQ_STATUS="-"
+JQ_VER="-" JQ_STATUS="-"
 USE_YQ=false
 
 # --- 辅助函数 ---
@@ -38,19 +37,24 @@ fn_print_info() { echo -e "  $1"; }
 
 # --- 核心函数 ---
 
-## --- 修改开始 1: 全面重构依赖检查与报告 ---
+## --- 修改开始 1: 精简版本报告 & 修复 Docker Compose 检测 ---
 fn_report_dependencies() {
     fn_print_info "--- 环境诊断摘要 ---"
-    printf "${BOLD}%-18s %-35s %-15s${NC}\n" "工具" "检测到的版本" "状态"
-    printf "${CYAN}%-18s %-35s %-15s${NC}\n" "------------------" "-----------------------------------" "---------------"
-    printf "%-18s %-35s %-15s\n" "bc" "$BC_VER" "$BC_STATUS"
-    printf "%-18s %-35s %-15s\n" "curl" "$CURL_VER" "$CURL_STATUS"
-    printf "%-18s %-35s %-15s\n" "tar" "$TAR_VER" "$TAR_STATUS"
-    printf "%-18s %-35s %-15s\n" "Docker" "$DOCKER_VER" "$DOCKER_STATUS"
-    printf "%-18s %-35s %-15s\n" "Docker Compose" "$COMPOSE_VER" "$COMPOSE_STATUS"
-    printf "%-18s %-35s %-15s\n" "yq" "$YQ_VER" "$YQ_STATUS"
-    printf "%-18s %-35s %-15s\n" "jq" "$JQ_VER" "$JQ_STATUS"
+    printf "${BOLD}%-18s %-20s %-15s${NC}\n" "工具" "检测到的版本" "状态"
+    printf "${CYAN}%-18s %-20s %-15s${NC}\n" "------------------" "--------------------" "---------------"
+    printf "%-18s %-20s %-15s\n" "bc" "$BC_VER" "$BC_STATUS"
+    printf "%-18s %-20s %-15s\n" "curl" "$CURL_VER" "$CURL_STATUS"
+    printf "%-18s %-20s %-15s\n" "tar" "$TAR_VER" "$TAR_STATUS"
+    printf "%-18s %-20s %-15s\n" "Docker" "$DOCKER_VER" "$DOCKER_STATUS"
+    printf "%-18s %-20s %-15s\n" "Docker Compose" "$COMPOSE_VER" "$COMPOSE_STATUS"
+    printf "%-18s %-20s %-15s\n" "yq" "$YQ_VER" "$YQ_STATUS"
+    printf "%-18s %-20s %-15s\n" "jq" "$JQ_VER" "$JQ_STATUS"
     echo ""
+}
+
+fn_get_cleaned_version() {
+    # 提取主流的版本号格式 X.Y.Z
+    echo "$1" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1
 }
 
 fn_auto_install_deps() {
@@ -60,10 +64,9 @@ fn_auto_install_deps() {
         if ! command -v "$pkg" &> /dev/null; then
             pkgs_to_install+=("$pkg")
         else
-            # 采集版本信息
             local ver_var_name="${pkg^^}_VER"
             local status_var_name="${pkg^^}_STATUS"
-            declare -g "$ver_var_name"="$($pkg --version 2>/dev/null | head -n 1)"
+            declare -g "$ver_var_name"="$(fn_get_cleaned_version "$($pkg --version 2>/dev/null)")"
             declare -g "$status_var_name"="${GREEN}OK${NC}"
         fi
     done
@@ -85,11 +88,10 @@ fn_auto_install_deps() {
 
     if sudo ${pkg_manager/apt-get/apt-get install -y} ${pkg_manager/dnf/dnf install -y} ${pkg_manager/yum/yum install -y} ${pkg_manager/pacman/pacman -S --noconfirm} "${pkgs_to_install[@]}"; then
         fn_print_success "成功安装缺失的软件包。"
-        # 重新采集版本信息
         for pkg in "${pkgs_to_install[@]}"; do
             local ver_var_name="${pkg^^}_VER"
             local status_var_name="${pkg^^}_STATUS"
-            declare -g "$ver_var_name"="$(command -v "$pkg" &>/dev/null && $pkg --version 2>/dev/null | head -n 1)"
+            declare -g "$ver_var_name"="$(fn_get_cleaned_version "$(command -v "$pkg" &>/dev/null && $pkg --version 2>/dev/null)")"
             declare -g "$status_var_name"="${GREEN}Installed${NC}"
         done
     else
@@ -128,15 +130,26 @@ fn_check_dependencies() {
     
     fn_auto_install_deps
 
-    if ! command -v docker &> /dev/null; then DOCKER_STATUS="${RED}Not Found${NC}"; else DOCKER_VER=$(docker --version); DOCKER_STATUS="${GREEN}OK${NC}"; fi
-    if command -v docker-compose &> /dev/null; then DOCKER_COMPOSE_CMD="docker-compose"; elif docker compose version &> /dev/null; then DOCKER_COMPOSE_CMD="docker compose"; else COMPOSE_STATUS="${RED}Not Found${NC}"; fi
-    if [ -z "$COMPOSE_STATUS" ]; then COMPOSE_VER=$($DOCKER_COMPOSE_CMD version); COMPOSE_STATUS="${GREEN}OK${NC}"; fi
+    if ! command -v docker &> /dev/null; then DOCKER_STATUS="${RED}Not Found${NC}"; else DOCKER_VER=$(fn_get_cleaned_version "$(docker --version)"); DOCKER_STATUS="${GREEN}OK${NC}"; fi
+    
+    # 修复后的 Docker Compose 检测逻辑
+    if command -v docker-compose &> /dev/null; then
+        DOCKER_COMPOSE_CMD="docker-compose"
+        COMPOSE_VER="v$(fn_get_cleaned_version "$($DOCKER_COMPOSE_CMD version)")"
+        COMPOSE_STATUS="${GREEN}OK (v1)${NC}"
+    elif docker compose version &> /dev/null; then
+        DOCKER_COMPOSE_CMD="docker compose"
+        COMPOSE_VER=$(docker compose version | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+        COMPOSE_STATUS="${GREEN}OK (v2)${NC}"
+    else
+        DOCKER_COMPOSE_CMD=""
+        COMPOSE_STATUS="${RED}Not Found${NC}"
+    fi
 
     local YQ_TARGET_VERSION="4.47.1"; local needs_install=false
     if ! command -v yq &> /dev/null; then
         fn_print_info "yq 未安装，将开始智能安装流程..."; needs_install=true
     else
-        # 使用正则表达式精确提取版本号
         local existing_version=$(yq --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
         if [ -z "$existing_version" ]; then
             fn_print_warning "检测到 yq 命令，但无法识别其版本，将尝试重新安装..."; needs_install=true
@@ -155,14 +168,14 @@ fn_check_dependencies() {
         if fn_download_and_install_yq; then
             YQ_VER="v${YQ_TARGET_VERSION}"; YQ_STATUS="${GREEN}Installed${NC}"; USE_YQ=true
         else
-            YQ_VER="N/A"; YQ_STATUS="${YELLOW}Fallback (sed)${NC}"; USE_YQ=false
+            YQ_VER="-"; YQ_STATUS="${YELLOW}Fallback (sed)${NC}"; USE_YQ=false
         fi
     fi
 
-    if ! command -v jq &> /dev/null; then JQ_STATUS="Not Found"; else JQ_VER=$(jq --version); JQ_STATUS="${GREEN}OK${NC}"; fi
+    if ! command -v jq &> /dev/null; then JQ_STATUS="${RED}Not Found${NC}"; else JQ_VER=$(jq --version); JQ_STATUS="${GREEN}OK${NC}"; fi
     
     fn_report_dependencies
-    if [[ "$DOCKER_STATUS" != "${GREEN}OK${NC}" || "$COMPOSE_STATUS" != "${GREEN}OK${NC}" ]]; then
+    if [[ "$DOCKER_STATUS" == *"${RED}Not Found${NC}"* || "$COMPOSE_STATUS" == *"${RED}Not Found${NC}"* ]]; then
         fn_print_error "核心组件 Docker 或 Docker Compose 未安装，请安装后重试。"
     fi
 }
@@ -305,7 +318,7 @@ fn_create_project_structure() { fn_print_info "正在创建项目目录结构...
 
 clear
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v12.3${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v12.4${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
