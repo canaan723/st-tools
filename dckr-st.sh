@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 14.0 (终极稳定 sed 版)
-# 作者: Qingjue (由 AI 助手基于 v13.0 优化)
-# 更新日志 (v14.0):
-# - [核心重构] 彻底放弃 yq，回归到最稳定的 sed 进行配置修改，依赖项降至最低。
-# - [核心策略] 采用“动态获取 + 精准修改”模式：先由容器生成最新官方配置文件，再用 sed 修改，确保配置永远最新。
-# - [简化] 移除了所有与 yq 和 jq 相关的检测、安装、回退逻辑，脚本更纯净、更可靠。
+# 版本: 14.1 (终极修复版)
+# 作者: Qingjue (由 AI 助手基于 v14.0 优化)
+# 更新日志 (v14.1):
+# - [修复] 解决了 curl | bash 管道执行时标题显示不完整的问题。
+# - [修复] 修正了 sed 命令的逻辑错误，确保单用户模式的密码能被正确写入。
+# - [优化] 采纳建议，增强了旧目录清理逻辑，会先停止并移除关联的旧容器。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -25,6 +25,7 @@ CURL_VER="-" CURL_STATUS="-"
 TAR_VER="-" TAR_STATUS="-"
 DOCKER_VER="-" DOCKER_STATUS="-"
 COMPOSE_VER="-" COMPOSE_STATUS="-"
+CONTAINER_NAME="sillytavern" # 定义容器名
 
 # --- 辅助函数 ---
 fn_print_step() { echo -e "\n${CYAN}═══ $1 ═══${NC}"; }
@@ -92,10 +93,10 @@ fn_check_dependencies() {
     fi
 }
 
+## --- 修改开始 2: 修复密码写入逻辑 ---
 fn_apply_config_changes() {
     fn_print_info "正在使用 ${BOLD}sed${NC} 精准修改配置..."
 
-    # 健壮的 sed 命令，忽略默认值和缩进
     sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # * 允许外部访问/" "$CONFIG_FILE"
     sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false # * 关闭IP白名单模式/" "$CONFIG_FILE"
     sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400 # * 24小时退出登录/" "$CONFIG_FILE"
@@ -106,14 +107,15 @@ fn_apply_config_changes() {
 
     if [[ "$run_mode" == "1" ]]; then
         sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # * 启用基础认证/" "$CONFIG_FILE"
-        # 注意：SillyTavern 的 config.yaml 中，username/password 在 basicAuthUser 键下
-        sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)[a-zA-Z]+:/{s/^([[:space:]]*)username: .*/\1username: \"$single_user\"/}" "$CONFIG_FILE"
-        sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)[a-zA-Z]+:/{s/^([[:space:]]*)password: .*/\1password: \"$single_pass\"/}" "$CONFIG_FILE"
+        # 修复后的 sed 命令，使用独立的、精确的范围来修改 username 和 password
+        sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$single_user\"/}" "$CONFIG_FILE"
+        sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$single_pass\"/}" "$CONFIG_FILE"
     elif [[ "$run_mode" == "2" ]]; then
         sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # * 临时开启基础认证以设置管理员/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # * 启用多用户模式/" "$CONFIG_FILE"
     fi
 }
+## --- 修改结束 2 ---
 
 fn_apply_docker_config() {
     local config_content="$1"
@@ -204,16 +206,51 @@ fn_speed_test_and_configure_mirrors() {
 }
 
 fn_get_public_ip() { local ip; ip=$(curl -s --max-time 5 https://api.ipify.org) || ip=$(curl -s --max-time 5 https://ifconfig.me) || ip=$(hostname -I | awk '{print $1}'); echo "$ip"; }
-fn_confirm_and_delete_dir() { local dir_to_delete="$1"; fn_print_warning "目录 '$dir_to_delete' 已存在，其中可能包含您之前的聊天记录和角色卡。"; echo -ne "您确定要删除此目录并继续安装吗？[Y/n]: "; read -r c1 < /dev/tty; c1=${c1:-y}; if [[ ! "$c1" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。"; fi; echo -ne "${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 [Y/n]: ${NC}"; read -r c2 < /dev/tty; c2=${c2:-y}; if [[ ! "$c2" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。"; fi; echo -ne "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}"; read -r c3 < /dev/tty; if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。"; fi; fn_print_info "正在删除旧目录: $dir_to_delete..."; rm -rf "$dir_to_delete"; fn_print_success "旧目录已删除。"; }
+
+## --- 修改开始 3: 增强清理逻辑 ---
+fn_confirm_and_delete_dir() {
+    local dir_to_delete="$1"
+    local container_name="$2"
+    fn_print_warning "目录 '$dir_to_delete' 已存在，其中可能包含您之前的聊天记录和角色卡。"
+    echo -ne "您确定要【彻底清理】并继续安装吗？此操作会停止并删除旧容器。[Y/n]: "
+    read -r c1 < /dev/tty; c1=${c1:-y}
+    if [[ ! "$c1" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。"; fi
+    
+    echo -ne "${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 [Y/n]: ${NC}"
+    read -r c2 < /dev/tty; c2=${c2:-y}
+    if [[ ! "$c2" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。"; fi
+    
+    echo -ne "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}"
+    read -r c3 < /dev/tty
+    if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。"; fi
+
+    fn_print_info "正在停止可能正在运行的旧容器: $container_name..."
+    docker stop "$container_name" >/dev/null 2>&1 || true
+    fn_print_success "旧容器已停止。"
+
+    fn_print_info "正在移除旧容器: $container_name..."
+    docker rm "$container_name" >/dev/null 2>&1 || true
+    fn_print_success "旧容器已移除。"
+
+    fn_print_info "正在删除旧目录: $dir_to_delete..."
+    rm -rf "$dir_to_delete"
+    fn_print_success "旧目录已彻底清理。"
+}
+## --- 修改结束 3 ---
+
 fn_create_project_structure() { fn_print_info "正在创建项目目录结构..."; mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"; chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"; fn_print_info "正在设置安全的文件权限..."; find "$INSTALL_DIR" -type d -exec chmod 755 {} +; find "$INSTALL_DIR" -type f -exec chmod 644 {} +; fn_print_success "项目目录创建并授权成功！"; }
 
 # ==============================================================================
 #   主逻辑开始
 # ==============================================================================
 
+## --- 修改开始 1: 修复标题显示问题 ---
+printf "\n"
 clear
+## --- 修改结束 1 ---
+
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v14.0${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v14.1${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
@@ -233,7 +270,9 @@ if [[ "$run_mode" == "1" ]]; then read -p "请输入您的自定义用户名: " 
 
 # --- 阶段三：自动化部署 ---
 fn_print_step "[ 3 / 5 ] 创建项目文件"
-if [ -d "$INSTALL_DIR" ]; then fn_confirm_and_delete_dir "$INSTALL_DIR"; fi
+if [ -d "$INSTALL_DIR" ]; then
+    fn_confirm_and_delete_dir "$INSTALL_DIR" "$CONTAINER_NAME"
+fi
 fn_create_project_structure
 
 TARGET_UID=$(id -u "$TARGET_USER")
@@ -242,8 +281,8 @@ TARGET_GID=$(id -g "$TARGET_USER")
 cat <<EOF > "$COMPOSE_FILE"
 services:
   sillytavern:
-    container_name: sillytavern
-    hostname: sillytavern
+    container_name: ${CONTAINER_NAME}
+    hostname: ${CONTAINER_NAME}
     image: ghcr.io/sillytavern/sillytavern:latest
     user: "${TARGET_UID}:${TARGET_GID}"
     environment:
