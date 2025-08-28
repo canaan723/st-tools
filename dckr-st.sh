@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 11.6 (强健依赖安装 & SELinux 兼容版)
-# 作者: Qingjue (由 AI 助手基于 v11.5 优化)
-# 更新日志 (v11.6):
-# - [重构] yq 安装逻辑，改为从 API 获取版本并下载 tar.gz 包，增加重试，确保安装成功。
-# - [修复] 为 Docker Compose 的 volumes 添加 `:z` 标志，解决在启用 SELinux 的系统上的权限问题。
-# - [优化] 统一了所有交互式提示语的风格。
+# 版本: 12.0 (全自动依赖版)
+# 作者: Qingjue (由 AI 助手基于 v11.9 优化)
+# 更新日志 (v12.0):
+# - [核心] 新增依赖自动安装功能：脚本现在会自动检测并安装缺失的 bc, curl, tar 等基础软件包，无需用户手动操作。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -32,63 +30,154 @@ fn_print_info() { echo -e "  $1"; }
 
 # --- 核心函数 ---
 
-## --- 修改开始 1: 重构 yq 依赖检查与安装 ---
-fn_check_dependencies() {
-    fn_print_info "正在检查核心依赖..."
-    if ! command -v docker &> /dev/null; then fn_print_error "未检测到 Docker。"; fi
-    if ! command -v bc &> /dev/null; then fn_print_error "需要 'bc' 命令，请先安装 (例如: sudo apt install bc)。"; fi
-    if ! command -v curl &> /dev/null; then fn_print_error "需要 'curl' 命令，请先安装 (例如: sudo apt install curl)。"; fi
-    if ! command -v tar &> /dev/null; then fn_print_error "需要 'tar' 命令，请先安装 (例如: sudo apt install tar)。"; fi
-    if command -v docker-compose &> /dev/null; then DOCKER_COMPOSE_CMD="docker-compose"; elif docker compose version &> /dev/null; then DOCKER_COMPOSE_CMD="docker compose"; else fn_print_error "未检测到 Docker Compose。"; fi
-    
-    # 检查 yq
-    if command -v yq &> /dev/null && yq --version | grep -q 'version 4'; then
-        USE_YQ=true
-        fn_print_success "检测到 yq v4+，将使用 yq 修改配置 (更稳定)。"
+## --- 修改开始 1: 新增依赖自动安装函数 ---
+fn_auto_install_deps() {
+    local pkgs_to_check=("bc" "curl" "tar")
+    local pkgs_to_install=()
+
+    fn_print_info "正在检查系统基础软件包..."
+    for pkg in "${pkgs_to_check[@]}"; do
+        if ! command -v "$pkg" &> /dev/null; then
+            pkgs_to_install+=("$pkg")
+        fi
+    done
+
+    if [ ${#pkgs_to_install[@]} -eq 0 ]; then
+        fn_print_success "系统基础软件包均已安装。"
+        return
+    fi
+
+    fn_print_warning "检测到以下必需的软件包缺失: ${pkgs_to_install[*]}"
+    fn_print_info "正在尝试自动安装..."
+
+    # 权限检查：确认我们可以使用 sudo
+    if ! sudo -v; then
+        fn_print_error "无法获取 sudo 权限，无法自动安装依赖。请手动安装: ${pkgs_to_install[*]}"
+    fi
+
+    local pkg_manager=""
+    if command -v apt-get &> /dev/null; then
+        pkg_manager="apt-get"
+    elif command -v dnf &> /dev/null; then
+        pkg_manager="dnf"
+    elif command -v yum &> /dev/null; then
+        pkg_manager="yum"
+    elif command -v pacman &> /dev/null; then
+        pkg_manager="pacman"
     else
-        fn_print_warning "yq 未安装或版本过低，正在尝试自动安装最新版..."
+        fn_print_error "无法识别您的包管理器 (apt, dnf, yum, pacman)。请手动安装缺失的包: ${pkgs_to_install[*]}"
+    fi
+
+    # 对 apt 系执行 update
+    if [ "$pkg_manager" == "apt-get" ]; then
+        fn_print_info "正在运行 'sudo apt-get update'..."
+        sudo apt-get update -y || fn_print_warning "'apt-get update' 失败，但仍会尝试安装..."
+    fi
+
+    # 执行安装
+    local install_cmd
+    case "$pkg_manager" in
+        apt-get) install_cmd="sudo apt-get install -y ${pkgs_to_install[*]}" ;;
+        dnf|yum) install_cmd="sudo $pkg_manager install -y ${pkgs_to_install[*]}" ;;
+        pacman) install_cmd="sudo pacman -S --noconfirm ${pkgs_to_install[*]}" ;;
+    esac
+
+    if $install_cmd; then
+        fn_print_success "成功安装缺失的软件包。"
+    else
+        fn_print_error "自动安装失败。请手动安装后重试: ${pkgs_to_install[*]}"
+    fi
+}
+
+fn_check_dependencies() {
+    fn_print_info "正在检查所有依赖项..."
+    
+    # 步骤 1: 自动安装基础包
+    fn_auto_install_deps
+
+    # 步骤 2: 检查核心服务 (Docker, Docker Compose)
+    if ! command -v docker &> /dev/null; then fn_print_error "未检测到 Docker。请先根据您系统的官方文档安装 Docker。"; fi
+    if command -v docker-compose &> /dev/null; then DOCKER_COMPOSE_CMD="docker-compose"; elif docker compose version &> /dev/null; then DOCKER_COMPOSE_CMD="docker compose"; else fn_print_error "未检测到 Docker Compose。请先安装它。"; fi
+    
+    # 步骤 3: yq 智能检查与安装
+    local YQ_TARGET_VERSION="4.47.1"
+    local needs_install=false
+
+    if ! command -v yq &> /dev/null; then
+        fn_print_info "yq 未安装，将安装指定版本 (v${YQ_TARGET_VERSION})..."
+        needs_install=true
+    else
+        local existing_version
+        if ! existing_version=$(yq --version 2>/dev/null | awk '{print $3}'); then
+            fn_print_warning "无法获取现有 yq 版本（可能已损坏），将尝试重新安装..."
+            needs_install=true
+        else
+            local highest_version
+            highest_version=$(printf "%s\n%s\n" "$existing_version" "$YQ_TARGET_VERSION" | sort -V | tail -n1)
+            
+            if [ "$highest_version" == "$existing_version" ] && [[ "$existing_version" != "$YQ_TARGET_VERSION" ]]; then
+                fn_print_success "检测到 yq v${existing_version}，满足要求 (>= v${YQ_TARGET_VERSION})，将使用现有版本。"
+                USE_YQ=true
+            elif [ "$existing_version" == "$YQ_TARGET_VERSION" ]; then
+                fn_print_success "检测到 yq v${existing_version}，版本正确。"
+                USE_YQ=true
+            else
+                fn_print_warning "检测到 yq v${existing_version}，低于推荐版本 v${YQ_TARGET_VERSION}，将进行升级..."
+                needs_install=true
+            fi
+        fi
+    fi
+
+    if [ "$needs_install" = true ]; then
         local arch
         case $(uname -m) in
             x86_64) arch="amd64" ;;
             aarch64) arch="arm64" ;;
-            *) fn_print_warning "不支持的系统架构: $(uname -m)。将回退到 sed 方案。"; return ;;
+            *) fn_print_warning "不支持的系统架构: $(uname -m)。将回退到 sed 方案。"; USE_YQ=false; return ;;
         esac
         
+        local yq_binary="yq_linux_${arch}"
+        local yq_archive="${yq_binary}.tar.gz"
+        local github_path="mikefarah/yq/releases/download/v${YQ_TARGET_VERSION}/${yq_archive}"
+
+        local download_urls=(
+            "https://github.com/${github_path}"
+            "https://gh-proxy.com/https://github.com/${github_path}"
+            "https://gh.llkk.cc/https://github.com/${github_path}"
+            "https://git.723123.xyz/gh/${github_path}"
+        )
+
         local install_success=false
-        for i in {1..3}; do
-            fn_print_info "正在尝试第 $i 次下载并安装 yq..."
-            local latest_version=$(curl -sL "https://api.github.com/repos/mikefarah/yq/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-            if [ -z "$latest_version" ]; then
-                fn_print_warning "从 GitHub API 获取最新版本号失败。"
-                sleep 2
-                continue
-            fi
-            
-            local yq_binary="yq_linux_${arch}"
-            local yq_url="https://github.com/mikefarah/yq/releases/download/${latest_version}/${yq_binary}.tar.gz"
-            
-            if curl -sSL "$yq_url" | tar xz -O "./${yq_binary}" > /usr/local/bin/yq && chmod +x /usr/local/bin/yq; then
-                if command -v yq &> /dev/null && yq --version | grep -q 'version 4'; then
-                    fn_print_success "yq 最新版 (${latest_version}) 已成功安装并验证！"
+        for url in "${download_urls[@]}"; do
+            fn_print_info "正在尝试从镜像源下载: ${url}"
+            if curl -sSL --fail "$url" | sudo tar xz -O "./${yq_binary}" > /usr/local/bin/yq; then
+                sudo chmod +x /usr/local/bin/yq
+                if command -v yq &> /dev/null && yq --version | grep -q "version ${YQ_TARGET_VERSION}"; then
+                    fn_print_success "yq v${YQ_TARGET_VERSION} 已成功安装并验证！"
                     USE_YQ=true
                     install_success=true
                     break
+                else
+                    fn_print_warning "下载成功但文件验证失败，尝试下一个源..."
                 fi
+            else
+                fn_print_warning "从该源下载失败，尝试下一个..."
             fi
-            fn_print_warning "第 $i 次尝试失败。"
-            sleep 2
         done
 
         if [ "$install_success" = false ]; then
-            fn_print_warning "yq 自动安装失败，请检查网络或权限。将回退到 sed 方案。"
+            fn_print_warning "所有 yq 下载源均尝试失败。将回退到基于文本的 sed 方案。"
+            fn_print_warning "注意：sed 方案在未来 SillyTavern 更新后可能失效。"
+            USE_YQ=false
         fi
     fi
 
     if command -v jq &> /dev/null; then USE_JQ=true; fi
-    fn_print_success "核心依赖检查通过！"
+    fn_print_success "所有依赖项检查完毕！"
 }
 ## --- 修改结束 1 ---
 
+# ... (其他所有函数保持不变) ...
 fn_apply_docker_config() {
     local config_content="$1"
     if [[ -z "$config_content" ]]; then
@@ -113,8 +202,6 @@ fn_apply_docker_config() {
         fi
     fi
 }
-
-## --- 修改开始 2: 统一提示语格式 ---
 fn_speed_test_and_configure_mirrors() {
     fn_print_info "正在智能检测 Docker 镜像源可用性 (每个源超时 30 秒)..."
     local mirrors=("docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live" "https://dockerproxy.1panel.live" "https://hub.rat.dev")
@@ -178,10 +265,7 @@ fn_speed_test_and_configure_mirrors() {
         fi
     fi
 }
-## --- 修改结束 2 ---
-
 fn_apply_config_changes() {
-    # ... (此函数内容不变) ...
     local tool_name
     if [ "$USE_YQ" = true ]; then tool_name="yq"; else tool_name="sed"; fi
     fn_print_info "正在使用 ${BOLD}${tool_name}${NC} 精准修改配置并添加注释..."
@@ -220,7 +304,6 @@ fn_apply_config_changes() {
         fi
     fi
 }
-
 fn_get_public_ip() { local ip; ip=$(curl -s --max-time 5 https://api.ipify.org) || ip=$(curl -s --max-time 5 https://ifconfig.me) || ip=$(hostname -I | awk '{print $1}'); echo "$ip"; }
 fn_confirm_and_delete_dir() { local dir_to_delete="$1"; fn_print_warning "目录 '$dir_to_delete' 已存在，其中可能包含您之前的聊天记录和角色卡。"; echo -ne "您确定要删除此目录并继续安装吗？[Y/n]: "; read -r c1 < /dev/tty; c1=${c1:-y}; if [[ ! "$c1" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。"; fi; echo -ne "${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 [Y/n]: ${NC}"; read -r c2 < /dev/tty; c2=${c2:-y}; if [[ ! "$c2" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。"; fi; echo -ne "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}"; read -r c3 < /dev/tty; if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。"; fi; fn_print_info "正在删除旧目录: $dir_to_delete..."; rm -rf "$dir_to_delete"; fn_print_success "旧目录已删除。"; }
 fn_create_project_structure() { fn_print_info "正在创建项目目录结构..."; mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"; chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"; fn_print_info "正在设置安全的文件权限..."; find "$INSTALL_DIR" -type d -exec chmod 755 {} +; find "$INSTALL_DIR" -type f -exec chmod 644 {} +; fn_print_success "项目目录创建并授权成功！"; }
@@ -231,7 +314,7 @@ fn_create_project_structure() { fn_print_info "正在创建项目目录结构...
 
 clear
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v11.6${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v12.0${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
@@ -257,7 +340,6 @@ fn_create_project_structure
 TARGET_UID=$(id -u "$TARGET_USER")
 TARGET_GID=$(id -g "$TARGET_USER")
 
-## --- 修改开始 3: 为 volumes 添加 :z 标志以兼容 SELinux ---
 cat <<EOF > "$COMPOSE_FILE"
 services:
   sillytavern:
@@ -277,7 +359,6 @@ services:
       - "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party:z"
     restart: unless-stopped
 EOF
-## --- 修改结束 3 ---
 fn_print_success "docker-compose.yml 文件创建成功！"
 
 # --- 阶段四：初始化与配置 ---
