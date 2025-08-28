@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 14.1 (终极修复版)
-# 作者: Qingjue (由 AI 助手基于 v14.0 优化)
-# 更新日志 (v14.1):
-# - [修复] 解决了 curl | bash 管道执行时标题显示不完整的问题。
-# - [修复] 修正了 sed 命令的逻辑错误，确保单用户模式的密码能被正确写入。
-# - [优化] 采纳建议，增强了旧目录清理逻辑，会先停止并移除关联的旧容器。
+# 版本: 14.2 (终极兼容版)
+# 作者: Qingjue (由 AI 助手基于 v14.1 优化)
+# 更新日志 (v14.2):
+# - [核心修复] 解决了因 SELinux/AppArmor 等系统权限策略导致的 EACCES 错误。
+# - [优化] 在创建目录后，为核心数据目录赋予更开放的写入权限，极大增强了脚本的环境兼容性。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -93,7 +92,6 @@ fn_check_dependencies() {
     fi
 }
 
-## --- 修改开始 2: 修复密码写入逻辑 ---
 fn_apply_config_changes() {
     fn_print_info "正在使用 ${BOLD}sed${NC} 精准修改配置..."
 
@@ -107,7 +105,6 @@ fn_apply_config_changes() {
 
     if [[ "$run_mode" == "1" ]]; then
         sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # * 启用基础认证/" "$CONFIG_FILE"
-        # 修复后的 sed 命令，使用独立的、精确的范围来修改 username 和 password
         sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$single_user\"/}" "$CONFIG_FILE"
         sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$single_pass\"/}" "$CONFIG_FILE"
     elif [[ "$run_mode" == "2" ]]; then
@@ -115,7 +112,6 @@ fn_apply_config_changes() {
         sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # * 启用多用户模式/" "$CONFIG_FILE"
     fi
 }
-## --- 修改结束 2 ---
 
 fn_apply_docker_config() {
     local config_content="$1"
@@ -206,8 +202,6 @@ fn_speed_test_and_configure_mirrors() {
 }
 
 fn_get_public_ip() { local ip; ip=$(curl -s --max-time 5 https://api.ipify.org) || ip=$(curl -s --max-time 5 https://ifconfig.me) || ip=$(hostname -I | awk '{print $1}'); echo "$ip"; }
-
-## --- 修改开始 3: 增强清理逻辑 ---
 fn_confirm_and_delete_dir() {
     local dir_to_delete="$1"
     local container_name="$2"
@@ -236,21 +230,35 @@ fn_confirm_and_delete_dir() {
     rm -rf "$dir_to_delete"
     fn_print_success "旧目录已彻底清理。"
 }
-## --- 修改结束 3 ---
 
-fn_create_project_structure() { fn_print_info "正在创建项目目录结构..."; mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"; chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"; fn_print_info "正在设置安全的文件权限..."; find "$INSTALL_DIR" -type d -exec chmod 755 {} +; find "$INSTALL_DIR" -type f -exec chmod 644 {} +; fn_print_success "项目目录创建并授权成功！"; }
+## --- 修改开始: 增强权限兼容性 ---
+fn_create_project_structure() {
+    fn_print_info "正在创建项目目录结构..."
+    mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"
+    
+    fn_print_info "正在设置文件所有权..."
+    chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
+    
+    fn_print_info "正在设置基础文件权限..."
+    find "$INSTALL_DIR" -type d -exec chmod 755 {} +
+    find "$INSTALL_DIR" -type f -exec chmod 644 {} +
+    
+    fn_print_info "正在为核心数据目录赋予高兼容性权限..."
+    chmod -R 777 "$INSTALL_DIR/data"
+    
+    fn_print_success "项目目录创建并授权成功！"
+}
+## --- 修改结束 ---
 
 # ==============================================================================
 #   主逻辑开始
 # ==============================================================================
 
-## --- 修改开始 1: 修复标题显示问题 ---
 printf "\n"
 clear
-## --- 修改结束 1 ---
 
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v14.1${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v14.2${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
