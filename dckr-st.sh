@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.3.0 (根据特定需求优化)
+# 版本: 1.3.1 (修复并行化闪退问题)
 # 作者: Qingjue (及AI助手)
 
 # --- 初始化与环境设置 ---
@@ -42,8 +42,7 @@ fn_init_sudo() {
         fn_print_error "未找到 sudo 命令。本脚本需要 sudo 来执行特权操作。"
     fi
     # 预先获取 sudo 权限，避免后续操作中反复输入密码
-    sudo -v
-    if [ $? -ne 0 ]; then
+    if ! sudo -v; then
         fn_print_error "获取 sudo 权限失败。请确保您有权限执行 sudo 操作。"
     fi
     fn_print_success "Sudo 权限已确认。"
@@ -133,6 +132,9 @@ fn_speed_test_and_configure_mirrors() {
     # 创建临时目录存放测速结果
     local results_dir
     results_dir=$(mktemp -d)
+    if [ -z "$results_dir" ] || [ ! -d "$results_dir" ]; then
+        fn_print_error "无法创建临时目录，请检查 /tmp 目录权限。"
+    fi
     trap 'rm -rf "$results_dir"' EXIT # 确保脚本退出时清理临时目录
 
     local test_count=0
@@ -160,9 +162,9 @@ fn_speed_test_and_configure_mirrors() {
         ) &
     done
 
-    # 等待所有后台测试任务完成
     fn_print_info "测试正在进行中，请稍候..."
-    wait
+    # FIX: 增加 '|| true' 防止 set -e 在有任务失败时中止脚本
+    wait || true
 
     # 收集并处理结果
     local results
@@ -383,7 +385,7 @@ fn_display_final_info() {
 printf "\n" && tput reset
 
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.3${NC}       ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.3.1${NC}    ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的 Docker 自动化安装。"
