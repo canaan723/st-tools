@@ -196,47 +196,57 @@ fn_create_project_structure() {
 }
 
 # ==================== MODIFICATION START ====================
-# 全新重写的总进度条函数 (AWK 稳定版)
+# 全新重写的总进度条函数 (后台日志 + 前台轮询稳定版)
 fn_pull_with_progress_bar() {
     local compose_file="$1"
     local docker_compose_cmd="$2"
-    # image_name 参数在新版中不再需要，但保留以兼容函数调用
-    # local image_name="$3"
+    
+    fn_print_info "正在拉取 SillyTavern 镜像，这可能需要一些时间..."
 
-    fn_print_info "正在拉取 SillyTavern 镜像，实时进度如下..."
+    # 创建一个临时文件来存储 docker pull 的日志
+    local PULL_LOG
+    PULL_LOG=$(mktemp)
+    # 设置一个陷阱，确保脚本退出时（无论成功失败）都会删除临时文件
+    trap 'rm -f "$PULL_LOG"' EXIT
 
-    # stdbuf: 强制行缓冲，确保实时输出。
-    # 2>&1: 将 stderr 重定向到 stdout，因为进度信息在 stderr。
-    # awk:
-    #   BEGIN { RS="\r" }: 将回车符 \r 作为记录分隔符，完美处理动态行。
-    #   /.../: 只处理包含进度关键词的行。
-    #   { ... }:
-    #     gsub: 清理行尾可能存在的空白符。
-    #     printf: 用我们自己的 \r 来覆盖打印，并用空格填充保证旧内容被完全清除。
-    #     fflush(): 立即刷新输出，保证实时性。
-    stdbuf -oL -eL $docker_compose_cmd -f "$compose_file" pull 2>&1 | \
-    awk '
-        BEGIN { RS="\r" }
-        /Downloading|Extracting|Pull complete|Verifying Checksum|Already exists/ {
-            gsub(/\s+$/, "");
-            printf "\r  ${YELLOW}状态:${NC} %-80s", $0;
-            fflush();
-        }
-    '
+    # 在后台执行拉取命令，并将所有输出重定向到日志文件
+    $docker_compose_cmd -f "$compose_file" pull > "$PULL_LOG" 2>&1 &
+    local pid=$! # 获取后台任务的进程ID
 
-    # PIPESTATUS[0] 用于获取管道中第一个命令 (docker-compose pull) 的退出码
-    local exit_code=${PIPESTATUS[0]}
+    # 显示旋转动画和状态
+    local spinner="/-\\|"
+    local i=0
+    while kill -0 $pid 2>/dev/null; do
+        # 从日志文件中提取最后一行包含进度的信息
+        local last_progress_line
+        last_progress_line=$(grep -E 'Downloading|Extracting|Verifying' "$PULL_LOG" | tail -n 1)
 
-    # 打印一个换行符，结束覆盖打印的行
-    echo ""
+        # 使用 \r 在单行上持续更新状态
+        printf "\r  ${YELLOW}[%s]${NC} %-90s" "${spinner:$i:1}" "${last_progress_line:-"正在初始化下载..."}"
+        
+        i=$(( (i + 1) % 4 ))
+        sleep 0.5
+    done
+
+    # 清理动画行：用空格覆盖然后换行
+    printf "\r%s\n" "                                                                                              "
+
+    # 等待后台任务结束，并获取其退出码
+    wait $pid
+    local exit_code=$?
+
+    # 再次移除陷阱，因为我们已经处理完了
+    trap - EXIT
+    rm -f "$PULL_LOG"
 
     if [ $exit_code -ne 0 ]; then
-        fn_print_error "拉取 Docker 镜像失败！请检查您的网络或镜像源配置。"
+        fn_print_error "拉取 Docker 镜像失败！请检查您的网络或镜像源配置。可以尝试重新运行脚本。"
     else
         fn_print_success "镜像拉取成功！"
     fi
 }
 # ===================== MODIFICATION END =====================
+
 
 
 fn_verify_container_health() {
