@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 12.5 (终极功能验证版)
-# 作者: Qingjue (由 AI 助手基于 v12.4 优化)
-# 更新日志 (v12.5):
-# - [核心修复] 引入 yq 功能性探测，彻底解决因版本欺骗或损坏导致的执行失败问题。
-# - [核心修复] 修正版本号提取逻辑，确保 tar 等工具的版本能被正确显示。
-# - [核心优化] 重构诊断报告的着色和对齐逻辑，实现完美的终端显示效果。
+# 版本: 13.0 (Docker-Powered 终极版)
+# 作者: Qingjue (由 AI 助手基于 v12.5 优化)
+# 更新日志 (v13.0):
+# - [核心重构] 彻底放弃在主机安装 yq，改为使用官方 yq Docker 容器执行配置修改，实现终极稳定。
+# - [核心简化] 移除了所有 yq 下载、测速、安装、验证及 sed 回退的复杂逻辑。
+# - [优化] 脚本逻辑更清晰、纯净，且对主机的依赖降至最低。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -19,15 +19,14 @@ CYAN='\033[1;36m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
-# --- 全局变量 (存储纯文本状态) ---
+# --- 全局变量 (用于报告) ---
 BC_VER="-" BC_STATUS="-"
 CURL_VER="-" CURL_STATUS="-"
 TAR_VER="-" TAR_STATUS="-"
 DOCKER_VER="-" DOCKER_STATUS="-"
 COMPOSE_VER="-" COMPOSE_STATUS="-"
-YQ_VER="-" YQ_STATUS="-"
+YQ_VER="Official Image" YQ_STATUS="由 Docker 提供"
 JQ_VER="-" JQ_STATUS="-"
-USE_YQ=false
 
 # --- 辅助函数 ---
 fn_print_step() { echo -e "\n${CYAN}═══ $1 ═══${NC}"; }
@@ -38,18 +37,16 @@ fn_print_info() { echo -e "  $1"; }
 
 # --- 核心函数 ---
 
-## --- 修改开始 1: 全面重构依赖检查、报告、版本提取 ---
+## --- 修改开始 1: 全面重构依赖检查与 yq 实现 ---
 fn_report_dependencies() {
     fn_print_info "--- 环境诊断摘要 ---"
-    printf "${BOLD}%-18s %-20s %-15s${NC}\n" "工具" "检测到的版本" "状态"
-    printf "${CYAN}%-18s %-20s %-15s${NC}\n" "------------------" "--------------------" "---------------"
+    printf "${BOLD}%-18s %-20s %-20s${NC}\n" "工具" "检测到的版本" "状态"
+    printf "${CYAN}%-18s %-20s %-20s${NC}\n" "------------------" "--------------------" "--------------------"
     
-    # 动态着色打印
     print_status_line() {
-        local name="$1" version="$2" status="$3" color="$RED"
-        if [[ "$status" == "OK" || "$status" == "Installed" ]]; then color="$GREEN"
-        elif [[ "$status" == "Fallback (sed)" ]]; then color="$YELLOW"; fi
-        printf "%-18s %-20s ${color}%-15s${NC}\n" "$name" "$version" "$status"
+        local name="$1" version="$2" status="$3" color="$GREEN"
+        if [[ "$status" == "Not Found" ]]; then color="$RED"; fi
+        printf "%-18s %-20s ${color}%-20s${NC}\n" "$name" "$version" "$status"
     }
 
     print_status_line "bc" "$BC_VER" "$BC_STATUS"
@@ -63,82 +60,21 @@ fn_report_dependencies() {
 }
 
 fn_get_cleaned_version_num() {
-    # 修复后的正则表达式，可匹配 X.Y, X.Y.Z 等多种格式
     echo "$1" | grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1
-}
-
-fn_auto_install_deps() {
-    local pkgs_to_check=("bc" "curl" "tar")
-    local pkgs_to_install=()
-    for pkg in "${pkgs_to_check[@]}"; do
-        if ! command -v "$pkg" &> /dev/null; then
-            pkgs_to_install+=("$pkg")
-        else
-            local ver_var_name="${pkg^^}_VER"
-            local status_var_name="${pkg^^}_STATUS"
-            declare -g "$ver_var_name"="$(fn_get_cleaned_version_num "$($pkg --version 2>/dev/null)")"
-            declare -g "$status_var_name"="OK"
-        fi
-    done
-
-    if [ ${#pkgs_to_install[@]} -eq 0 ]; then return; fi
-
-    fn_print_warning "检测到必需的软件包缺失: ${pkgs_to_install[*]}，正在尝试自动安装..."
-    if ! sudo -v; then fn_print_error "无法获取 sudo 权限，请手动安装: ${pkgs_to_install[*]}"; fi
-
-    local pkg_manager=""
-    if command -v apt-get &> /dev/null; then pkg_manager="apt-get"; elif command -v dnf &> /dev/null; then pkg_manager="dnf"; elif command -v yum &> /dev/null; then pkg_manager="yum"; elif command -v pacman &> /dev/null; then pkg_manager="pacman"; else
-        fn_print_error "无法识别您的包管理器，请手动安装: ${pkgs_to_install[*]}"
-    fi
-
-    if [ "$pkg_manager" == "apt-get" ]; then
-        fn_print_info "正在运行 'sudo apt-get update'..."
-        sudo apt-get update -y || fn_print_warning "'apt-get update' 失败..."
-    fi
-
-    if sudo ${pkg_manager/apt-get/apt-get install -y} ${pkg_manager/dnf/dnf install -y} ${pkg_manager/yum/yum install -y} ${pkg_manager/pacman/pacman -S --noconfirm} "${pkgs_to_install[@]}"; then
-        fn_print_success "成功安装缺失的软件包。"
-        for pkg in "${pkgs_to_install[@]}"; do
-            local ver_var_name="${pkg^^}_VER"
-            local status_var_name="${pkg^^}_STATUS"
-            declare -g "$ver_var_name"="$(fn_get_cleaned_version_num "$(command -v "$pkg" &>/dev/null && $pkg --version 2>/dev/null)")"
-            declare -g "$status_var_name"="Installed"
-        done
-    else
-        fn_print_error "自动安装失败，请手动安装后重试: ${pkgs_to_install[*]}"
-    fi
-}
-
-fn_download_and_install_yq() {
-    # ... (此函数逻辑不变) ...
-    local YQ_TARGET_VERSION="4.47.1"
-    local arch; case $(uname -m) in x86_64) arch="amd64" ;; aarch64) arch="arm64" ;; *) fn_print_warning "不支持的架构"; return 1 ;; esac
-    local yq_binary="yq_linux_${arch}"; local yq_archive="${yq_binary}.tar.gz"; local checksum_file="checksums"; local github_path_base="mikefarah/yq/releases/download/v${YQ_TARGET_VERSION}"
-    local mirror_bases=( "https://github.com" "https://gh-proxy.com/https://github.com" "https://gh.llkk.cc/https://github.com" ); local special_mirrors=( "https://git.723123.xyz/gh" )
-    fn_print_info "正在为 yq 下载源智能测速 (每个源超时 5 秒)..."
-    local speed_results=""; local test_urls=(); for base in "${mirror_bases[@]}"; do test_urls+=("${base}/${github_path_base}/${checksum_file}"); done; for base in "${special_mirrors[@]}"; do test_urls+=("${base}/${github_path_base}/${checksum_file}"); done
-    for url in "${test_urls[@]}"; do
-        echo -ne "  - 正在测试: ${YELLOW}${url%%/*}${NC}..."; local time_taken=$(curl -o /dev/null -s -w '%{time_total}' --max-time 5 "$url" || echo "9999")
-        if [[ $(echo "$time_taken > 0 && $time_taken < 5" | bc) -eq 1 ]]; then printf " ${GREEN}%.3f 秒${NC}\n" "$time_taken"; speed_results+="${time_taken}|${url}\n"; else echo -e " ${RED}超时或失败${NC}"; fi
-    done
-    local sorted_urls=(); if [ -n "$speed_results" ]; then while IFS= read -r line; do sorted_urls+=("$(echo "$line" | cut -d'|' -f2 | sed "s/${checksum_file}$/${yq_archive}/")"); done <<< "$(echo -e "$speed_results" | sort -n)"; else
-        fn_print_warning "所有下载源测速失败！将按默认顺序尝试。"; for base in "${mirror_bases[@]}"; do sorted_urls+=("${base}/${github_path_base}/${yq_archive}"); done; for base in "${special_mirrors[@]}"; do sorted_urls+=("${base}/${github_path_base}/${yq_archive}"); done; fi
-    fn_print_info "将按以下顺序尝试下载:"; for url in "${sorted_urls[@]}"; do fn_print_info "  - ${url}"; done
-    local tmp_file; tmp_file=$(mktemp); trap 'rm -f "$tmp_file"' EXIT
-    for url in "${sorted_urls[@]}"; do
-        fn_print_info "正在尝试从: ${url}"; if curl -L --fail -o "$tmp_file" -s "$url"; then
-            if file "$tmp_file" | grep -q 'gzip compressed data'; then
-                fn_print_info "下载成功，正在解压和安装..."; if sudo tar xz -f "$tmp_file" -O "./${yq_binary}" > /usr/local/bin/yq; then
-                    sudo chmod +x /usr/local/bin/yq; if command -v yq &> /dev/null && yq --help 2>/dev/null | grep -q "eval (e)"; then
-                        rm -f "$tmp_file"; trap - EXIT; return 0; fi; fi; fi; fi
-        fn_print_warning "从该源处理失败，尝试下一个..."; done
-    return 1
 }
 
 fn_check_dependencies() {
     fn_print_info "--- 依赖环境诊断开始 ---"
     
-    fn_auto_install_deps
+    # 检查基础工具
+    for pkg in "bc" "curl" "tar"; do
+        if command -v "$pkg" &> /dev/null; then
+            declare -g "${pkg^^}_VER"="$(fn_get_cleaned_version_num "$($pkg --version 2>/dev/null)")"
+            declare -g "${pkg^^}_STATUS"="OK"
+        else
+            declare -g "${pkg^^}_STATUS"="Not Found"
+        fi
+    done
 
     if ! command -v docker &> /dev/null; then DOCKER_STATUS="Not Found"; else DOCKER_VER=$(fn_get_cleaned_version_num "$(docker --version)"); DOCKER_STATUS="OK"; fi
     
@@ -155,43 +91,38 @@ fn_check_dependencies() {
         COMPOSE_STATUS="Not Found"
     fi
 
-    local YQ_TARGET_VERSION="4.47.1"; local needs_install=false
-    # 终极功能性探测
-    if command -v yq &> /dev/null && yq --help 2>/dev/null | grep -q "eval (e)"; then
-        YQ_VER="v$(fn_get_cleaned_version_num "$(yq --version)")"
-        YQ_STATUS="OK"
-        USE_YQ=true
-    else
-        if command -v yq &> /dev/null; then
-             fn_print_warning "检测到 yq 命令，但它不是一个兼容的 v4+ 版本，将进行覆盖安装..."
-        else
-             fn_print_info "yq 未安装，将开始智能安装流程..."
-        fi
-        needs_install=true
-    fi
-
-    if [ "$needs_install" = true ]; then
-        if fn_download_and_install_yq; then
-            YQ_VER="v${YQ_TARGET_VERSION}"
-            YQ_STATUS="Installed"
-            USE_YQ=true
-        else
-            YQ_VER="-"
-            YQ_STATUS="Fallback (sed)"
-            USE_YQ=false
-        fi
-    fi
-
     if ! command -v jq &> /dev/null; then JQ_STATUS="Not Found"; else JQ_VER=$(jq --version); JQ_STATUS="OK"; fi
     
     fn_report_dependencies
-    if [[ "$DOCKER_STATUS" == "Not Found" || "$COMPOSE_STATUS" == "Not Found" ]]; then
-        fn_print_error "核心组件 Docker 或 Docker Compose 未安装，请安装后重试。"
+    
+    # 检查是否有未找到的依赖
+    if [[ "$BC_STATUS" == "Not Found" || "$CURL_STATUS" == "Not Found" || "$TAR_STATUS" == "Not Found" || "$DOCKER_STATUS" == "Not Found" || "$COMPOSE_STATUS" == "Not Found" ]]; then
+        fn_print_error "检测到核心组件缺失，请确保 bc, curl, tar, docker, docker-compose 均已安装。"
     fi
+}
+
+# 新增：使用 Docker 容器来执行 yq 命令
+fn_yq_docker() {
+    local config_dir
+    config_dir=$(dirname "$CONFIG_FILE")
+    local config_filename
+    config_filename=$(basename "$CONFIG_FILE")
+    
+    # 确保 yq 镜像存在
+    if ! docker image inspect mikefarah/yq:latest > /dev/null 2>&1; then
+        fn_print_info "首次使用，正在拉取 yq 官方镜像..."
+        docker pull mikefarah/yq:latest || fn_print_error "拉取 yq 镜像失败！"
+    fi
+
+    # --user 确保写入文件的权限正确
+    docker run --rm \
+      --user "$(id -u "$TARGET_USER"):$(id -g "$TARGET_USER")" \
+      -v "$config_dir:/workdir" \
+      mikefarah/yq:latest "$@" "$config_filename"
 }
 ## --- 修改结束 1 ---
 
-# ... (其他所有函数保持不变) ...
+# ... (其他函数保持不变，除了 fn_apply_config_changes) ...
 fn_apply_docker_config() {
     local config_content="$1"
     if [[ -z "$config_content" ]]; then
@@ -279,45 +210,30 @@ fn_speed_test_and_configure_mirrors() {
         fi
     fi
 }
-fn_apply_config_changes() {
-    local tool_name
-    if [ "$USE_YQ" = true ]; then tool_name="yq"; else tool_name="sed"; fi
-    fn_print_info "正在使用 ${BOLD}${tool_name}${NC} 精准修改配置并添加注释..."
 
-    if [ "$USE_YQ" = true ]; then
-        yq e -i '(.listen = true) | (.listen | line_comment = "* 允许外部访问")' "$CONFIG_FILE"
-        yq e -i '(.whitelistMode = false) | (.whitelistMode | line_comment = "* 关闭IP白名单模式")' "$CONFIG_FILE"
-        yq e -i '(.sessionTimeout = 86400) | (.sessionTimeout | line_comment = "* 24小时退出登录")' "$CONFIG_FILE"
-        yq e -i '(.backups.common.numberOfBackups = 5) | (.backups.common.numberOfBackups | line_comment = "* 单文件保留的备份数量")' "$CONFIG_FILE"
-        yq e -i '(.backups.chat.maxTotalBackups = 30) | (.backups.chat.maxTotalBackups | line_comment = "* 总聊天文件数量上限")' "$CONFIG_FILE"
-        yq e -i '(.performance.lazyLoadCharacters = true) | (.performance.lazyLoadCharacters | line_comment = "* 懒加载、点击角色卡才加载")' "$CONFIG_FILE"
-        yq e -i ".performance.memoryCacheCapacity = '128mb' | .performance.memoryCacheCapacity | line_comment = \"* 角色卡内存缓存 (根据2G内存推荐)\"" "$CONFIG_FILE"
-        if [[ "$run_mode" == "1" ]]; then
-            yq e -i '(.basicAuthMode = true) | (.basicAuthMode | line_comment = "* 启用基础认证")' "$CONFIG_FILE"
-            yq e -i ".basicAuthUser.username = \"$single_user\"" "$CONFIG_FILE"
-            yq e -i ".basicAuthUser.password = \"$single_pass\"" "$CONFIG_FILE"
-        elif [[ "$run_mode" == "2" ]]; then
-            yq e -i '(.basicAuthMode = true) | (.basicAuthMode | line_comment = "* 临时开启基础认证以设置管理员")' "$CONFIG_FILE"
-            yq e -i '(.enableUserAccounts = true) | (.enableUserAccounts | line_comment = "* 启用多用户模式")' "$CONFIG_FILE"
-        fi
-    else
-        sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # * 允许外部访问/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false # * 关闭IP白名单模式/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400 # * 24小时退出登录/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)numberOfBackups: .*/\1numberOfBackups: 5 # * 单文件保留的备份数量/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)maxTotalBackups: .*/\1maxTotalBackups: 30 # * 总聊天文件数量上限/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)lazyLoadCharacters: .*/\1lazyLoadCharacters: true # * 懒加载、点击角色卡才加载/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)memoryCacheCapacity: .*/\1memoryCacheCapacity: '128mb' # * 角色卡内存缓存 (根据2G内存推荐)/" "$CONFIG_FILE"
-        if [[ "$run_mode" == "1" ]]; then
-            sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # * 启用基础认证/" "$CONFIG_FILE"
-            sed -i -E "s/^([[:space:]]*)username: .*/\1username: \"$single_user\"/" "$CONFIG_FILE"
-            sed -i -E "s/^([[:space:]]*)password: .*/\1password: \"$single_pass\"/" "$CONFIG_FILE"
-        elif [[ "$run_mode" == "2" ]]; then
-            sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # * 临时开启基础认证以设置管理员/" "$CONFIG_FILE"
-            sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # * 启用多用户模式/" "$CONFIG_FILE"
-        fi
+## --- 修改开始 2: 使用 fn_yq_docker 替代 yq ---
+fn_apply_config_changes() {
+    fn_print_info "正在使用 ${BOLD}yq (Dockerized)${NC} 精准修改配置并添加注释..."
+
+    fn_yq_docker e -i '(.listen = true) | (.listen | line_comment = "* 允许外部访问")'
+    fn_yq_docker e -i '(.whitelistMode = false) | (.whitelistMode | line_comment = "* 关闭IP白名单模式")'
+    fn_yq_docker e -i '(.sessionTimeout = 86400) | (.sessionTimeout | line_comment = "* 24小时退出登录")'
+    fn_yq_docker e -i '(.backups.common.numberOfBackups = 5) | (.backups.common.numberOfBackups | line_comment = "* 单文件保留的备份数量")'
+    fn_yq_docker e -i '(.backups.chat.maxTotalBackups = 30) | (.backups.chat.maxTotalBackups | line_comment = "* 总聊天文件数量上限")'
+    fn_yq_docker e -i '(.performance.lazyLoadCharacters = true) | (.performance.lazyLoadCharacters | line_comment = "* 懒加载、点击角色卡才加载")'
+    fn_yq_docker e -i ".performance.memoryCacheCapacity = '128mb' | .performance.memoryCacheCapacity | line_comment = \"* 角色卡内存缓存 (根据2G内存推荐)\""
+    
+    if [[ "$run_mode" == "1" ]]; then
+        fn_yq_docker e -i '(.basicAuthMode = true) | (.basicAuthMode | line_comment = "* 启用基础认证")'
+        fn_yq_docker e -i ".basicAuthUser.username = \"$single_user\""
+        fn_yq_docker e -i ".basicAuthUser.password = \"$single_pass\""
+    elif [[ "$run_mode" == "2" ]]; then
+        fn_yq_docker e -i '(.basicAuthMode = true) | (.basicAuthMode | line_comment = "* 临时开启基础认证以设置管理员")'
+        fn_yq_docker e -i '(.enableUserAccounts = true) | (.enableUserAccounts | line_comment = "* 启用多用户模式")'
     fi
 }
+## --- 修改结束 2 ---
+
 fn_get_public_ip() { local ip; ip=$(curl -s --max-time 5 https://api.ipify.org) || ip=$(curl -s --max-time 5 https://ifconfig.me) || ip=$(hostname -I | awk '{print $1}'); echo "$ip"; }
 fn_confirm_and_delete_dir() { local dir_to_delete="$1"; fn_print_warning "目录 '$dir_to_delete' 已存在，其中可能包含您之前的聊天记录和角色卡。"; echo -ne "您确定要删除此目录并继续安装吗？[Y/n]: "; read -r c1 < /dev/tty; c1=${c1:-y}; if [[ ! "$c1" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。"; fi; echo -ne "${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 [Y/n]: ${NC}"; read -r c2 < /dev/tty; c2=${c2:-y}; if [[ ! "$c2" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。"; fi; echo -ne "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}"; read -r c3 < /dev/tty; if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。"; fi; fn_print_info "正在删除旧目录: $dir_to_delete..."; rm -rf "$dir_to_delete"; fn_print_success "旧目录已删除。"; }
 fn_create_project_structure() { fn_print_info "正在创建项目目录结构..."; mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"; chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"; fn_print_info "正在设置安全的文件权限..."; find "$INSTALL_DIR" -type d -exec chmod 755 {} +; find "$INSTALL_DIR" -type f -exec chmod 644 {} +; fn_print_success "项目目录创建并授权成功！"; }
@@ -328,7 +244,7 @@ fn_create_project_structure() { fn_print_info "正在创建项目目录结构...
 
 clear
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v12.5${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v13.0${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
@@ -408,13 +324,8 @@ ${YELLOW}>>> 完成以上所有步骤后，请回到本窗口，然后按下【�
 EOF
 ); echo -e "${MULTI_USER_GUIDE}"; read -p "" < /dev/tty
     fn_print_info "正在切换到多用户登录页模式..."
-    if [ "$USE_YQ" = true ]; then
-        yq e -i '(.basicAuthMode = false) | (.basicAuthMode | line_comment = "* 关闭基础认证，启用登录页")' "$CONFIG_FILE"
-        yq e -i '(.enableDiscreetLogin = true) | (.enableDiscreetLogin | line_comment = "* 隐藏登录用户列表")' "$CONFIG_FILE"
-    else
-        sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false # * 关闭基础认证，启用登录页/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)enableDiscreetLogin: .*/\1enableDiscreetLogin: true # * 隐藏登录用户列表/" "$CONFIG_FILE"
-    fi
+    fn_yq_docker e -i '(.basicAuthMode = false) | (.basicAuthMode | line_comment = "* 关闭基础认证，启用登录页")'
+    fn_yq_docker e -i '(.enableDiscreetLogin = true) | (.enableDiscreetLogin | line_comment = "* 隐藏登录用户列表")'
     fn_print_success "多用户模式配置写入完成！"
 fi
 
