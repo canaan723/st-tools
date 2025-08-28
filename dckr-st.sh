@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 16.4 (清理权限修复版)
-# 作者: Qingjue (由 AI 助手基于 v16.3 优化)
-# 更新日志 (v16.4):
-# - [修复] 修正了清理旧目录时的权限问题，确保能成功删除由容器创建的 root 文件。
+# 版本: 17.0 (最终优化版)
+# 作者: Qingjue (由 AI 助手基于 v16.4 优化)
+# 更新日志 (v17.0):
+# - [体验优化] 增加了服务启动后的稳定等待期，并提供倒计时反馈，确保用户访问时服务已就绪。
+# - [代码优化] 统一代码风格，消除冗余调用，提升脚本整体质量和可读性。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -153,8 +154,6 @@ fn_apply_config_changes() {
 }
 
 fn_get_public_ip() { local ip; ip=$(curl -s --max-time 5 https://api.ipify.org) || ip=$(curl -s --max-time 5 https://ifconfig.me) || ip=$(hostname -I | awk '{print $1}'); echo "$ip"; }
-
-## --- 修改开始: 使用 sudo 强制删除 ---
 fn_confirm_and_delete_dir() {
     local dir_to_delete="$1"; local container_name="$2"
     fn_print_warning "目录 '$dir_to_delete' 已存在，其中可能包含您之前的聊天记录和角色卡。"
@@ -166,11 +165,8 @@ fn_confirm_and_delete_dir() {
     if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。"; fi
     fn_print_info "正在停止可能正在运行的旧容器: $container_name..."; docker stop "$container_name" >/dev/null 2>&1 || true; fn_print_success "旧容器已停止。"
     fn_print_info "正在移除旧容器: $container_name..."; docker rm "$container_name" >/dev/null 2>&1 || true; fn_print_success "旧容器已移除。"
-    fn_print_info "正在删除旧目录: $dir_to_delete..."; 
-    sudo rm -rf "$dir_to_delete"
-    fn_print_success "旧目录已彻底清理。"
+    fn_print_info "正在删除旧目录: $dir_to_delete..."; sudo rm -rf "$dir_to_delete"; fn_print_success "旧目录已彻底清理。"
 }
-## --- 修改结束 ---
 
 fn_create_project_structure() {
     fn_print_info "正在创建项目目录结构..."
@@ -183,22 +179,18 @@ fn_verify_container_health() {
     local container_name="$1"
     local retries=10
     local interval=3
-    
     fn_print_info "正在确认容器健康状态 (最多等待 ${retries}x${interval} 秒)..."
     for i in $(seq 1 $retries); do
         local status
         status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || echo "error")
-        
         if [[ "$status" == "running" ]]; then
             echo # Newline after dots
             fn_print_success "容器已成功进入运行状态！"
             return 0
         fi
-        
         echo -n "."
         sleep $interval
     done
-    
     echo # Newline after dots
     fn_print_warning "容器未能进入健康运行状态！"
     fn_print_info "以下是容器的最新日志，以帮助诊断问题："
@@ -208,6 +200,18 @@ fn_verify_container_health() {
     fn_print_error "部署失败。请检查以上日志以确定问题原因。"
 }
 
+## --- 新增函数: 稳定等待期 ---
+fn_wait_for_service() {
+    local seconds="${1:-5}" # Default to 5 seconds
+    echo -n "  "
+    while [ $seconds -gt 0 ]; do
+        echo -ne "服务正在后台稳定，请稍候... ${YELLOW}${seconds}${NC} 秒\r"
+        sleep 1
+        ((seconds--))
+    done
+    # Clear the countdown line and add a newline for clean output
+    echo -e "                                           \r"
+}
 
 # ==============================================================================
 #   主逻辑开始
@@ -216,7 +220,7 @@ fn_verify_container_health() {
 printf "\n" && tput reset
 
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v16.4${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v17.0${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
@@ -228,6 +232,7 @@ TARGET_USER="${SUDO_USER:-root}"; if [ "$TARGET_USER" = "root" ]; then USER_HOME
 INSTALL_DIR="$USER_HOME/sillytavern"; CONFIG_FILE="$INSTALL_DIR/config.yaml"; COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 fn_check_dependencies
 fn_speed_test_and_configure_mirrors
+SERVER_IP=$(fn_get_public_ip)
 
 # --- 阶段二：交互式配置 ---
 fn_print_step "[ 2 / 5 ] 选择运行模式"
@@ -273,7 +278,9 @@ $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down > /dev/null; fn_print_success "最�
 fn_apply_config_changes
 if [[ "$run_mode" == "1" ]]; then fn_print_success "单用户模式配置写入完成！"; else
     fn_print_info "正在临时启动服务以设置管理员..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
-    SERVER_IP=$(fn_get_public_ip); MULTI_USER_GUIDE=$(cat <<EOF
+    fn_verify_container_health "$CONTAINER_NAME"
+    fn_wait_for_service 5
+    MULTI_USER_GUIDE=$(cat <<EOF
 
 ${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}
 SillyTavern 已临时启动，请完成管理员的初始设置：
@@ -306,8 +313,8 @@ fi
 fn_print_step "[ 5 / 5 ] 启动并验证服务"
 fn_print_info "正在应用最终配置并重启服务..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate > /dev/null
 fn_verify_container_health "$CONTAINER_NAME"
+fn_wait_for_service 5
 
-SERVER_IP=$(fn_get_public_ip)
 echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗"
 echo -e "║                      部署成功！尽情享受吧！                      ║"
 echo -e "╚════════════════════════════════════════════════════════════╝${NC}"
