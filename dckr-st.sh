@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 18.0 (交互式终局版)
-# 作者: Qingjue (由 AI 助手基于 v17.0 优化)
-# 更新日志 (v18.0):
-# - [核心升级] 引入“部署后操作”菜单，允许用户查看状态和日志，从根本上解决“假成功”问题。
-# - [视觉优化] 全面净化 Docker Compose 的输出，用旋转动画替代点状进度，修复UI Bug。
-# - [体验优化] 延长服务稳定等待期至10秒。
+# 版本: 19.0 (智能诊断版)
+# 作者: Qingjue (由 AI 助手基于 v18.0 优化)
+# 更新日志 (v19.0):
+# - [核心升级] 状态检查功能现在可以智能解读容器状态，并用白话为用户提供诊断建议。
+# - [体验优化] 明确了日志功能的行为逻辑，帮助用户通过日志是否自动退出判断容器状态。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -212,6 +211,39 @@ fn_wait_for_service() {
     echo -e "                                           \r"
 }
 
+## --- 新增函数: 智能状态诊断 ---
+fn_check_and_explain_status() {
+    local container_name="$1"
+    echo -e "\n${YELLOW}--- 容器当前状态 ---${NC}"
+    docker ps -a --filter "name=${container_name}"
+    local status
+    status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || echo "notfound")
+    echo -e "\n${CYAN}--- 状态解读 ---${NC}"
+    case "$status" in
+        running)
+            fn_print_success "状态正常：容器正在健康运行。"
+            fn_print_info "您可以随时通过访问地址使用服务。"
+            ;;
+        restarting)
+            fn_print_warning "状态异常：容器正在无限重启。"
+            fn_print_info "这通常意味着程序内部崩溃。请立即使用 [2] 查看日志来定位错误原因。"
+            fn_print_info "（常见原因：多用户模式下未正确设置管理员账户和密码）"
+            ;;
+        exited)
+            fn_print_error "状态错误：容器已停止运行。"
+            fn_print_info "这通常是由于启动时发生了致命错误（如配置错误、端口冲突等）。"
+            fn_print_info "请使用 [2] 查看日志以获取详细的错误信息。"
+            ;;
+        notfound)
+            fn_print_error "未能找到名为 '${container_name}' 的容器。"
+            ;;
+        *)
+            fn_print_warning "状态未知：容器处于 '${status}' 状态。"
+            fn_print_info "这是一个不常见的状态，建议使用 [2] 查看日志进行诊断。"
+            ;;
+    esac
+}
+
 # ==============================================================================
 #   主逻辑开始
 # ==============================================================================
@@ -219,7 +251,7 @@ fn_wait_for_service() {
 printf "\n" && tput reset
 
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v18.0${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v19.0${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
@@ -325,17 +357,17 @@ echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
 while true; do
     echo -e "\n${CYAN}--- 部署后操作 ---${NC}"
     echo -e "  [1] 查看容器状态"
-    echo -e "  [2] 查看实时日志 ${YELLOW}(按 Ctrl+C 返回此菜单)${NC}"
+    echo -e "  [2] 查看日志 ${YELLOW}(若容器停止则自动退出, 否则按 Ctrl+C 返回)${NC}"
     echo -e "  [q] 退出脚本"
     read -p "请输入选项: " choice < /dev/tty
     case "$choice" in
         1)
-            echo -e "\n${YELLOW}--- 容器当前状态 ---${NC}"
-            docker ps -a --filter "name=${CONTAINER_NAME}"
+            fn_check_and_explain_status "$CONTAINER_NAME"
             ;;
         2)
             echo -e "\n${YELLOW}--- 实时日志 (按 Ctrl+C 停止) ---${NC}"
-            docker logs -f "$CONTAINER_NAME"
+            # 使用 || true 避免在容器不存在时脚本因 set -e 退出
+            docker logs -f "$CONTAINER_NAME" || true
             ;;
         q|Q)
             echo -e "\n脚本执行完毕，祝您使用愉快！"
