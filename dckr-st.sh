@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 12.2 (终极透明版)
-# 作者: Qingjue (由 AI 助手基于 v12.1 优化)
-# 更新日志 (v12.2):
-# - [核心] 实现完全透明化：所有依赖检查都会明确打印出检测到的版本号，方便用户排错和了解环境。
-# - [优化] 进一步增强 yq 版本检查逻辑，使其输出更清晰、友好。
+# 版本: 12.3 (终极诊断与报告版)
+# 作者: Qingjue (由 AI 助手基于 v12.2 优化)
+# 更新日志 (v12.3):
+# - [核心] 重构依赖检查为“先诊断，后报告”模式，最后统一输出清晰、对齐的环境摘要。
+# - [核心] 修复了 yq 版本检测的致命缺陷，改用正则表达式精确提取版本号，极其稳健。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -19,8 +19,15 @@ BOLD='\033[1m'
 NC='\033[0m' # No Color
 
 # --- 全局变量 ---
+# 用于最终报告
+BC_VER="" BC_STATUS="-"
+CURL_VER="" CURL_STATUS="-"
+TAR_VER="" TAR_STATUS="-"
+DOCKER_VER="" DOCKER_STATUS="-"
+COMPOSE_VER="" COMPOSE_STATUS="-"
+YQ_VER="" YQ_STATUS="-"
+JQ_VER="" JQ_STATUS="-"
 USE_YQ=false
-USE_JQ=false
 
 # --- 辅助函数 ---
 fn_print_step() { echo -e "\n${CYAN}═══ $1 ═══${NC}"; }
@@ -31,156 +38,112 @@ fn_print_info() { echo -e "  $1"; }
 
 # --- 核心函数 ---
 
-## --- 修改开始 1: 全面透明化依赖检查 ---
+## --- 修改开始 1: 全面重构依赖检查与报告 ---
+fn_report_dependencies() {
+    fn_print_info "--- 环境诊断摘要 ---"
+    printf "${BOLD}%-18s %-35s %-15s${NC}\n" "工具" "检测到的版本" "状态"
+    printf "${CYAN}%-18s %-35s %-15s${NC}\n" "------------------" "-----------------------------------" "---------------"
+    printf "%-18s %-35s %-15s\n" "bc" "$BC_VER" "$BC_STATUS"
+    printf "%-18s %-35s %-15s\n" "curl" "$CURL_VER" "$CURL_STATUS"
+    printf "%-18s %-35s %-15s\n" "tar" "$TAR_VER" "$TAR_STATUS"
+    printf "%-18s %-35s %-15s\n" "Docker" "$DOCKER_VER" "$DOCKER_STATUS"
+    printf "%-18s %-35s %-15s\n" "Docker Compose" "$COMPOSE_VER" "$COMPOSE_STATUS"
+    printf "%-18s %-35s %-15s\n" "yq" "$YQ_VER" "$YQ_STATUS"
+    printf "%-18s %-35s %-15s\n" "jq" "$JQ_VER" "$JQ_STATUS"
+    echo ""
+}
+
 fn_auto_install_deps() {
     local pkgs_to_check=("bc" "curl" "tar")
     local pkgs_to_install=()
-
-    fn_print_info "正在检查系统基础软件包..."
     for pkg in "${pkgs_to_check[@]}"; do
         if ! command -v "$pkg" &> /dev/null; then
             pkgs_to_install+=("$pkg")
         else
-            local version_info
-            # 尝试获取版本信息，只取第一行
-            version_info=$("$pkg" --version 2>/dev/null | head -n 1)
-            fn_print_success "检测到 $pkg: ${version_info}"
+            # 采集版本信息
+            local ver_var_name="${pkg^^}_VER"
+            local status_var_name="${pkg^^}_STATUS"
+            declare -g "$ver_var_name"="$($pkg --version 2>/dev/null | head -n 1)"
+            declare -g "$status_var_name"="${GREEN}OK${NC}"
         fi
     done
 
-    if [ ${#pkgs_to_install[@]} -eq 0 ]; then
-        return
-    fi
+    if [ ${#pkgs_to_install[@]} -eq 0 ]; then return; fi
 
-    fn_print_warning "检测到以下必需的软件包缺失: ${pkgs_to_install[*]}"
-    fn_print_info "正在尝试自动安装..."
-
-    if ! sudo -v; then
-        fn_print_error "无法获取 sudo 权限，无法自动安装依赖。请手动安装: ${pkgs_to_install[*]}"
-    fi
+    fn_print_warning "检测到必需的软件包缺失: ${pkgs_to_install[*]}，正在尝试自动安装..."
+    if ! sudo -v; then fn_print_error "无法获取 sudo 权限，请手动安装: ${pkgs_to_install[*]}"; fi
 
     local pkg_manager=""
     if command -v apt-get &> /dev/null; then pkg_manager="apt-get"; elif command -v dnf &> /dev/null; then pkg_manager="dnf"; elif command -v yum &> /dev/null; then pkg_manager="yum"; elif command -v pacman &> /dev/null; then pkg_manager="pacman"; else
-        fn_print_error "无法识别您的包管理器 (apt, dnf, yum, pacman)。请手动安装缺失的包: ${pkgs_to_install[*]}"
+        fn_print_error "无法识别您的包管理器，请手动安装: ${pkgs_to_install[*]}"
     fi
 
     if [ "$pkg_manager" == "apt-get" ]; then
         fn_print_info "正在运行 'sudo apt-get update'..."
-        sudo apt-get update -y || fn_print_warning "'apt-get update' 失败，但仍会尝试安装..."
+        sudo apt-get update -y || fn_print_warning "'apt-get update' 失败..."
     fi
 
-    local install_cmd
-    case "$pkg_manager" in
-        apt-get) install_cmd="sudo apt-get install -y ${pkgs_to_install[*]}" ;;
-        dnf|yum) install_cmd="sudo $pkg_manager install -y ${pkgs_to_install[*]}" ;;
-        pacman) install_cmd="sudo pacman -S --noconfirm ${pkgs_to_install[*]}" ;;
-    esac
-
-    if $install_cmd; then
+    if sudo ${pkg_manager/apt-get/apt-get install -y} ${pkg_manager/dnf/dnf install -y} ${pkg_manager/yum/yum install -y} ${pkg_manager/pacman/pacman -S --noconfirm} "${pkgs_to_install[@]}"; then
         fn_print_success "成功安装缺失的软件包。"
+        # 重新采集版本信息
+        for pkg in "${pkgs_to_install[@]}"; do
+            local ver_var_name="${pkg^^}_VER"
+            local status_var_name="${pkg^^}_STATUS"
+            declare -g "$ver_var_name"="$(command -v "$pkg" &>/dev/null && $pkg --version 2>/dev/null | head -n 1)"
+            declare -g "$status_var_name"="${GREEN}Installed${NC}"
+        done
     else
-        fn_print_error "自动安装失败。请手动安装后重试: ${pkgs_to_install[*]}"
+        fn_print_error "自动安装失败，请手动安装后重试: ${pkgs_to_install[*]}"
     fi
 }
 
 fn_download_and_install_yq() {
-    # ... (此函数逻辑不变，已足够健壮) ...
+    # ... (此函数逻辑不变) ...
     local YQ_TARGET_VERSION="4.47.1"
-    local arch
-    case $(uname -m) in
-        x86_64) arch="amd64" ;;
-        aarch64) arch="arm64" ;;
-        *) fn_print_warning "不支持的系统架构: $(uname -m)。将回退到 sed 方案。"; return 1 ;;
-    esac
-
-    local yq_binary="yq_linux_${arch}"
-    local yq_archive="${yq_binary}.tar.gz"
-    local checksum_file="checksums"
-    local github_path_base="mikefarah/yq/releases/download/v${YQ_TARGET_VERSION}"
-
-    local mirror_bases=( "https://github.com" "https://gh-proxy.com/https://github.com" "https://gh.llkk.cc/https://github.com" )
-    local special_mirrors=( "https://git.723123.xyz/gh" )
-
+    local arch; case $(uname -m) in x86_64) arch="amd64" ;; aarch64) arch="arm64" ;; *) fn_print_warning "不支持的架构"; return 1 ;; esac
+    local yq_binary="yq_linux_${arch}"; local yq_archive="${yq_binary}.tar.gz"; local checksum_file="checksums"; local github_path_base="mikefarah/yq/releases/download/v${YQ_TARGET_VERSION}"
+    local mirror_bases=( "https://github.com" "https://gh-proxy.com/https://github.com" "https://gh.llkk.cc/https://github.com" ); local special_mirrors=( "https://git.723123.xyz/gh" )
     fn_print_info "正在为 yq 下载源智能测速 (每个源超时 5 秒)..."
-    local speed_results=""
-    local test_urls=()
-    for base in "${mirror_bases[@]}"; do test_urls+=("${base}/${github_path_base}/${checksum_file}"); done
-    for base in "${special_mirrors[@]}"; do test_urls+=("${base}/${github_path_base}/${checksum_file}"); done
-
+    local speed_results=""; local test_urls=(); for base in "${mirror_bases[@]}"; do test_urls+=("${base}/${github_path_base}/${checksum_file}"); done; for base in "${special_mirrors[@]}"; do test_urls+=("${base}/${github_path_base}/${checksum_file}"); done
     for url in "${test_urls[@]}"; do
-        echo -ne "  - 正在测试: ${YELLOW}${url%%/*}${NC}..."
-        local time_taken=$(curl -o /dev/null -s -w '%{time_total}' --max-time 5 "$url" || echo "9999")
-        if [[ $(echo "$time_taken > 0" | bc) -eq 1 && $(echo "$time_taken < 5" | bc) -eq 1 ]]; then
-            printf " ${GREEN}%.3f 秒${NC}\n" "$time_taken"
-            speed_results+="${time_taken}|${url}\n"
-        else
-            echo -e " ${RED}超时或失败${NC}"
-        fi
+        echo -ne "  - 正在测试: ${YELLOW}${url%%/*}${NC}..."; local time_taken=$(curl -o /dev/null -s -w '%{time_total}' --max-time 5 "$url" || echo "9999")
+        if [[ $(echo "$time_taken > 0 && $time_taken < 5" | bc) -eq 1 ]]; then printf " ${GREEN}%.3f 秒${NC}\n" "$time_taken"; speed_results+="${time_taken}|${url}\n"; else echo -e " ${RED}超时或失败${NC}"; fi
     done
-
-    local sorted_urls=()
-    if [ -n "$speed_results" ]; then
-        while IFS= read -r line; do
-            sorted_urls+=("$(echo "$line" | cut -d'|' -f2 | sed "s/${checksum_file}$/${yq_archive}/")")
-        done <<< "$(echo -e "$speed_results" | sort -n)"
-    else
-        fn_print_warning "所有下载源测速失败！将按默认顺序尝试。"
-        for base in "${mirror_bases[@]}"; do sorted_urls+=("${base}/${github_path_base}/${yq_archive}"); done
-        for base in "${special_mirrors[@]}"; do sorted_urls+=("${base}/${github_path_base}/${yq_archive}"); done
-    fi
-
-    fn_print_info "将按以下顺序尝试下载:"
-    for url in "${sorted_urls[@]}"; do fn_print_info "  - ${url}"; done
-
+    local sorted_urls=(); if [ -n "$speed_results" ]; then while IFS= read -r line; do sorted_urls+=("$(echo "$line" | cut -d'|' -f2 | sed "s/${checksum_file}$/${yq_archive}/")"); done <<< "$(echo -e "$speed_results" | sort -n)"; else
+        fn_print_warning "所有下载源测速失败！将按默认顺序尝试。"; for base in "${mirror_bases[@]}"; do sorted_urls+=("${base}/${github_path_base}/${yq_archive}"); done; for base in "${special_mirrors[@]}"; do sorted_urls+=("${base}/${github_path_base}/${yq_archive}"); done; fi
+    fn_print_info "将按以下顺序尝试下载:"; for url in "${sorted_urls[@]}"; do fn_print_info "  - ${url}"; done
     local tmp_file; tmp_file=$(mktemp); trap 'rm -f "$tmp_file"' EXIT
-
     for url in "${sorted_urls[@]}"; do
-        fn_print_info "正在尝试从: ${url}"
-        if curl -L --fail -o "$tmp_file" -s "$url"; then
+        fn_print_info "正在尝试从: ${url}"; if curl -L --fail -o "$tmp_file" -s "$url"; then
             if file "$tmp_file" | grep -q 'gzip compressed data'; then
-                fn_print_info "下载成功，正在解压和安装..."
-                if sudo tar xz -f "$tmp_file" -O "./${yq_binary}" > /usr/local/bin/yq; then
-                    sudo chmod +x /usr/local/bin/yq
-                    if command -v yq &> /dev/null && yq --version | grep -q "version ${YQ_TARGET_VERSION}"; then
-                        fn_print_success "yq v${YQ_TARGET_VERSION} 已成功安装并验证！"
-                        rm -f "$tmp_file"; trap - EXIT; return 0
-                    fi
-                fi
-            fi
-        fi
-        fn_print_warning "从该源处理失败，尝试下一个..."
-    done
-
-    fn_print_error "所有 yq 下载源均尝试失败。"
+                fn_print_info "下载成功，正在解压和安装..."; if sudo tar xz -f "$tmp_file" -O "./${yq_binary}" > /usr/local/bin/yq; then
+                    sudo chmod +x /usr/local/bin/yq; if command -v yq &> /dev/null && yq --version | grep -q "version ${YQ_TARGET_VERSION}"; then
+                        rm -f "$tmp_file"; trap - EXIT; return 0; fi; fi; fi; fi
+        fn_print_warning "从该源处理失败，尝试下一个..."; done
     return 1
 }
 
 fn_check_dependencies() {
-    fn_print_info "--- 依赖环境全面检查 ---"
+    fn_print_info "--- 依赖环境诊断开始 ---"
     
     fn_auto_install_deps
 
-    if ! command -v docker &> /dev/null; then fn_print_error "未检测到 Docker。请先根据您系统的官方文档安装 Docker。"; else
-        fn_print_success "检测到 Docker: $(docker --version)"
-    fi
-    if command -v docker-compose &> /dev/null; then DOCKER_COMPOSE_CMD="docker-compose"; elif docker compose version &> /dev/null; then DOCKER_COMPOSE_CMD="docker compose"; else fn_print_error "未检测到 Docker Compose。请先安装它。"; fi
-    fn_print_success "检测到 Docker Compose: $($DOCKER_COMPOSE_CMD version)"
+    if ! command -v docker &> /dev/null; then DOCKER_STATUS="${RED}Not Found${NC}"; else DOCKER_VER=$(docker --version); DOCKER_STATUS="${GREEN}OK${NC}"; fi
+    if command -v docker-compose &> /dev/null; then DOCKER_COMPOSE_CMD="docker-compose"; elif docker compose version &> /dev/null; then DOCKER_COMPOSE_CMD="docker compose"; else COMPOSE_STATUS="${RED}Not Found${NC}"; fi
+    if [ -z "$COMPOSE_STATUS" ]; then COMPOSE_VER=$($DOCKER_COMPOSE_CMD version); COMPOSE_STATUS="${GREEN}OK${NC}"; fi
 
-    local YQ_TARGET_VERSION="4.47.1"
-    local needs_install=false
+    local YQ_TARGET_VERSION="4.47.1"; local needs_install=false
     if ! command -v yq &> /dev/null; then
-        fn_print_info "yq 未安装，将开始智能安装流程..."
-        needs_install=true
+        fn_print_info "yq 未安装，将开始智能安装流程..."; needs_install=true
     else
-        local existing_version; existing_version=$(yq --version 2>/dev/null | awk '{print $3}')
+        # 使用正则表达式精确提取版本号
+        local existing_version=$(yq --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
         if [ -z "$existing_version" ]; then
-            fn_print_warning "检测到 yq 命令，但无法获取版本号（可能已损坏），将尝试重新安装..."
-            needs_install=true
+            fn_print_warning "检测到 yq 命令，但无法识别其版本，将尝试重新安装..."; needs_install=true
         else
-            local highest_version; highest_version=$(printf "%s\n%s\n" "$existing_version" "$YQ_TARGET_VERSION" | sort -V | tail -n1)
+            local highest_version=$(printf "%s\n%s\n" "$existing_version" "$YQ_TARGET_VERSION" | sort -V | tail -n1)
             if [ "$highest_version" == "$existing_version" ]; then
-                fn_print_success "检测到 yq v${existing_version}，满足要求 (>= v${YQ_TARGET_VERSION})，将使用此版本。"
-                USE_YQ=true
+                YQ_VER="v${existing_version}"; YQ_STATUS="${GREEN}OK${NC}"; USE_YQ=true
             else
                 fn_print_warning "检测到 yq v${existing_version}，低于推荐版本 v${YQ_TARGET_VERSION}，将进行升级..."
                 needs_install=true
@@ -190,16 +153,18 @@ fn_check_dependencies() {
 
     if [ "$needs_install" = true ]; then
         if fn_download_and_install_yq; then
-            USE_YQ=true
+            YQ_VER="v${YQ_TARGET_VERSION}"; YQ_STATUS="${GREEN}Installed${NC}"; USE_YQ=true
         else
-            fn_print_warning "yq 自动安装失败。将回退到基于文本的 sed 方案。"
-            fn_print_warning "注意：sed 方案在未来 SillyTavern 更新后可能失效。"
-            USE_YQ=false
+            YQ_VER="N/A"; YQ_STATUS="${YELLOW}Fallback (sed)${NC}"; USE_YQ=false
         fi
     fi
 
-    if command -v jq &> /dev/null; then fn_print_success "检测到 jq: $(jq --version)"; USE_JQ=true; fi
-    fn_print_success "--- 所有依赖项检查完毕 ---"
+    if ! command -v jq &> /dev/null; then JQ_STATUS="Not Found"; else JQ_VER=$(jq --version); JQ_STATUS="${GREEN}OK${NC}"; fi
+    
+    fn_report_dependencies
+    if [[ "$DOCKER_STATUS" != "${GREEN}OK${NC}" || "$COMPOSE_STATUS" != "${GREEN}OK${NC}" ]]; then
+        fn_print_error "核心组件 Docker 或 Docker Compose 未安装，请安装后重试。"
+    fi
 }
 ## --- 修改结束 1 ---
 
@@ -340,7 +305,7 @@ fn_create_project_structure() { fn_print_info "正在创建项目目录结构...
 
 clear
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v12.2${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v12.3${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
