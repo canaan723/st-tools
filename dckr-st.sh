@@ -22,6 +22,7 @@ TAR_VER="-" TAR_STATUS="-"
 DOCKER_VER="-" DOCKER_STATUS="-"
 COMPOSE_VER="-" COMPOSE_STATUS="-"
 CONTAINER_NAME="sillytavern"
+IMAGE_NAME="ghcr.io/sillytavern/sillytavern:latest"
 
 # --- 辅助函数 ---
 fn_print_step() { echo -e "\n${CYAN}═══ $1 ═══${NC}"; }
@@ -194,6 +195,92 @@ fn_create_project_structure() {
     fn_print_success "项目目录创建并授权成功！"
 }
 
+# ==================== MODIFICATION START ====================
+# 全新重写的总进度条函数
+fn_pull_with_progress_bar() {
+    local compose_file="$1"
+    local docker_compose_cmd="$2"
+    local image_name="$3"
+
+    fn_print_info "正在计算镜像总大小..."
+    # 通过manifest获取所有层的size并求和，得到总字节数
+    local total_size_bytes
+    total_size_bytes=$(docker manifest inspect "$image_name" 2>/dev/null | grep '"size"' | awk '{s+=$2} END {print s}')
+    
+    if [ -z "$total_size_bytes" ] || [ "$total_size_bytes" -eq 0 ]; then
+        fn_print_warning "无法预先计算镜像大小，将使用简易动画。"
+        # 降级为旋转动画
+        $docker_compose_cmd -f "$compose_file" pull > /dev/null 2>&1 &
+        local pid=$!
+        local spinner="/-\\|"
+        while kill -0 $pid 2>/dev/null; do
+            printf "\r  ${YELLOW}[%s]${NC} 正在拉取镜像，请耐心等待..." "${spinner:$((i++%4)):1}"
+            sleep 0.1
+        done
+        printf "\r%s\n" "                                                  "
+        wait $pid
+        local exit_code=$?
+    else
+        # 使用精确的总进度条
+        stdbuf -oL -eL $docker_compose_cmd -f "$compose_file" pull 2>&1 | \
+        awk -v total_bytes="$total_size_bytes" '
+        BEGIN {
+            bar_width = 30
+            GREEN = "\033[1;32m"; YELLOW = "\033[1;33m"; NC = "\033[0m"
+            total_kb = total_bytes / 1024
+        }
+        function size_to_kb(size_str,   val, unit) {
+            val = substr(size_str, 1, length(size_str)-2)
+            unit = substr(size_str, length(size_str)-1)
+            if (unit == "GB") return val * 1024 * 1024
+            if (unit == "MB") return val * 1024
+            if (unit == "kB") return val
+            return val / 1024
+        }
+        /Downloading/ && match($0, /[0-9.]+[kMGT]?B\/[0-9.]+[kMGT]?B/) {
+            split($0, id_part, ":"); layer_id = id_part[1]
+            progress_str = substr($0, RSTART, RLENGTH)
+            split(progress_str, parts, "/"); current_str = parts[1]
+            
+            layer_progress_kb[layer_id] = size_to_kb(current_str)
+            
+            total_progress_kb = 0
+            for (id in layer_progress_kb) { total_progress_kb += layer_progress_kb[id] }
+            
+            if (total_kb > 0) {
+                percent = int(total_progress_kb / total_kb * 100)
+                if (percent > 100) percent = 100;
+            } else { percent = 0 }
+            
+            filled_len = int(bar_width * percent / 100)
+            bar = ""
+            for (i = 1; i <= bar_width; i++) {
+                bar = bar (i <= filled_len ? "█" : "░")
+            }
+            
+            current_mb_str = sprintf("%.1fMB", total_progress_kb / 1024)
+            total_mb_str = sprintf("%.1fMB", total_kb / 1024)
+            
+            printf "\r  %s[%s]%s %d%% (%s/%s)        ", YELLOW, bar, NC, percent, current_mb_str, total_mb_str
+            fflush()
+        }
+        END {
+            bar = ""
+            for (i = 1; i <= bar_width; i++) bar = bar "█"
+            printf "\r  %s[%s]%s 100%% 完成                    \n", GREEN, bar, NC
+        }
+        '
+        local exit_code=${PIPESTATUS[0]}
+    fi
+
+    if [ $exit_code -ne 0 ]; then
+        fn_print_error "拉取 Docker 镜像失败！请检查您的网络或镜像源配置。"
+    else
+        fn_print_success "镜像拉取成功！"
+    fi
+}
+# ===================== MODIFICATION END =====================
+
 fn_verify_container_health() {
     local container_name="$1"
     local retries=10
@@ -219,19 +306,18 @@ fn_verify_container_health() {
     fn_print_error "部署失败。请检查以上日志以确定问题原因。"
 }
 
-# ==================== MODIFICATION START ====================
 fn_wait_for_service() {
     local seconds="${1:-10}"
+    echo -n "  "
     while [ $seconds -gt 0 ]; do
-        # 使用printf和%-3s确保至少3个字符宽度（例如"10s", "9s "），防止残留
-        printf "\r  服务正在后台稳定，请稍候... ${YELLOW}%-3s${NC}  " "${seconds}s"
+        # ==================== MODIFICATION START ====================
+        echo -ne "服务正在后台稳定，请稍候... ${YELLOW}${seconds}s${NC}  \r"
+        # ===================== MODIFICATION END =====================
         sleep 1
         ((seconds--))
     done
-    # 打印足够多的空格来完全覆盖之前的内容，然后\r回到行首
-    echo -e "\r                                                     \r"
+    echo -e "                                           \r"
 }
-# ===================== MODIFICATION END =====================
 
 fn_check_and_explain_status() {
     local container_name="$1"
@@ -318,7 +404,7 @@ services:
   sillytavern:
     container_name: ${CONTAINER_NAME}
     hostname: ${CONTAINER_NAME}
-    image: ghcr.io/sillytavern/sillytavern:latest
+    image: ${IMAGE_NAME}
     security_opt:
       - apparmor:unconfined
     environment:
@@ -337,8 +423,7 @@ fn_print_success "docker-compose.yml 文件创建成功！"
 
 # --- 阶段四：初始化与配置 ---
 fn_print_step "[ 4 / 5 ] 初始化与配置"
-# ==================== MODIFICATION START ====================
-fn_print_info "即将拉取 SillyTavern 镜像，请耐心等待..."
+fn_print_info "即将拉取 SillyTavern 镜像。"
 echo -e "  下载速度取决于您的网络带宽，以下为预估时间参考："
 echo -e "  ${YELLOW}┌──────────────────────────────────────────────────┐${NC}"
 echo -e "  ${YELLOW}│${NC} ${CYAN}带宽${NC}      ${BOLD}|${NC} ${CYAN}下载速度${NC}   ${BOLD}|${NC} ${CYAN}预估最快时间${NC}           ${YELLOW}│${NC}"
@@ -349,13 +434,7 @@ echo -e "  ${YELLOW}│${NC} 3M 带宽   ${BOLD}|${NC} ~0.375 MB/s ${BOLD}|${NC}
 echo -e "  ${YELLOW}│${NC} 100M 带宽 ${BOLD}|${NC} ~12.5 MB/s  ${BOLD}|${NC} 约 16.2 秒             ${YELLOW}│${NC}"
 echo -e "  ${YELLOW}└──────────────────────────────────────────────────┘${NC}"
 
-# 恢复使用Docker原生进度条，这是最准确的显示方式
-if $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" pull; then
-    fn_print_success "镜像拉取成功！"
-else
-    fn_print_error "拉取 Docker 镜像失败！请检查您的网络或镜像源配置。"
-fi
-# ===================== MODIFICATION END =====================
+fn_pull_with_progress_bar "$COMPOSE_FILE" "$DOCKER_COMPOSE_CMD" "$IMAGE_NAME"
 
 fn_print_info "正在进行首次启动以生成最新的官方配置文件..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
 timeout=60; while [ ! -f "$CONFIG_FILE" ]; do if [ $timeout -eq 0 ]; then $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs; fn_print_error "等待配置文件生成超时！请检查以上日志输出。"; fi; sleep 1; ((timeout--)); done
