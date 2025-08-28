@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.2
+# 版本: 1.4 (根据用户数据修正)
 # 作者: Qingjue
 
 # --- 初始化与环境设置 ---
@@ -272,16 +272,42 @@ fn_display_final_info() {
 }
 
 # ==============================================================================
+#   ★★★ 带进度提示的镜像拉取 (采纳用户提供的数据) ★★★
+# ==============================================================================
+fn_pull_image_with_progress() {
+    fn_print_info "正在准备拉取 SillyTavern 主镜像..."
+    echo -e "${YELLOW}镜像压缩包大小约为 201 MB，下载过程可能需要一些时间，请耐心等待。${NC}"
+    echo -e "为帮助您预估，以下是不同带宽下的【理论最快】下载时间参考："
+    printf "  ${BOLD}%-10s %-15s %-20s${NC}\n" "带宽" "理论速度" "预估时间"
+    printf "  ${CYAN}%-10s %-15s %-20s${NC}\n" "----------" "---------------" "--------------------"
+    printf "  %-10s %-15s %-20s\n" "1M" "0.125 MB/s" "约 27 分钟"
+    printf "  %-10s %-15s %-20s\n" "2M" "0.25 MB/s" "约 13.5 分钟"
+    printf "  %-10s %-15s %-20s\n" "3M" "0.375 MB/s" "约 9 分钟"
+    printf "  %-10s %-15s %-20s\n" "100M" "12.5 MB/s" "约 16.2 秒"
+    echo -e "\n${GREEN}您的实际速度取决于当前网络状况和所选镜像源的服务器负载。${NC}"
+    echo -e "${CYAN}Docker 将在下方显示实时下载进度条，请保持关注...${NC}\n"
+    
+    # 执行拉取命令，并显示实时输出
+    if ! $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" pull; then
+        fn_print_error "拉取 Docker 镜像失败！请检查您的网络连接或镜像源配置。"
+    fi
+    
+    echo "" # 在docker pull输出后增加一个空行，美化格式
+    fn_print_success "镜像拉取成功！"
+}
+
+
+# ==============================================================================
 #   主逻辑开始
 # ==============================================================================
 
 printf "\n" && tput reset
 
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.2${NC}       ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.4${NC}       ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
-echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
+echo -e "\n本助手将引导您完成 SillyTavern 的 Docker 自动化安装。"
 
 # --- 阶段一：环境检查与准备 ---
 fn_print_step "[ 1 / 5 ] 环境检查与准备"
@@ -294,7 +320,7 @@ SERVER_IP=$(fn_get_public_ip)
 
 # --- 阶段二：交互式配置 ---
 fn_print_step "[ 2 / 5 ] 选择运行模式"
-echo "请选择您希望的运行模式："; echo -e "  [1] ${CYAN}单用户模式${NC} (简单，适合个人使用)"; echo -e "  [2] ${CYAN}多用户模式${NC} (拥有独立的登录页面)"
+echo "请选择您希望的运行模式："; echo -e "  [1] ${CYAN}单用户模式${NC} (一键完成，仅适合个人使用)"; echo -e "  [2] ${CYAN}多用户模式${NC} (需要简单配置，拥有独立的登录页面，适合个人或朋友一起玩)"
 read -p "请输入选项数字 [默认为 1]: " run_mode < /dev/tty; run_mode=${run_mode:-1}
 if [[ "$run_mode" == "1" ]]; then read -p "请输入您的自定义用户名: " single_user < /dev/tty; read -p "请输入您的自定义密码: " single_pass < /dev/tty; if [ -z "$single_user" ] || [ -z "$single_pass" ]; then fn_print_error "用户名和密码不能为空！"; fi; elif [[ "$run_mode" != "2" ]]; then fn_print_error "无效输入，脚本已终止。"; fi
 
@@ -329,7 +355,7 @@ fn_print_success "docker-compose.yml 文件创建成功！"
 
 # --- 阶段四：初始化与配置 ---
 fn_print_step "[ 4 / 5 ] 初始化与配置"
-fn_print_info "正在拉取 SillyTavern 镜像，可能需要几分钟..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" pull > /dev/null || fn_print_error "拉取 Docker 镜像失败！"
+fn_pull_image_with_progress
 fn_print_info "正在进行首次启动以生成最新的官方配置文件..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
 timeout=60; while [ ! -f "$CONFIG_FILE" ]; do if [ $timeout -eq 0 ]; then $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs; fn_print_error "等待配置文件生成超时！请检查以上日志输出。"; fi; sleep 1; ((timeout--)); done
 $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down > /dev/null; fn_print_success "最新的 config.yaml 文件已生成！"
