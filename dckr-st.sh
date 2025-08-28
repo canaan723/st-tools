@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.2.5 (由AI助手优化)
+# 版本: 1.2.6 (由AI助手优化)
 # 作者: Qingjue
 
 # --- 初始化与环境设置 ---
@@ -199,17 +199,21 @@ fn_pull_with_progress_bar() {
     local compose_file="$1"
     local docker_compose_cmd="$2"
     
-    stdbuf -oL -eL $docker_compose_cmd -f "$compose_file" pull 2>&1 | \
-    awk '
+    # ==================== FIX START: 使用script命令创建伪终端以强制实时输出 ====================
+    local pull_command="$docker_compose_cmd -f \"$compose_file\" pull"
+    exec 3< <(script -q -c "$pull_command" /dev/null)
+    
+    # 逐行读取伪终端的输出
+    while IFS= read -r line <&3; do
+        # 将行传递给awk进行处理
+        echo "$line"
+    done | awk '
+    # ===================== FIX END =====================
     BEGIN {
         bar_width = 30
         GREEN = "\033[1;32m"; YELLOW = "\033[1;33m"; NC = "\033[0m"
-        # 关联数组，用于存储每个layer的进度和总大小
-        # layer_progress_kb[layer_id] = current_kb
-        # layer_total_kb[layer_id] = total_kb
     }
 
-    # 函数：将大小字符串（如 50.3MB）转换为KB
     function size_to_kb(size_str,   val, unit) {
         val = substr(size_str, 1, length(size_str)-2)
         unit = substr(size_str, length(size_str)-1)
@@ -219,7 +223,6 @@ fn_pull_with_progress_bar() {
         return val / 1024
     }
 
-    # 函数：将KB转换为人类可读的格式
     function kb_to_human(kb,   size, unit) {
         if (kb >= 1024*1024) {
             size = kb / (1024*1024); unit = "GB"
@@ -231,12 +234,10 @@ fn_pull_with_progress_bar() {
         return sprintf("%.2f%s", size, unit)
     }
     
-    # 函数：重绘总进度条
     function redraw_progress() {
         overall_progress_kb = 0
         overall_total_kb = 0
         
-        # 汇总所有layer的进度和大小
         for (id in layer_total_kb) {
             overall_total_kb += layer_total_kb[id]
             overall_progress_kb += layer_progress_kb[id]
@@ -254,7 +255,6 @@ fn_pull_with_progress_bar() {
             bar = bar (i <= filled_len ? "█" : "░")
         }
         
-        # 格式化输出
         progress_human = kb_to_human(overall_progress_kb)
         total_human = kb_to_human(overall_total_kb)
         
@@ -262,13 +262,10 @@ fn_pull_with_progress_bar() {
         fflush()
     }
 
-    # 主逻辑：解析每一行docker pull的输出
     {
-        # 匹配以12位十六进制字符开头的行（即layer ID）
         if (match($0, /^[a-f0-9]{12}/)) {
             layer_id = substr($0, RSTART, RLENGTH)
             
-            # 如果是正在下载的行
             if ($0 ~ /Downloading/ && match($0, /[0-9.]+[kMGT]?B\/[0-9.]+[kMGT]?B/)) {
                 progress_str = substr($0, RSTART, RLENGTH)
                 split(progress_str, parts, "/")
@@ -277,9 +274,10 @@ fn_pull_with_progress_bar() {
                 gsub(/[^0-9.kMGTB]/, "", total_str)
 
                 layer_progress_kb[layer_id] = size_to_kb(current_str)
-                layer_total_kb[layer_id] = size_to_kb(total_str)
+                if (!(layer_id in layer_total_kb) || layer_total_kb[layer_id] == 0) {
+                    layer_total_kb[layer_id] = size_to_kb(total_str)
+                }
             }
-            # 如果是下载完成的行
             else if ($0 ~ /Pull complete/ || $0 ~ /Download complete/) {
                  if (layer_id in layer_total_kb) {
                     layer_progress_kb[layer_id] = layer_total_kb[layer_id]
@@ -295,11 +293,12 @@ fn_pull_with_progress_bar() {
         printf "\r  %s[%s]%s 100%% 完成                    \n", GREEN, bar, NC
     }
     '
-    local exit_code=${PIPESTATUS[0]}
-    if [ $exit_code -ne 0 ]; then
-        fn_print_error "拉取 Docker 镜像失败！请检查您的网络或镜像源配置。"
-    else
+    # 检查命令是否成功
+    wait $! 2>/dev/null || true
+    if docker image inspect ghcr.io/sillytavern/sillytavern:latest >/dev/null 2>&1; then
         fn_print_success "镜像拉取成功！"
+    else
+        fn_print_error "拉取 Docker 镜像失败！请检查您的网络或镜像源配置。"
     fi
 }
 
@@ -332,7 +331,9 @@ fn_wait_for_service() {
     local seconds="${1:-10}"
     echo -n "  "
     while [ $seconds -gt 0 ]; do
-        echo -ne "服务正在后台稳定，请稍候... ${YELLOW}${seconds}s${NC}\r"
+        # ==================== FIX START: 增加空格填充以防止残留字符 ====================
+        echo -ne "服务正在后台稳定，请稍候... ${YELLOW}${seconds}s${NC}   \r"
+        # ===================== FIX END =====================
         sleep 1
         ((seconds--))
     done
@@ -443,7 +444,9 @@ fn_print_success "docker-compose.yml 文件创建成功！"
 
 # --- 阶段四：初始化与配置 ---
 fn_print_step "[ 4 / 5 ] 初始化与配置"
-fn_print_info "即将拉取 SillyTavern 镜像 (约 201M)。"
+# ==================== FIX START: 移除(约 201M) ====================
+fn_print_info "即将拉取 SillyTavern 镜像。"
+# ===================== FIX END =====================
 echo -e "  下载速度取决于您的网络带宽，以下为预估时间参考："
 echo -e "  ${YELLOW}┌──────────────────────────────────────────────────┐${NC}"
 echo -e "  ${YELLOW}│${NC} ${CYAN}带宽${NC}      ${BOLD}|${NC} ${CYAN}下载速度${NC}   ${BOLD}|${NC} ${CYAN}预估最快时间${NC}           ${YELLOW}│${NC}"
