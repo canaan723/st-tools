@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 13.0 (Docker-Powered 终极版)
-# 作者: Qingjue (由 AI 助手基于 v12.5 优化)
-# 更新日志 (v13.0):
-# - [核心重构] 彻底放弃在主机安装 yq，改为使用官方 yq Docker 容器执行配置修改，实现终极稳定。
-# - [核心简化] 移除了所有 yq 下载、测速、安装、验证及 sed 回退的复杂逻辑。
-# - [优化] 脚本逻辑更清晰、纯净，且对主机的依赖降至最低。
+# 版本: 14.0 (终极稳定 sed 版)
+# 作者: Qingjue (由 AI 助手基于 v13.0 优化)
+# 更新日志 (v14.0):
+# - [核心重构] 彻底放弃 yq，回归到最稳定的 sed 进行配置修改，依赖项降至最低。
+# - [核心策略] 采用“动态获取 + 精准修改”模式：先由容器生成最新官方配置文件，再用 sed 修改，确保配置永远最新。
+# - [简化] 移除了所有与 yq 和 jq 相关的检测、安装、回退逻辑，脚本更纯净、更可靠。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -25,8 +25,6 @@ CURL_VER="-" CURL_STATUS="-"
 TAR_VER="-" TAR_STATUS="-"
 DOCKER_VER="-" DOCKER_STATUS="-"
 COMPOSE_VER="-" COMPOSE_STATUS="-"
-YQ_VER="Official Image" YQ_STATUS="由 Docker 提供"
-JQ_VER="-" JQ_STATUS="-"
 
 # --- 辅助函数 ---
 fn_print_step() { echo -e "\n${CYAN}═══ $1 ═══${NC}"; }
@@ -37,7 +35,6 @@ fn_print_info() { echo -e "  $1"; }
 
 # --- 核心函数 ---
 
-## --- 修改开始 1: 全面重构依赖检查与 yq 实现 ---
 fn_report_dependencies() {
     fn_print_info "--- 环境诊断摘要 ---"
     printf "${BOLD}%-18s %-20s %-20s${NC}\n" "工具" "检测到的版本" "状态"
@@ -54,8 +51,6 @@ fn_report_dependencies() {
     print_status_line "tar" "$TAR_VER" "$TAR_STATUS"
     print_status_line "Docker" "$DOCKER_VER" "$DOCKER_STATUS"
     print_status_line "Docker Compose" "$COMPOSE_VER" "$COMPOSE_STATUS"
-    print_status_line "yq" "$YQ_VER" "$YQ_STATUS"
-    print_status_line "jq" "$JQ_VER" "$JQ_STATUS"
     echo ""
 }
 
@@ -66,7 +61,6 @@ fn_get_cleaned_version_num() {
 fn_check_dependencies() {
     fn_print_info "--- 依赖环境诊断开始 ---"
     
-    # 检查基础工具
     for pkg in "bc" "curl" "tar"; do
         if command -v "$pkg" &> /dev/null; then
             declare -g "${pkg^^}_VER"="$(fn_get_cleaned_version_num "$($pkg --version 2>/dev/null)")"
@@ -90,39 +84,37 @@ fn_check_dependencies() {
         DOCKER_COMPOSE_CMD=""
         COMPOSE_STATUS="Not Found"
     fi
-
-    if ! command -v jq &> /dev/null; then JQ_STATUS="Not Found"; else JQ_VER=$(jq --version); JQ_STATUS="OK"; fi
     
     fn_report_dependencies
     
-    # 检查是否有未找到的依赖
     if [[ "$BC_STATUS" == "Not Found" || "$CURL_STATUS" == "Not Found" || "$TAR_STATUS" == "Not Found" || "$DOCKER_STATUS" == "Not Found" || "$COMPOSE_STATUS" == "Not Found" ]]; then
         fn_print_error "检测到核心组件缺失，请确保 bc, curl, tar, docker, docker-compose 均已安装。"
     fi
 }
 
-# 新增：使用 Docker 容器来执行 yq 命令
-fn_yq_docker() {
-    local config_dir
-    config_dir=$(dirname "$CONFIG_FILE")
-    local config_filename
-    config_filename=$(basename "$CONFIG_FILE")
-    
-    # 确保 yq 镜像存在
-    if ! docker image inspect mikefarah/yq:latest > /dev/null 2>&1; then
-        fn_print_info "首次使用，正在拉取 yq 官方镜像..."
-        docker pull mikefarah/yq:latest || fn_print_error "拉取 yq 镜像失败！"
+fn_apply_config_changes() {
+    fn_print_info "正在使用 ${BOLD}sed${NC} 精准修改配置..."
+
+    # 健壮的 sed 命令，忽略默认值和缩进
+    sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # * 允许外部访问/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false # * 关闭IP白名单模式/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400 # * 24小时退出登录/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)numberOfBackups: .*/\1numberOfBackups: 5 # * 单文件保留的备份数量/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)maxTotalBackups: .*/\1maxTotalBackups: 30 # * 总聊天文件数量上限/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)lazyLoadCharacters: .*/\1lazyLoadCharacters: true # * 懒加载、点击角色卡才加载/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)memoryCacheCapacity: .*/\1memoryCacheCapacity: '128mb' # * 角色卡内存缓存 (根据2G内存推荐)/" "$CONFIG_FILE"
+
+    if [[ "$run_mode" == "1" ]]; then
+        sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # * 启用基础认证/" "$CONFIG_FILE"
+        # 注意：SillyTavern 的 config.yaml 中，username/password 在 basicAuthUser 键下
+        sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)[a-zA-Z]+:/{s/^([[:space:]]*)username: .*/\1username: \"$single_user\"/}" "$CONFIG_FILE"
+        sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)[a-zA-Z]+:/{s/^([[:space:]]*)password: .*/\1password: \"$single_pass\"/}" "$CONFIG_FILE"
+    elif [[ "$run_mode" == "2" ]]; then
+        sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # * 临时开启基础认证以设置管理员/" "$CONFIG_FILE"
+        sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # * 启用多用户模式/" "$CONFIG_FILE"
     fi
-
-    # --user 确保写入文件的权限正确
-    docker run --rm \
-      --user "$(id -u "$TARGET_USER"):$(id -g "$TARGET_USER")" \
-      -v "$config_dir:/workdir" \
-      mikefarah/yq:latest "$@" "$config_filename"
 }
-## --- 修改结束 1 ---
 
-# ... (其他函数保持不变，除了 fn_apply_config_changes) ...
 fn_apply_docker_config() {
     local config_content="$1"
     if [[ -z "$config_content" ]]; then
@@ -211,29 +203,6 @@ fn_speed_test_and_configure_mirrors() {
     fi
 }
 
-## --- 修改开始 2: 使用 fn_yq_docker 替代 yq ---
-fn_apply_config_changes() {
-    fn_print_info "正在使用 ${BOLD}yq (Dockerized)${NC} 精准修改配置并添加注释..."
-
-    fn_yq_docker e -i '(.listen = true) | (.listen | line_comment = "* 允许外部访问")'
-    fn_yq_docker e -i '(.whitelistMode = false) | (.whitelistMode | line_comment = "* 关闭IP白名单模式")'
-    fn_yq_docker e -i '(.sessionTimeout = 86400) | (.sessionTimeout | line_comment = "* 24小时退出登录")'
-    fn_yq_docker e -i '(.backups.common.numberOfBackups = 5) | (.backups.common.numberOfBackups | line_comment = "* 单文件保留的备份数量")'
-    fn_yq_docker e -i '(.backups.chat.maxTotalBackups = 30) | (.backups.chat.maxTotalBackups | line_comment = "* 总聊天文件数量上限")'
-    fn_yq_docker e -i '(.performance.lazyLoadCharacters = true) | (.performance.lazyLoadCharacters | line_comment = "* 懒加载、点击角色卡才加载")'
-    fn_yq_docker e -i ".performance.memoryCacheCapacity = '128mb' | .performance.memoryCacheCapacity | line_comment = \"* 角色卡内存缓存 (根据2G内存推荐)\""
-    
-    if [[ "$run_mode" == "1" ]]; then
-        fn_yq_docker e -i '(.basicAuthMode = true) | (.basicAuthMode | line_comment = "* 启用基础认证")'
-        fn_yq_docker e -i ".basicAuthUser.username = \"$single_user\""
-        fn_yq_docker e -i ".basicAuthUser.password = \"$single_pass\""
-    elif [[ "$run_mode" == "2" ]]; then
-        fn_yq_docker e -i '(.basicAuthMode = true) | (.basicAuthMode | line_comment = "* 临时开启基础认证以设置管理员")'
-        fn_yq_docker e -i '(.enableUserAccounts = true) | (.enableUserAccounts | line_comment = "* 启用多用户模式")'
-    fi
-}
-## --- 修改结束 2 ---
-
 fn_get_public_ip() { local ip; ip=$(curl -s --max-time 5 https://api.ipify.org) || ip=$(curl -s --max-time 5 https://ifconfig.me) || ip=$(hostname -I | awk '{print $1}'); echo "$ip"; }
 fn_confirm_and_delete_dir() { local dir_to_delete="$1"; fn_print_warning "目录 '$dir_to_delete' 已存在，其中可能包含您之前的聊天记录和角色卡。"; echo -ne "您确定要删除此目录并继续安装吗？[Y/n]: "; read -r c1 < /dev/tty; c1=${c1:-y}; if [[ ! "$c1" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。"; fi; echo -ne "${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 [Y/n]: ${NC}"; read -r c2 < /dev/tty; c2=${c2:-y}; if [[ ! "$c2" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。"; fi; echo -ne "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}"; read -r c3 < /dev/tty; if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。"; fi; fn_print_info "正在删除旧目录: $dir_to_delete..."; rm -rf "$dir_to_delete"; fn_print_success "旧目录已删除。"; }
 fn_create_project_structure() { fn_print_info "正在创建项目目录结构..."; mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"; chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"; fn_print_info "正在设置安全的文件权限..."; find "$INSTALL_DIR" -type d -exec chmod 755 {} +; find "$INSTALL_DIR" -type f -exec chmod 644 {} +; fn_print_success "项目目录创建并授权成功！"; }
@@ -244,7 +213,7 @@ fn_create_project_structure() { fn_print_info "正在创建项目目录结构...
 
 clear
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v13.0${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v14.0${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
@@ -294,7 +263,7 @@ fn_print_success "docker-compose.yml 文件创建成功！"
 # --- 阶段四：初始化与配置 ---
 fn_print_step "[ 4 / 5 ] 初始化与配置"
 fn_print_info "正在拉取 SillyTavern 镜像，可能需要几分钟..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" pull || fn_print_error "拉取 Docker 镜像失败！"
-fn_print_info "正在进行首次启动以生成配置文件..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
+fn_print_info "正在进行首次启动以生成最新的官方配置文件..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
 timeout=60; while [ ! -f "$CONFIG_FILE" ]; do if [ $timeout -eq 0 ]; then $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs; fn_print_error "等待配置文件生成超时！请检查以上日志输出。"; fi; sleep 1; ((timeout--)); done
 $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down > /dev/null; fn_print_success "最新的 config.yaml 文件已生成！"
 fn_apply_config_changes
@@ -324,8 +293,8 @@ ${YELLOW}>>> 完成以上所有步骤后，请回到本窗口，然后按下【�
 EOF
 ); echo -e "${MULTI_USER_GUIDE}"; read -p "" < /dev/tty
     fn_print_info "正在切换到多用户登录页模式..."
-    fn_yq_docker e -i '(.basicAuthMode = false) | (.basicAuthMode | line_comment = "* 关闭基础认证，启用登录页")'
-    fn_yq_docker e -i '(.enableDiscreetLogin = true) | (.enableDiscreetLogin | line_comment = "* 隐藏登录用户列表")'
+    sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false # * 关闭基础认证，启用登录页/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)enableDiscreetLogin: .*/\1enableDiscreetLogin: true # * 隐藏登录用户列表/" "$CONFIG_FILE"
     fn_print_success "多用户模式配置写入完成！"
 fi
 
