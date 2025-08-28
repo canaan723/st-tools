@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 11.2 (终极兼容与逻辑修复版)
-# 作者: Qingjue (由 AI 助手基于 v11.1 优化)
-# 更新日志 (v11.2):
-# - [修复] 采用更可靠的 `yq --help | grep "eval (e)"` 方式检查 yq 版本，彻底解决 v3/v4 兼容性问题。
-# - [优化] 重构镜像选择逻辑：优先使用官方源，仅在官方源超时的情况下，才启用并排序备用加速镜像。
+# 版本: 11.3 (终极引用修复版)
+# 作者: Qingjue (由 AI 助手基于 v11.2 优化)
+# 更新日志 (v11.3):
+# - [修复] 彻底修复了 yq 命令中因不当的 shell 引用导致的 `unexpected EOF` 致命语法错误。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -37,7 +36,6 @@ fn_check_dependencies() {
     if ! command -v bc &> /dev/null; then fn_print_error "需要 'bc' 命令来进行测速计算，请先安装它 (例如: sudo apt install bc)。"; fi
     if command -v docker-compose &> /dev/null; then DOCKER_COMPOSE_CMD="docker-compose"; elif docker compose version &> /dev/null; then DOCKER_COMPOSE_CMD="docker compose"; else fn_print_error "未检测到 Docker Compose。"; fi
     
-    # 【关键修复】使用更可靠的方式检查 yq 是否为 v4+
     if command -v yq &> /dev/null && yq --help | grep -q "eval (e)"; then
         USE_YQ=true
         fn_print_success "检测到 yq v4+，将使用 yq 修改配置 (更稳定)。"
@@ -106,7 +104,6 @@ fn_speed_test_and_configure_mirrors() {
         fi
     done
 
-    # 【关键逻辑优化】
     if [ "$official_hub_ok" = true ]; then
         fn_print_success "官方 Docker Hub 可访问，将优先使用官方源。"
         fn_apply_docker_config ""
@@ -142,7 +139,7 @@ fn_apply_config_changes() {
         yq e -i '(.backups.common.numberOfBackups = 5) | (.backups.common.numberOfBackups | line_comment = "* 单文件保留的备份数量")' "$CONFIG_FILE"
         yq e -i '(.backups.chat.maxTotalBackups = 30) | (.backups.chat.maxTotalBackups | line_comment = "* 总聊天文件数量上限")' "$CONFIG_FILE"
         yq e -i '(.performance.lazyLoadCharacters = true) | (.performance.lazyLoadCharacters | line_comment = "* 懒加载、点击角色卡才加载")' "$CONFIG_FILE"
-        yq e -i '(.performance.memoryCacheCapacity = "'\''128mb'\'_...`' "128mb" is a string in YAML, so it needs quotes. The complex quoting `"'\'_...` is to embed single quotes within a single-quoted shell string. A simpler way is just to use double quotes around the yq expression. Let's fix that.
+        # 【关键修复】使用更简单、更健壮的双引号来包裹整个表达式
         yq e -i ".performance.memoryCacheCapacity = '128mb' | .performance.memoryCacheCapacity | line_comment = \"* 角色卡内存缓存 (根据2G内存推荐)\"" "$CONFIG_FILE"
         if [[ "$run_mode" == "1" ]]; then
             yq e -i '(.basicAuthMode = true) | (.basicAuthMode | line_comment = "* 启用基础认证")' "$CONFIG_FILE"
@@ -182,7 +179,7 @@ fn_create_project_structure() { fn_print_info "正在创建项目目录结构...
 
 clear
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v11.2${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v11.3${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
