@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.3.2 (彻底修复并行化闪退问题)
-# 作者: Qingjue (及AI助手)
+# 版本: 1.2.6 (由AI助手优化)
+# 作者: Qingjue
 
 # --- 初始化与环境设置 ---
 set -e
@@ -23,8 +23,6 @@ DOCKER_VER="-" DOCKER_STATUS="-"
 COMPOSE_VER="-" COMPOSE_STATUS="-"
 CONTAINER_NAME="sillytavern"
 IMAGE_NAME="ghcr.io/sillytavern/sillytavern:latest"
-PUBLIC_IP="N/A"
-LOCAL_IP="N/A"
 
 # --- 辅助函数 ---
 fn_print_step() { echo -e "\n${CYAN}═══ $1 ═══${NC}"; }
@@ -32,19 +30,6 @@ fn_print_success() { echo -e "${GREEN}✓ $1${NC}"; }
 fn_print_error() { echo -e "\n${RED}✗ 错误: $1${NC}\n" >&2; exit 1; }
 fn_print_warning() { echo -e "${YELLOW}⚠ $1${NC}"; }
 fn_print_info() { echo -e "  $1"; }
-
-
-fn_init_sudo() {
-    fn_print_info "正在检查 sudo 权限..."
-    if ! command -v sudo &> /dev/null; then
-        fn_print_error "未找到 sudo 命令。本脚本需要 sudo 来执行特权操作。"
-    fi
-    # 预先获取 sudo 权限，避免后续操作中反复输入密码
-    if ! sudo -v; then
-        fn_print_error "获取 sudo 权限失败。请确保您有权限执行 sudo 操作。"
-    fi
-    fn_print_success "Sudo 权限已确认。"
-}
 
 # --- 核心函数 ---
 
@@ -110,9 +95,8 @@ fn_apply_docker_config() {
         fi
     fi
 }
-
 fn_speed_test_and_configure_mirrors() {
-    fn_print_info "正在并行检测 Docker 镜像源可用性..."
+    fn_print_info "正在智能检测 Docker 镜像源可用性..."
     local mirrors=(
         "docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live"
         "https://dockerproxy.1panel.live" "https://hub.rat.dev" "https://docker.m.ixdev.cn"
@@ -120,55 +104,33 @@ fn_speed_test_and_configure_mirrors() {
         "https://docker.xuanyuan.me" "https://dytt.online" "https://lispy.org"
         "https://docker.xiaogenban1993.com" "https://docker-0.unsee.tech" "https://666860.xyz"
     )
-    
     docker rmi hello-world > /dev/null 2>&1 || true
-    local official_hub_ok=false
-    
-    local results_dir
-    results_dir=$(mktemp -d)
-    if [ -z "$results_dir" ] || [ ! -d "$results_dir" ]; then
-        fn_print_error "无法创建临时目录，请检查 /tmp 目录权限。"
-    fi
-    trap 'rm -rf "$results_dir"' EXIT
-
-    local test_count=0
+    local results=""; local official_hub_ok=false
     for mirror in "${mirrors[@]}"; do
-        ((test_count++))
-        (
-            # ================== FIX START ==================
-            # 明确禁用子shell的 "exit on error"，防止因超时而导致整个脚本退出
-            set +e
-            # =================== FIX END ===================
-
-            local pull_target="hello-world" display_name="$mirror"
-            local timeout_duration
+        local pull_target="hello-world" display_name="$mirror"
+        local timeout_duration
+        if [[ "$mirror" == "docker.io" ]]; then
+            timeout_duration=15
+            display_name="Official Docker Hub"
+        else
+            timeout_duration=10
+            pull_target="${mirror#https://}/library/hello-world"
+        fi
+        
+        echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..."; local start_time=$(date +%s.%N)
+        if timeout "$timeout_duration" docker pull "$pull_target" > /dev/null 2>&1; then
+            local end_time=$(date +%s.%N); local duration=$(echo "$end_time - $start_time" | bc)
+            printf " ${GREEN}%.2f 秒${NC}\n" "$duration"; results+="${duration}|${mirror}|${display_name}\n"
             if [[ "$mirror" == "docker.io" ]]; then
-                timeout_duration=15
-                display_name="Official Docker Hub"
-            else
-                timeout_duration=10
-                pull_target="${mirror#https://}/library/hello-world"
-            fi
-            
-            local start_time=$(date +%s.%N)
-            if timeout "$timeout_duration" docker pull "$pull_target" > /dev/null 2>&1; then
-                local end_time=$(date +%s.%N); local duration=$(echo "$end_time - $start_time" | bc)
-                echo "${duration}|${mirror}|${display_name}" > "$results_dir/$test_count"
+                official_hub_ok=true
                 docker rmi "$pull_target" > /dev/null 2>&1 || true
+                break
             fi
-        ) &
+            docker rmi "$pull_target" > /dev/null 2>&1 || true
+        else
+            echo -e " ${RED}超时或失败${NC}"; results+="9999|${mirror}|${display_name}\n"
+        fi
     done
-
-    fn_print_info "测试正在进行中，请稍候..."
-    wait || true
-
-    local results
-    results=$(cat "$results_dir"/* 2>/dev/null)
-
-    if echo "$results" | grep -q "|docker.io|"; then
-        official_hub_ok=true
-    fi
-
     if [ "$official_hub_ok" = true ]; then
         if ! grep -q "registry-mirrors" /etc/docker/daemon.json 2>/dev/null; then
             fn_print_success "官方 Docker Hub 可访问，且您未配置任何镜像，无需操作。"
@@ -178,7 +140,7 @@ fn_speed_test_and_configure_mirrors() {
             if [[ "$confirm_clear" =~ ^[Yy]$ ]]; then fn_apply_docker_config ""; else fn_print_info "用户选择保留当前镜像配置，操作跳过。"; fi
         fi
     else
-        fn_print_warning "官方 Docker Hub 连接超时或失败。"; local sorted_mirrors=$(echo -e "$results" | grep -v '|docker.io|' | LC_ALL=C sort -n)
+        fn_print_warning "官方 Docker Hub 连接超时。"; local sorted_mirrors=$(echo -e "$results" | grep -v '^9999' | grep -v '|docker.io|' | LC_ALL=C sort -n)
         if [ -z "$sorted_mirrors" ]; then fn_print_error "所有备用镜像均测试失败！请检查您的网络连接。"; else
             fn_print_info "以下是可用的备用镜像及其速度："; echo "$sorted_mirrors" | grep . | awk -F'|' '{ printf "  - %-30s %.2f 秒\n", $3, $1 }'
             echo -ne "${YELLOW}是否配置最快的可用镜像? [Y/n]: ${NC}"; read -r confirm_config < /dev/tty; confirm_config=${confirm_config:-y}
@@ -211,21 +173,7 @@ fn_apply_config_changes() {
     fi
 }
 
-fn_get_network_info() {
-    fn_print_info "正在获取网络信息..."
-    PUBLIC_IP=$(curl -s --max-time 5 https://api.ipify.org || curl -s --max-time 5 https://ifconfig.me || echo "N/A")
-    LOCAL_IP=$(hostname -I | awk '{print $1}')
-    
-    if [[ "$PUBLIC_IP" == "N/A" ]]; then
-        fn_print_warning "未能自动获取公网IP地址。将使用内网IP作为主要地址。"
-        DISPLAY_IP="$LOCAL_IP"
-    else
-        fn_print_success "公网IP: $PUBLIC_IP"
-        DISPLAY_IP="$PUBLIC_IP"
-    fi
-    fn_print_success "内网IP: $LOCAL_IP"
-}
-
+fn_get_public_ip() { local ip; ip=$(curl -s --max-time 5 https://api.ipify.org) || ip=$(curl -s --max-time 5 https://ifconfig.me) || ip=$(hostname -I | awk '{print $1}'); echo "$ip"; }
 fn_confirm_and_delete_dir() {
     local dir_to_delete="$1"; local container_name="$2"
     fn_print_warning "目录 '$dir_to_delete' 已存在，其中可能包含您之前的聊天记录和角色卡。"
@@ -243,26 +191,28 @@ fn_confirm_and_delete_dir() {
 fn_create_project_structure() {
     fn_print_info "正在创建项目目录结构..."
     mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"
-    fn_print_info "正在设置文件所有权..."; sudo chown -R "$CURRENT_USER:$CURRENT_GROUP" "$INSTALL_DIR"
+    # 使用 sudo 确保即使目录由 root 创建，也能正确设置所有权
+    fn_print_info "正在设置文件所有权..."; sudo chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
     fn_print_success "项目目录创建并授权成功！"
 }
 
+# ==================== MODIFICATION START ====================
+# 改进1: 移除复杂的awk进度条，统一使用更稳定、兼容性更强的旋转动画
 fn_pull_with_progress_bar() {
     local compose_file="$1"
     local docker_compose_cmd="$2"
-    
-    fn_print_info "正在拉取镜像，此过程可能需要几分钟，请耐心等待..."
-    
+    # IMAGE_NAME 变量不再需要传入，但保留函数签名以防未来扩展
+
+    # 使用简单的旋转动画，这种方式不依赖Docker输出格式，非常稳定
     $docker_compose_cmd -f "$compose_file" pull > /dev/null 2>&1 &
     local pid=$!
     local spinner="/-\\|"
     local i=0
     while kill -0 $pid 2>/dev/null; do
-        printf "\r  ${YELLOW}[%s]${NC} 正在拉取镜像..." "${spinner:$((i++%4)):1}"
+        printf "\r  ${YELLOW}[%s]${NC} 正在拉取镜像，请耐心等待..." "${spinner:$((i++%4)):1}"
         sleep 0.1
     done
-    printf "\r%s\n" "                                                  "
-    
+    printf "\r%s\n" "                                                  " # 清除动画行
     wait $pid
     local exit_code=$?
 
@@ -272,6 +222,7 @@ fn_pull_with_progress_bar() {
         fn_print_success "镜像拉取成功！"
     fi
 }
+# ===================== MODIFICATION END =====================
 
 fn_verify_container_health() {
     local container_name="$1"
@@ -287,7 +238,7 @@ fn_verify_container_health() {
             echo -e "\r  ${GREEN}✓${NC} 容器已成功进入运行状态！"
             return 0
         fi
-        printf "\r  ${YELLOW}[%s]${NC} 等待中..." "${spinner:$((i++%4)):1}"
+        echo -ne "${spinner:i%4:1}\r"
         sleep $interval
     done
     echo -e "\r  ${RED}✗${NC} 容器未能进入健康运行状态！"
@@ -345,21 +296,12 @@ fn_display_final_info() {
     echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗"
     echo -e "║                      部署成功！尽情享受吧！                      ║"
     echo -e "╚════════════════════════════════════════════════════════════╝${NC}"
-    
-    if [[ "$PUBLIC_IP" != "N/A" ]]; then
-        echo -e "\n  ${CYAN}公网访问 (从任何地方):${NC} ${GREEN}http://${PUBLIC_IP}:8000${NC}"
-    fi
-    echo -e "  ${CYAN}内网访问 (在同一局域网):${NC} ${GREEN}http://${LOCAL_IP}:8000${NC}"
-
+    echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC}"
     if [[ "$run_mode" == "1" ]]; then 
         echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"
         echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"
     elif [[ "$run_mode" == "2" ]]; then 
-        if [[ "$PUBLIC_IP" != "N/A" ]]; then
-            echo -e "  ${YELLOW}首次登录:${NC} 为确保看到新的登录页，请访问 ${GREEN}http://${PUBLIC_IP}:8000/login${NC}"
-        else
-            echo -e "  ${YELLOW}首次登录:${NC} 为确保看到新的登录页，请访问 ${GREEN}http://${LOCAL_IP}:8000/login${NC}"
-        fi
+        echo -e "  ${YELLOW}首次登录:${NC} 为确保看到新的登录页，请访问 ${GREEN}http://${SERVER_IP}:8000/login${NC}"
     fi
     echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
 }
@@ -371,22 +313,39 @@ fn_display_final_info() {
 printf "\n" && tput reset
 
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.3.2${NC}    ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.2${NC}       ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的 Docker 自动化安装。"
 
 # --- 阶段一：环境检查与准备 ---
 fn_print_step "[ 1 / 5 ] 环境检查与准备"
-fn_init_sudo
-CURRENT_USER=$(whoami)
-CURRENT_GROUP=$(id -gn "$CURRENT_USER")
-USER_HOME=$(getent passwd "$CURRENT_USER" | cut -d: -f6)
-if [ -z "$USER_HOME" ]; then fn_print_error "无法找到当前用户 '$CURRENT_USER' 的家目录。"; fi
+
+# ==================== MODIFICATION START ====================
+# 改进2: 移除强制root检查，改为按需使用sudo
+if [[ "$(id -u)" -eq 0 ]]; then
+    fn_print_error "请不要直接使用 root 用户运行此脚本。请切换到普通用户，脚本会在需要时通过 'sudo' 请求权限。"
+fi
+if ! command -v sudo &> /dev/null; then
+    fn_print_error "本脚本需要 'sudo' 命令来执行特权操作，但未在您的系统中找到它。"
+fi
+# 验证sudo权限，这也会缓存凭证，减少后续sudo命令的密码输入
+fn_print_info "本脚本将在必要时使用 'sudo' 请求管理员权限..."
+if ! sudo -v; then
+    fn_print_error "无法获取 sudo 权限。请检查您的用户是否在 sudoers 组中或密码是否正确。"
+fi
+# 使用 $USER 替代 $SUDO_USER，因为脚本现在由普通用户启动
+TARGET_USER="${USER}"
+USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
+if [ -z "$USER_HOME" ]; then
+    fn_print_error "无法找到用户 '$TARGET_USER' 的家目录。"
+fi
+# ===================== MODIFICATION END =====================
+
 INSTALL_DIR="$USER_HOME/sillytavern"; CONFIG_FILE="$INSTALL_DIR/config.yaml"; COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 fn_check_dependencies
 fn_speed_test_and_configure_mirrors
-fn_get_network_info
+SERVER_IP=$(fn_get_public_ip)
 
 # --- 阶段二：交互式配置 ---
 fn_print_step "[ 2 / 5 ] 选择运行模式"
@@ -451,9 +410,9 @@ if [[ "$run_mode" == "1" ]]; then fn_print_success "单用户模式配置写入�
 ${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}
 SillyTavern 已临时启动，请完成管理员的初始设置：
 1. ${CYAN}【开放端口】${NC}
-   请确保您已在服务器后台（如阿里云/腾讯云安全组）或路由器上开放了 ${GREEN}8000${NC} 端口。
+   请确保您已在服务器后台（如阿里云/腾讯云安全组）开放了 ${GREEN}8000${NC} 端口。
 2. ${CYAN}【访问并登录】${NC}
-   请打开浏览器，访问: ${GREEN}http://${DISPLAY_IP}:8000${NC}
+   请打开浏览器，访问: ${GREEN}http://${SERVER_IP}:8000${NC}
    使用以下默认凭据登录：
      ▶ 账号: ${YELLOW}user${NC}
      ▶ 密码: ${YELLOW}password${NC}
