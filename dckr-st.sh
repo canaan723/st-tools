@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.3.1 (修复并行化闪退问题)
+# 版本: 1.3.2 (彻底修复并行化闪退问题)
 # 作者: Qingjue (及AI助手)
 
 # --- 初始化与环境设置 ---
@@ -33,9 +33,7 @@ fn_print_error() { echo -e "\n${RED}✗ 错误: $1${NC}\n" >&2; exit 1; }
 fn_print_warning() { echo -e "${YELLOW}⚠ $1${NC}"; }
 fn_print_info() { echo -e "  $1"; }
 
-# ==============================================================================
-#   改进点 #3: Sudo 权限管理
-# ==============================================================================
+
 fn_init_sudo() {
     fn_print_info "正在检查 sudo 权限..."
     if ! command -v sudo &> /dev/null; then
@@ -113,9 +111,6 @@ fn_apply_docker_config() {
     fi
 }
 
-# ==============================================================================
-#   改进点 #2: 镜像测速并行
-# ==============================================================================
 fn_speed_test_and_configure_mirrors() {
     fn_print_info "正在并行检测 Docker 镜像源可用性..."
     local mirrors=(
@@ -129,19 +124,22 @@ fn_speed_test_and_configure_mirrors() {
     docker rmi hello-world > /dev/null 2>&1 || true
     local official_hub_ok=false
     
-    # 创建临时目录存放测速结果
     local results_dir
     results_dir=$(mktemp -d)
     if [ -z "$results_dir" ] || [ ! -d "$results_dir" ]; then
         fn_print_error "无法创建临时目录，请检查 /tmp 目录权限。"
     fi
-    trap 'rm -rf "$results_dir"' EXIT # 确保脚本退出时清理临时目录
+    trap 'rm -rf "$results_dir"' EXIT
 
     local test_count=0
     for mirror in "${mirrors[@]}"; do
         ((test_count++))
-        # 将每个测试任务放入后台并行执行
         (
+            # ================== FIX START ==================
+            # 明确禁用子shell的 "exit on error"，防止因超时而导致整个脚本退出
+            set +e
+            # =================== FIX END ===================
+
             local pull_target="hello-world" display_name="$mirror"
             local timeout_duration
             if [[ "$mirror" == "docker.io" ]]; then
@@ -155,7 +153,6 @@ fn_speed_test_and_configure_mirrors() {
             local start_time=$(date +%s.%N)
             if timeout "$timeout_duration" docker pull "$pull_target" > /dev/null 2>&1; then
                 local end_time=$(date +%s.%N); local duration=$(echo "$end_time - $start_time" | bc)
-                # 将成功结果写入临时文件
                 echo "${duration}|${mirror}|${display_name}" > "$results_dir/$test_count"
                 docker rmi "$pull_target" > /dev/null 2>&1 || true
             fi
@@ -163,10 +160,8 @@ fn_speed_test_and_configure_mirrors() {
     done
 
     fn_print_info "测试正在进行中，请稍候..."
-    # FIX: 增加 '|| true' 防止 set -e 在有任务失败时中止脚本
     wait || true
 
-    # 收集并处理结果
     local results
     results=$(cat "$results_dir"/* 2>/dev/null)
 
@@ -216,14 +211,9 @@ fn_apply_config_changes() {
     fi
 }
 
-# ==============================================================================
-#   改进点 #4: 同时获取公网与内网IP
-# ==============================================================================
 fn_get_network_info() {
     fn_print_info "正在获取网络信息..."
-    # 尝试获取公网IP
     PUBLIC_IP=$(curl -s --max-time 5 https://api.ipify.org || curl -s --max-time 5 https://ifconfig.me || echo "N/A")
-    # 获取内网IP
     LOCAL_IP=$(hostname -I | awk '{print $1}')
     
     if [[ "$PUBLIC_IP" == "N/A" ]]; then
@@ -257,16 +247,12 @@ fn_create_project_structure() {
     fn_print_success "项目目录创建并授权成功！"
 }
 
-# ==============================================================================
-#   改进点 #1: Docker 镜像拉取进度条使用稳定方式
-# ==============================================================================
 fn_pull_with_progress_bar() {
     local compose_file="$1"
     local docker_compose_cmd="$2"
     
     fn_print_info "正在拉取镜像，此过程可能需要几分钟，请耐心等待..."
     
-    # 统一使用稳定的旋转动画，移除脆弱的awk解析
     $docker_compose_cmd -f "$compose_file" pull > /dev/null 2>&1 &
     local pid=$!
     local spinner="/-\\|"
@@ -275,7 +261,7 @@ fn_pull_with_progress_bar() {
         printf "\r  ${YELLOW}[%s]${NC} 正在拉取镜像..." "${spinner:$((i++%4)):1}"
         sleep 0.1
     done
-    printf "\r%s\n" "                                                  " # 清除旋转动画行
+    printf "\r%s\n" "                                                  "
     
     wait $pid
     local exit_code=$?
@@ -385,14 +371,14 @@ fn_display_final_info() {
 printf "\n" && tput reset
 
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.3.1${NC}    ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.3.2${NC}    ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的 Docker 自动化安装。"
 
 # --- 阶段一：环境检查与准备 ---
 fn_print_step "[ 1 / 5 ] 环境检查与准备"
-fn_init_sudo # 改进点 #3: 初始化sudo权限
+fn_init_sudo
 CURRENT_USER=$(whoami)
 CURRENT_GROUP=$(id -gn "$CURRENT_USER")
 USER_HOME=$(getent passwd "$CURRENT_USER" | cut -d: -f6)
@@ -400,7 +386,7 @@ if [ -z "$USER_HOME" ]; then fn_print_error "无法找到当前用户 '$CURRENT_
 INSTALL_DIR="$USER_HOME/sillytavern"; CONFIG_FILE="$INSTALL_DIR/config.yaml"; COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 fn_check_dependencies
 fn_speed_test_and_configure_mirrors
-fn_get_network_info # 改进点 #4: 获取网络信息
+fn_get_network_info
 
 # --- 阶段二：交互式配置 ---
 fn_print_step "[ 2 / 5 ] 选择运行模式"
