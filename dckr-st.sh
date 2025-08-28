@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.2.1 (由AI助手优化)
+# 版本: 1.2.2 (由AI助手优化)
 # 作者: Qingjue
 
 # --- 初始化与环境设置 ---
@@ -194,6 +194,42 @@ fn_create_project_structure() {
     fn_print_success "项目目录创建并授权成功！"
 }
 
+# ==================== MODIFICATION START ====================
+# 新增函数：带旋转动画的镜像拉取
+fn_pull_with_spinner() {
+    local compose_file="$1"
+    local docker_compose_cmd="$2"
+
+    # 在后台执行拉取命令，并将所有输出重定向到/dev/null
+    $docker_compose_cmd -f "$compose_file" pull > /dev/null 2>&1 &
+    local pid=$!
+    local spinner="/-\\|"
+    local i=0
+
+    # 当后台进程(pid)存在时，循环显示旋转动画
+    while kill -0 $pid 2>/dev/null; do
+        i=$(( (i+1) % 4 ))
+        # 使用\r让光标回到行首，实现单行刷新效果
+        printf "\r  ${YELLOW}[%s]${NC} 正在拉取镜像，请耐心等待..." "${spinner:$i:1}"
+        sleep 0.1
+    done
+
+    # 清理旋转动画所在的行
+    printf "\r%s\n" "                                                  "
+    
+    # 等待后台进程结束，并获取其退出码
+    wait $pid
+    local exit_code=$?
+
+    # 根据退出码判断成功或失败
+    if [ $exit_code -ne 0 ]; then
+        fn_print_error "拉取 Docker 镜像失败！请检查您的网络或镜像源配置。"
+    else
+        fn_print_success "镜像拉取成功！"
+    fi
+}
+# ===================== MODIFICATION END =====================
+
 fn_verify_container_health() {
     local container_name="$1"
     local retries=10
@@ -329,7 +365,6 @@ fn_print_success "docker-compose.yml 文件创建成功！"
 
 # --- 阶段四：初始化与配置 ---
 fn_print_step "[ 4 / 5 ] 初始化与配置"
-# ==================== MODIFICATION START ====================
 fn_print_info "即将拉取 SillyTavern 镜像 (约 201M)。"
 echo -e "  下载速度取决于您的网络带宽，以下为预估时间参考："
 echo -e "  ${YELLOW}┌──────────────────────────────────────────────────┐${NC}"
@@ -340,11 +375,9 @@ echo -e "  ${YELLOW}│${NC} 2M 带宽   ${BOLD}|${NC} ~0.25 MB/s  ${BOLD}|${NC}
 echo -e "  ${YELLOW}│${NC} 3M 带宽   ${BOLD}|${NC} ~0.375 MB/s ${BOLD}|${NC} 约 9 分钟              ${YELLOW}│${NC}"
 echo -e "  ${YELLOW}│${NC} 100M 带宽 ${BOLD}|${NC} ~12.5 MB/s  ${BOLD}|${NC} 约 16.2 秒             ${YELLOW}│${NC}"
 echo -e "  ${YELLOW}└──────────────────────────────────────────────────┘${NC}"
-fn_print_warning "拉取过程将显示 Docker 进度条，请耐心等待..."
 
-# 拉取镜像并显示进度条
-$DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" pull || fn_print_error "拉取 Docker 镜像失败！"
-# ===================== MODIFICATION END =====================
+# 调用新的带spinner的拉取函数
+fn_pull_with_spinner "$COMPOSE_FILE" "$DOCKER_COMPOSE_CMD"
 
 fn_print_info "正在进行首次启动以生成最新的官方配置文件..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
 timeout=60; while [ ! -f "$CONFIG_FILE" ]; do if [ $timeout -eq 0 ]; then $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs; fn_print_error "等待配置文件生成超时！请检查以上日志输出。"; fi; sleep 1; ((timeout--)); done
