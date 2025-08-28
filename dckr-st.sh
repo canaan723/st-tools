@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 19.0 (智能诊断版)
-# 作者: Qingjue (由 AI 助手基于 v18.0 优化)
-# 更新日志 (v19.0):
-# - [核心升级] 状态检查功能现在可以智能解读容器状态，并用白话为用户提供诊断建议。
-# - [体验优化] 明确了日志功能的行为逻辑，帮助用户通过日志是否自动退出判断容器状态。
+# 版本: 21.0 (镜像源扩充版)
+# 作者: Qingjue (由 AI 助手基于 v20.0 优化)
+# 更新日志 (v21.0):
+# - [核心增强] 新增 10 个备用 Docker 镜像源，大幅提升网络适应性。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -99,7 +98,28 @@ fn_apply_docker_config() {
 }
 fn_speed_test_and_configure_mirrors() {
     fn_print_info "正在智能检测 Docker 镜像源可用性 (每个源超时 30 秒)..."
-    local mirrors=("docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live" "https://dockerproxy.1panel.live" "https://hub.rat.dev")
+    ## --- 修改开始: 整合新的镜像源列表 ---
+    local mirrors=(
+        "docker.io"
+        # --- 常用备用源 ---
+        "https://docker.1ms.run"
+        "https://hub1.nat.tf"
+        "https://docker.1panel.live"
+        "https://dockerproxy.1panel.live"
+        "https://hub.rat.dev"
+        # --- 新增源 (v21.0) ---
+        "https://docker.m.ixdev.cn"
+        "https://hub2.nat.tf"
+        "https://docker.1panel.dev"
+        "https://docker.amingg.com"
+        "https://docker.xuanyuan.me"
+        "https://dytt.online"
+        "https://lispy.org"
+        "https://docker.xiaogenban1993.com"
+        "https://docker-0.unsee.tech"
+        "https://666860.xyz"
+    )
+    ## --- 修改结束 ---
     docker rmi hello-world > /dev/null 2>&1 || true
     local results=""; local official_hub_ok=false
     for mirror in "${mirrors[@]}"; do
@@ -109,7 +129,11 @@ fn_speed_test_and_configure_mirrors() {
         if timeout 30 docker pull "$pull_target" > /dev/null 2>&1; then
             local end_time=$(date +%s.%N); local duration=$(echo "$end_time - $start_time" | bc)
             printf " ${GREEN}%.2f 秒${NC}\n" "$duration"; results+="${duration}|${mirror}|${display_name}\n"
-            if [[ "$mirror" == "docker.io" ]]; then official_hub_ok=true; fi
+            if [[ "$mirror" == "docker.io" ]]; then
+                official_hub_ok=true
+                docker rmi "$pull_target" > /dev/null 2>&1 || true
+                break # 熔断：官方源可用，立即中断测试
+            fi
             docker rmi "$pull_target" > /dev/null 2>&1 || true
         else
             echo -e " ${RED}超时或失败${NC}"; results+="9999|${mirror}|${display_name}\n"
@@ -211,7 +235,6 @@ fn_wait_for_service() {
     echo -e "                                           \r"
 }
 
-## --- 新增函数: 智能状态诊断 ---
 fn_check_and_explain_status() {
     local container_name="$1"
     echo -e "\n${YELLOW}--- 容器当前状态 ---${NC}"
@@ -244,6 +267,15 @@ fn_check_and_explain_status() {
     esac
 }
 
+fn_display_final_info() {
+    echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗"
+    echo -e "║                      部署成功！尽情享受吧！                      ║"
+    echo -e "╚════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC} (按住 Ctrl 并单击)"
+    if [[ "$run_mode" == "1" ]]; then echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"; echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"; elif [[ "$run_mode" == "2" ]]; then echo -e "  ${YELLOW}首次登录:${NC} 为确保看到新的登录页，请访问 ${GREEN}http://${SERVER_IP}:8000/login${NC} (按住 Ctrl 并单击)"; fi
+    echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
+}
+
 # ==============================================================================
 #   主逻辑开始
 # ==============================================================================
@@ -251,7 +283,7 @@ fn_check_and_explain_status() {
 printf "\n" && tput reset
 
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v19.0${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v21.0${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
@@ -310,7 +342,7 @@ fn_apply_config_changes
 if [[ "$run_mode" == "1" ]]; then fn_print_success "单用户模式配置写入完成！"; else
     fn_print_info "正在临时启动服务以设置管理员..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
     fn_verify_container_health "$CONTAINER_NAME"
-    fn_wait_for_service 10
+    fn_wait_for_service
     MULTI_USER_GUIDE=$(cat <<EOF
 
 ${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}
@@ -344,20 +376,16 @@ fi
 fn_print_step "[ 5 / 5 ] 启动并验证服务"
 fn_print_info "正在应用最终配置并重启服务..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate > /dev/null
 fn_verify_container_health "$CONTAINER_NAME"
-fn_wait_for_service 10
+fn_wait_for_service
 
-echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗"
-echo -e "║                      部署成功！尽情享受吧！                      ║"
-echo -e "╚════════════════════════════════════════════════════════════╝${NC}"
-echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC} (按住 Ctrl 并单击)"
-if [[ "$run_mode" == "1" ]]; then echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"; echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"; elif [[ "$run_mode" == "2" ]]; then echo -e "  ${YELLOW}首次登录:${NC} 为确保看到新的登录页，请访问 ${GREEN}http://${SERVER_IP}:8000/login${NC} (按住 Ctrl 并单击)"; fi
-echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
+fn_display_final_info
 
 # --- 交互式终局 ---
 while true; do
     echo -e "\n${CYAN}--- 部署后操作 ---${NC}"
     echo -e "  [1] 查看容器状态"
     echo -e "  [2] 查看日志 ${YELLOW}(若容器停止则自动退出, 否则按 Ctrl+C 返回)${NC}"
+    echo -e "  [3] 重新显示访问信息"
     echo -e "  [q] 退出脚本"
     read -p "请输入选项: " choice < /dev/tty
     case "$choice" in
@@ -366,15 +394,17 @@ while true; do
             ;;
         2)
             echo -e "\n${YELLOW}--- 实时日志 (按 Ctrl+C 停止) ---${NC}"
-            # 使用 || true 避免在容器不存在时脚本因 set -e 退出
             docker logs -f "$CONTAINER_NAME" || true
+            ;;
+        3)
+            fn_display_final_info
             ;;
         q|Q)
             echo -e "\n脚本执行完毕，祝您使用愉快！"
             break
             ;;
         *)
-            fn_print_warning "无效输入，请输入 1, 2, 或 q。"
+            fn_print_warning "无效输入，请输入 1, 2, 3 或 q。"
             ;;
     esac
 done
