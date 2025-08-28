@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.2.2 (由AI助手优化)
+# 版本: 1.2.3 (由AI助手优化)
 # 作者: Qingjue
 
 # --- 初始化与环境设置 ---
@@ -182,7 +182,7 @@ fn_confirm_and_delete_dir() {
     if [[ ! "$c2" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。"; fi
     echo -ne "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}"; read -r c3 < /dev/tty
     if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。"; fi
-    fn_print_info "正在停止可能正在运行的旧容器: $container_name..."; docker stop "$container_name" >/dev/null 2>&1 || true; fn_print_success "旧容器已停止。"
+    fn_print_info "正在停止可能正在运行的旧容器: $container_name..."; docker stop "$container_name" >/dev/null 2&>1 || true; fn_print_success "旧容器已停止。"
     fn_print_info "正在移除旧容器: $container_name..."; docker rm "$container_name" >/dev/null 2>&1 || true; fn_print_success "旧容器已移除。"
     fn_print_info "正在删除旧目录: $dir_to_delete..."; sudo rm -rf "$dir_to_delete"; fn_print_success "旧目录已彻底清理。"
 }
@@ -195,33 +195,78 @@ fn_create_project_structure() {
 }
 
 # ==================== MODIFICATION START ====================
-# 新增函数：带旋转动画的镜像拉取
-fn_pull_with_spinner() {
+# 新增函数：带实时进度和下载大小的美观进度条
+fn_pull_with_progress_bar() {
     local compose_file="$1"
     local docker_compose_cmd="$2"
-
-    # 在后台执行拉取命令，并将所有输出重定向到/dev/null
-    $docker_compose_cmd -f "$compose_file" pull > /dev/null 2>&1 &
-    local pid=$!
-    local spinner="/-\\|"
-    local i=0
-
-    # 当后台进程(pid)存在时，循环显示旋转动画
-    while kill -0 $pid 2>/dev/null; do
-        i=$(( (i+1) % 4 ))
-        # 使用\r让光标回到行首，实现单行刷新效果
-        printf "\r  ${YELLOW}[%s]${NC} 正在拉取镜像，请耐心等待..." "${spinner:$i:1}"
-        sleep 0.1
-    done
-
-    # 清理旋转动画所在的行
-    printf "\r%s\n" "                                                  "
     
-    # 等待后台进程结束，并获取其退出码
-    wait $pid
-    local exit_code=$?
+    # 执行docker-compose pull，合并标准输出和标准错误，然后通过管道交给awk处理
+    # stdbuf -oL -eL 确保输出是行缓冲的，以便实时处理
+    stdbuf -oL -eL $docker_compose_cmd -f "$compose_file" pull 2>&1 | \
+    awk '
+    BEGIN {
+        bar_width = 30
+        # 定义颜色代码
+        GREEN = "\033[1;32m"
+        YELLOW = "\033[1;33m"
+        CYAN = "\033[1;36m"
+        NC = "\033[0m"
+    }
 
-    # 根据退出码判断成功或失败
+    # awk函数：将大小字符串（如 50.3MB）转换为KB
+    function size_to_kb(size_str,   val, unit) {
+        val = substr(size_str, 1, length(size_str)-2)
+        unit = substr(size_str, length(size_str)-1)
+        if (unit == "GB") return val * 1024 * 1024
+        if (unit == "MB") return val * 1024
+        if (unit == "kB") return val
+        return val / 1024 # for B
+    }
+
+    # 匹配包含 "Downloading" 和进度信息的行
+    /Downloading/ && match($0, /[0-9.]+[kMGT]?B\/[0-9.]+[kMGT]?B/) {
+        # 提取匹配到的进度字符串，例如 "50.3MB/201.0MB"
+        progress_str = substr($0, RSTART, RLENGTH)
+        
+        # 分割当前大小和总大小
+        split(progress_str, parts, "/")
+        current_str = parts[1]
+        total_str = parts[2]
+
+        # 转换为KB进行计算
+        current_kb = size_to_kb(current_str)
+        total_kb = size_to_kb(total_str)
+
+        # 计算百分比
+        if (total_kb > 0) {
+            percent = int(current_kb / total_kb * 100)
+        } else {
+            percent = 0
+        }
+        
+        # 计算进度条的填充长度
+        filled_len = int(bar_width * percent / 100)
+        
+        # 构建进度条字符串
+        bar = ""
+        for (i = 1; i <= bar_width; i++) {
+            bar = bar (i <= filled_len ? "█" : "░")
+        }
+        
+        # 使用\r在单行打印进度条
+        printf "\r  %s[%s]%s %d%% (%s/%s)", YELLOW, bar, NC, percent, current_str, total_str
+        fflush()
+    }
+
+    # 脚本结束时，打印一个100%的完整进度条和换行符
+    END {
+        bar = ""
+        for (i = 1; i <= bar_width; i++) bar = bar "█"
+        printf "\r  %s[%s]%s 100%% 完成                    \n", GREEN, bar, NC
+    }
+    '
+    # 检查docker-compose pull命令本身是否成功
+    local exit_code=${PIPESTATUS[0]}
     if [ $exit_code -ne 0 ]; then
         fn_print_error "拉取 Docker 镜像失败！请检查您的网络或镜像源配置。"
     else
@@ -375,9 +420,10 @@ echo -e "  ${YELLOW}│${NC} 2M 带宽   ${BOLD}|${NC} ~0.25 MB/s  ${BOLD}|${NC}
 echo -e "  ${YELLOW}│${NC} 3M 带宽   ${BOLD}|${NC} ~0.375 MB/s ${BOLD}|${NC} 约 9 分钟              ${YELLOW}│${NC}"
 echo -e "  ${YELLOW}│${NC} 100M 带宽 ${BOLD}|${NC} ~12.5 MB/s  ${BOLD}|${NC} 约 16.2 秒             ${YELLOW}│${NC}"
 echo -e "  ${YELLOW}└──────────────────────────────────────────────────┘${NC}"
+fn_print_warning "拉取过程将显示实时进度条，请耐心等待..."
 
-# 调用新的带spinner的拉取函数
-fn_pull_with_spinner "$COMPOSE_FILE" "$DOCKER_COMPOSE_CMD"
+# 调用新的带美观进度条的拉取函数
+fn_pull_with_progress_bar "$COMPOSE_FILE" "$DOCKER_COMPOSE_CMD"
 
 fn_print_info "正在进行首次启动以生成最新的官方配置文件..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
 timeout=60; while [ ! -f "$CONFIG_FILE" ]; do if [ $timeout -eq 0 ]; then $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs; fn_print_error "等待配置文件生成超时！请检查以上日志输出。"; fi; sleep 1; ((timeout--)); done
