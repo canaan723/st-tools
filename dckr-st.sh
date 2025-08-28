@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 16.1 (镜像检测修复版)
-# 作者: Qingjue (由 AI 助手基于 v16.0 优化)
-# 更新日志 (v16.1):
-# - [修复] 恢复了在 v16.0 中意外遗漏的 Docker 镜像加速检测功能。
+# 版本: 16.3 (小白友好版)
+# 作者: Qingjue (由 AI 助手基于 v16.2 优化)
+# 更新日志 (v16.3):
+# - [体验优化] 根据建议，将更适合新手的“单用户模式”设为默认安装选项。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -174,6 +174,36 @@ fn_create_project_structure() {
     fn_print_success "项目目录创建并授权成功！"
 }
 
+fn_verify_container_health() {
+    local container_name="$1"
+    local retries=10
+    local interval=3
+    
+    fn_print_info "正在确认容器健康状态 (最多等待 ${retries}x${interval} 秒)..."
+    for i in $(seq 1 $retries); do
+        local status
+        status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || echo "error")
+        
+        if [[ "$status" == "running" ]]; then
+            echo # Newline after dots
+            fn_print_success "容器已成功进入运行状态！"
+            return 0
+        fi
+        
+        echo -n "."
+        sleep $interval
+    done
+    
+    echo # Newline after dots
+    fn_print_warning "容器未能进入健康运行状态！"
+    fn_print_info "以下是容器的最新日志，以帮助诊断问题："
+    echo -e "${YELLOW}--------------------- 容器日志开始 ---------------------${NC}"
+    docker logs "$container_name" --tail 50 || echo "无法获取容器日志。"
+    echo -e "${YELLOW}---------------------- 容器日志结束 ----------------------${NC}"
+    fn_print_error "部署失败。请检查以上日志以确定问题原因。"
+}
+
+
 # ==============================================================================
 #   主逻辑开始
 # ==============================================================================
@@ -181,26 +211,29 @@ fn_create_project_structure() {
 printf "\n" && tput reset
 
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v16.1${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v16.3${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
 
 # --- 阶段一：环境自检与准备 ---
-fn_print_step "[ 1 / 4 ] 环境检查与准备"
+fn_print_step "[ 1 / 5 ] 环境检查与准备"
 if [ "$(id -u)" -ne 0 ]; then fn_print_error "本脚本需要以 root 权限运行。请使用 'sudo' 执行。"; fi
 TARGET_USER="${SUDO_USER:-root}"; if [ "$TARGET_USER" = "root" ]; then USER_HOME="/root"; fn_print_warning "您正以 root 用户身份直接运行脚本，将安装在 /root 目录下。"; else USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6); if [ -z "$USER_HOME" ]; then fn_print_error "无法找到用户 '$TARGET_USER' 的家目录。"; fi; fi
 INSTALL_DIR="$USER_HOME/sillytavern"; CONFIG_FILE="$INSTALL_DIR/config.yaml"; COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 fn_check_dependencies
-fn_speed_test_and_configure_mirrors # <-- 修复：恢复此功能的调用
+fn_speed_test_and_configure_mirrors
 
 # --- 阶段二：交互式配置 ---
-fn_print_step "[ 2 / 4 ] 选择运行模式"
-echo "请选择您希望的运行模式："; echo -e "  [1] ${CYAN}单用户模式${NC} (简单，适合个人使用)"; echo -e "  [2] ${CYAN}多用户模式${NC} (推荐，拥有独立的登录页面)"; read -p "请输入选项数字 [默认为 2]: " run_mode < /dev/tty; run_mode=${run_mode:-2}
+fn_print_step "[ 2 / 5 ] 选择运行模式"
+echo "请选择您希望的运行模式："; echo -e "  [1] ${CYAN}单用户模式${NC} (简单，适合个人使用)"; echo -e "  [2] ${CYAN}多用户模式${NC} (拥有独立的登录页面)"
+## --- 修改开始: 将默认值改为 1 ---
+read -p "请输入选项数字 [默认为 1]: " run_mode < /dev/tty; run_mode=${run_mode:-1}
+## --- 修改结束 ---
 if [[ "$run_mode" == "1" ]]; then read -p "请输入您的自定义用户名: " single_user < /dev/tty; read -p "请输入您的自定义密码: " single_pass < /dev/tty; if [ -z "$single_user" ] || [ -z "$single_pass" ]; then fn_print_error "用户名和密码不能为空！"; fi; elif [[ "$run_mode" != "2" ]]; then fn_print_error "无效输入，脚本已终止。"; fi
 
 # --- 阶段三：自动化部署 ---
-fn_print_step "[ 3 / 4 ] 创建项目文件"
+fn_print_step "[ 3 / 5 ] 创建项目文件"
 if [ -d "$INSTALL_DIR" ]; then
     fn_confirm_and_delete_dir "$INSTALL_DIR" "$CONTAINER_NAME"
 fi
@@ -228,8 +261,8 @@ services:
 EOF
 fn_print_success "docker-compose.yml 文件创建成功！"
 
-# --- 阶段四：初始化与最终启动 ---
-fn_print_step "[ 4 / 4 ] 初始化与最终启动"
+# --- 阶段四：初始化与配置 ---
+fn_print_step "[ 4 / 5 ] 初始化与配置"
 fn_print_info "正在拉取 SillyTavern 镜像，可能需要几分钟..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" pull || fn_print_error "拉取 Docker 镜像失败！"
 fn_print_info "正在进行首次启动以生成最新的官方配置文件..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
 timeout=60; while [ ! -f "$CONFIG_FILE" ]; do if [ $timeout -eq 0 ]; then $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs; fn_print_error "等待配置文件生成超时！请检查以上日志输出。"; fi; sleep 1; ((timeout--)); done
@@ -266,7 +299,11 @@ EOF
     fn_print_success "多用户模式配置写入完成！"
 fi
 
+# --- 阶段五：最终启动与验证 ---
+fn_print_step "[ 5 / 5 ] 启动并验证服务"
 fn_print_info "正在应用最终配置并重启服务..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate > /dev/null
+fn_verify_container_health "$CONTAINER_NAME"
+
 SERVER_IP=$(fn_get_public_ip)
 echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗"
 echo -e "║                      部署成功！尽情享受吧！                      ║"
