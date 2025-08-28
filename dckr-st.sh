@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 11.5 (依赖自动安装 & 镜像逻辑修复版)
-# 作者: Qingjue (由 AI 助手基于 v11.4 优化)
-# 更新日志 (v11.5):
-# - [新增] 实现 yq 依赖的自动检测与安装，无需用户手动干预。
-# - [修复] 修正了当官方 Docker Hub 超时后，错误判断所有备用镜像都失败的逻辑 Bug。
+# 版本: 11.6 (强健依赖安装 & SELinux 兼容版)
+# 作者: Qingjue (由 AI 助手基于 v11.5 优化)
+# 更新日志 (v11.6):
+# - [重构] yq 安装逻辑，改为从 API 获取版本并下载 tar.gz 包，增加重试，确保安装成功。
+# - [修复] 为 Docker Compose 的 volumes 添加 `:z` 标志，解决在启用 SELinux 的系统上的权限问题。
+# - [优化] 统一了所有交互式提示语的风格。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -31,16 +32,17 @@ fn_print_info() { echo -e "  $1"; }
 
 # --- 核心函数 ---
 
-## --- 修改开始 1: 依赖检查与 yq 自动安装 ---
+## --- 修改开始 1: 重构 yq 依赖检查与安装 ---
 fn_check_dependencies() {
     fn_print_info "正在检查核心依赖..."
     if ! command -v docker &> /dev/null; then fn_print_error "未检测到 Docker。"; fi
-    if ! command -v bc &> /dev/null; then fn_print_error "需要 'bc' 命令来进行测速计算，请先安装它 (例如: sudo apt install bc)。"; fi
-    if ! command -v curl &> /dev/null; then fn_print_error "需要 'curl' 命令来下载文件，请先安装它 (例如: sudo apt install curl)。"; fi
+    if ! command -v bc &> /dev/null; then fn_print_error "需要 'bc' 命令，请先安装 (例如: sudo apt install bc)。"; fi
+    if ! command -v curl &> /dev/null; then fn_print_error "需要 'curl' 命令，请先安装 (例如: sudo apt install curl)。"; fi
+    if ! command -v tar &> /dev/null; then fn_print_error "需要 'tar' 命令，请先安装 (例如: sudo apt install tar)。"; fi
     if command -v docker-compose &> /dev/null; then DOCKER_COMPOSE_CMD="docker-compose"; elif docker compose version &> /dev/null; then DOCKER_COMPOSE_CMD="docker compose"; else fn_print_error "未检测到 Docker Compose。"; fi
     
     # 检查 yq
-    if command -v yq &> /dev/null && yq --help | grep -q "eval (e)"; then
+    if command -v yq &> /dev/null && yq --version | grep -q 'version 4'; then
         USE_YQ=true
         fn_print_success "检测到 yq v4+，将使用 yq 修改配置 (更稳定)。"
     else
@@ -52,17 +54,32 @@ fn_check_dependencies() {
             *) fn_print_warning "不支持的系统架构: $(uname -m)。将回退到 sed 方案。"; return ;;
         esac
         
-        local yq_url="https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${arch}"
-        if curl -sSL -o /usr/local/bin/yq "$yq_url" && chmod +x /usr/local/bin/yq; then
-            fn_print_success "yq 最新版已成功安装到 /usr/local/bin/yq"
-            # 再次验证
-            if yq --help | grep -q "eval (e)"; then
-                USE_YQ=true
-                fn_print_success "yq 验证通过！"
-            else
-                fn_print_warning "yq 安装后验证失败，将回退到 sed 方案。"
+        local install_success=false
+        for i in {1..3}; do
+            fn_print_info "正在尝试第 $i 次下载并安装 yq..."
+            local latest_version=$(curl -sL "https://api.github.com/repos/mikefarah/yq/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+            if [ -z "$latest_version" ]; then
+                fn_print_warning "从 GitHub API 获取最新版本号失败。"
+                sleep 2
+                continue
             fi
-        else
+            
+            local yq_binary="yq_linux_${arch}"
+            local yq_url="https://github.com/mikefarah/yq/releases/download/${latest_version}/${yq_binary}.tar.gz"
+            
+            if curl -sSL "$yq_url" | tar xz -O "./${yq_binary}" > /usr/local/bin/yq && chmod +x /usr/local/bin/yq; then
+                if command -v yq &> /dev/null && yq --version | grep -q 'version 4'; then
+                    fn_print_success "yq 最新版 (${latest_version}) 已成功安装并验证！"
+                    USE_YQ=true
+                    install_success=true
+                    break
+                fi
+            fi
+            fn_print_warning "第 $i 次尝试失败。"
+            sleep 2
+        done
+
+        if [ "$install_success" = false ]; then
             fn_print_warning "yq 自动安装失败，请检查网络或权限。将回退到 sed 方案。"
         fi
     fi
@@ -92,14 +109,14 @@ fn_apply_docker_config() {
         if sudo systemctl restart docker; then
             fn_print_success "自动回滚成功！Docker 已恢复并使用官方源。"
         else
-            fn_print_error "自动回滚失败！Docker 服务无法启动。请手动执行 'sudo systemctl status docker.service' 和 'sudo journalctl -xeu docker.service' 进行排查。"
+            fn_print_error "自动回滚失败！请手动执行 'sudo systemctl status docker.service' 和 'sudo journalctl -xeu docker.service' 进行排查。"
         fi
     fi
 }
 
-## --- 修改开始 2: 修复镜像测速逻辑 ---
+## --- 修改开始 2: 统一提示语格式 ---
 fn_speed_test_and_configure_mirrors() {
-    fn_print_info "正在智能检测 Docker 镜像源可用性..."
+    fn_print_info "正在智能检测 Docker 镜像源可用性 (每个源超时 30 秒)..."
     local mirrors=("docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live" "https://dockerproxy.1panel.live" "https://hub.rat.dev")
     docker rmi hello-world > /dev/null 2>&1 || true
 
@@ -128,7 +145,7 @@ fn_speed_test_and_configure_mirrors() {
 
     if [ "$official_hub_ok" = true ]; then
         fn_print_success "官方 Docker Hub 可访问。"
-        echo -ne "${YELLOW}是否清除本地镜像配置并使用官方源？(默认是) [Y/n]: ${NC}"
+        echo -ne "${YELLOW}是否清除本地镜像配置并使用官方源? [Y/n]: ${NC}"
         read -r confirm_clear < /dev/tty
         confirm_clear=${confirm_clear:-y}
         if [[ "$confirm_clear" =~ ^[Yy]$ ]]; then
@@ -143,14 +160,13 @@ fn_speed_test_and_configure_mirrors() {
         if [ -z "$sorted_mirrors" ]; then
             fn_print_error "所有备用镜像均测试失败！请检查您的网络连接。"
         else
-            echo -ne "${YELLOW}是否从以下可用镜像中选择最快的进行配置？(默认是) [Y/n]: ${NC}"
+            fn_print_info "以下是可用的备用镜像及其速度："
+            echo "$sorted_mirrors" | awk -F'|' '{ printf "  - %-30s %.2f 秒\n", $3, $1 }'
+            echo -ne "${YELLOW}是否配置最快的可用镜像? [Y/n]: ${NC}"
             read -r confirm_config < /dev/tty
             confirm_config=${confirm_config:-y}
 
             if [[ "$confirm_config" =~ ^[Yy]$ ]]; then
-                fn_print_info "可用镜像排行如下："
-                echo "$sorted_mirrors" | awk -F'|' '{ printf "  - %-30s %.2f 秒\n", $3, $1 }'
-
                 local best_mirrors=($(echo "$sorted_mirrors" | head -n 3 | cut -d'|' -f2))
                 fn_print_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
                 local mirrors_json=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
@@ -165,6 +181,7 @@ fn_speed_test_and_configure_mirrors() {
 ## --- 修改结束 2 ---
 
 fn_apply_config_changes() {
+    # ... (此函数内容不变) ...
     local tool_name
     if [ "$USE_YQ" = true ]; then tool_name="yq"; else tool_name="sed"; fi
     fn_print_info "正在使用 ${BOLD}${tool_name}${NC} 精准修改配置并添加注释..."
@@ -205,7 +222,7 @@ fn_apply_config_changes() {
 }
 
 fn_get_public_ip() { local ip; ip=$(curl -s --max-time 5 https://api.ipify.org) || ip=$(curl -s --max-time 5 https://ifconfig.me) || ip=$(hostname -I | awk '{print $1}'); echo "$ip"; }
-fn_confirm_and_delete_dir() { local dir_to_delete="$1"; fn_print_warning "目录 '$dir_to_delete' 已存在，其中可能包含您之前的聊天记录和角色卡。"; echo -ne "您确定要删除此目录并继续安装吗？(${GREEN}y${NC}/${RED}n${NC}): "; read -r c1 < /dev/tty; if [[ "$c1" != "y" ]]; then fn_print_error "操作被用户取消。"; fi; echo -ne "${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 (${GREEN}y${NC}/${RED}n${NC}): ${NC}"; read -r c2 < /dev/tty; if [[ "$c2" != "y" ]]; then fn_print_error "操作被用户取消。"; fi; echo -ne "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}"; read -r c3 < /dev/tty; if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。"; fi; fn_print_info "正在删除旧目录: $dir_to_delete..."; rm -rf "$dir_to_delete"; fn_print_success "旧目录已删除。"; }
+fn_confirm_and_delete_dir() { local dir_to_delete="$1"; fn_print_warning "目录 '$dir_to_delete' 已存在，其中可能包含您之前的聊天记录和角色卡。"; echo -ne "您确定要删除此目录并继续安装吗？[Y/n]: "; read -r c1 < /dev/tty; c1=${c1:-y}; if [[ ! "$c1" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。"; fi; echo -ne "${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 [Y/n]: ${NC}"; read -r c2 < /dev/tty; c2=${c2:-y}; if [[ ! "$c2" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。"; fi; echo -ne "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}"; read -r c3 < /dev/tty; if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。"; fi; fn_print_info "正在删除旧目录: $dir_to_delete..."; rm -rf "$dir_to_delete"; fn_print_success "旧目录已删除。"; }
 fn_create_project_structure() { fn_print_info "正在创建项目目录结构..."; mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"; chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"; fn_print_info "正在设置安全的文件权限..."; find "$INSTALL_DIR" -type d -exec chmod 755 {} +; find "$INSTALL_DIR" -type f -exec chmod 644 {} +; fn_print_success "项目目录创建并授权成功！"; }
 
 # ==============================================================================
@@ -214,7 +231,7 @@ fn_create_project_structure() { fn_print_info "正在创建项目目录结构...
 
 clear
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v11.5${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v11.6${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
@@ -240,6 +257,7 @@ fn_create_project_structure
 TARGET_UID=$(id -u "$TARGET_USER")
 TARGET_GID=$(id -g "$TARGET_USER")
 
+## --- 修改开始 3: 为 volumes 添加 :z 标志以兼容 SELinux ---
 cat <<EOF > "$COMPOSE_FILE"
 services:
   sillytavern:
@@ -253,19 +271,20 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - "./:/home/node/app/config"
-      - "./data:/home/node/app/data"
-      - "./plugins:/home/node/app/plugins"
-      - "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party"
+      - "./:/home/node/app/config:z"
+      - "./data:/home/node/app/data:z"
+      - "./plugins:/home/node/app/plugins:z"
+      - "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party:z"
     restart: unless-stopped
 EOF
+## --- 修改结束 3 ---
 fn_print_success "docker-compose.yml 文件创建成功！"
 
 # --- 阶段四：初始化与配置 ---
 fn_print_step "[ 4 / 5 ] 初始化与配置"
 fn_print_info "正在拉取 SillyTavern 镜像，可能需要几分钟..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" pull || fn_print_error "拉取 Docker 镜像失败！"
 fn_print_info "正在进行首次启动以生成配置文件..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
-timeout=60; while [ ! -f "$CONFIG_FILE" ]; do if [ $timeout -eq 0 ]; then fn_print_error "等待配置文件生成超时！请运行 '$DOCKER_COMPOSE_CMD -f \"$COMPOSE_FILE\" logs' 查看日志。"; fi; sleep 1; ((timeout--)); done
+timeout=60; while [ ! -f "$CONFIG_FILE" ]; do if [ $timeout -eq 0 ]; then $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs; fn_print_error "等待配置文件生成超时！请检查以上日志输出。"; fi; sleep 1; ((timeout--)); done
 $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down > /dev/null; fn_print_success "最新的 config.yaml 文件已生成！"
 fn_apply_config_changes
 if [[ "$run_mode" == "1" ]]; then fn_print_success "单用户模式配置写入完成！"; else
