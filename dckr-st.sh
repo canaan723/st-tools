@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 11.4 (交互优化与权限修复版)
-# 作者: Qingjue (由 AI 助手基于 v11.3 优化)
-# 更新日志 (v11.4):
-# - [优化] Docker 镜像配置改为交互式，让用户确认操作。
-# - [修复] 解决了因 Docker 卷挂载导致普通用户无法删除 data 目录内文件的权限问题。
+# 版本: 11.5 (依赖自动安装 & 镜像逻辑修复版)
+# 作者: Qingjue (由 AI 助手基于 v11.4 优化)
+# 更新日志 (v11.5):
+# - [新增] 实现 yq 依赖的自动检测与安装，无需用户手动干预。
+# - [修复] 修正了当官方 Docker Hub 超时后，错误判断所有备用镜像都失败的逻辑 Bug。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -31,26 +31,46 @@ fn_print_info() { echo -e "  $1"; }
 
 # --- 核心函数 ---
 
+## --- 修改开始 1: 依赖检查与 yq 自动安装 ---
 fn_check_dependencies() {
     fn_print_info "正在检查核心依赖..."
     if ! command -v docker &> /dev/null; then fn_print_error "未检测到 Docker。"; fi
     if ! command -v bc &> /dev/null; then fn_print_error "需要 'bc' 命令来进行测速计算，请先安装它 (例如: sudo apt install bc)。"; fi
+    if ! command -v curl &> /dev/null; then fn_print_error "需要 'curl' 命令来下载文件，请先安装它 (例如: sudo apt install curl)。"; fi
     if command -v docker-compose &> /dev/null; then DOCKER_COMPOSE_CMD="docker-compose"; elif docker compose version &> /dev/null; then DOCKER_COMPOSE_CMD="docker compose"; else fn_print_error "未检测到 Docker Compose。"; fi
     
+    # 检查 yq
     if command -v yq &> /dev/null && yq --help | grep -q "eval (e)"; then
         USE_YQ=true
         fn_print_success "检测到 yq v4+，将使用 yq 修改配置 (更稳定)。"
     else
-        if command -v yq &> /dev/null; then
-            fn_print_warning "检测到 yq，但版本过低 (需要 v4+)。将回退到 sed 方案。"
+        fn_print_warning "yq 未安装或版本过低，正在尝试自动安装最新版..."
+        local arch
+        case $(uname -m) in
+            x86_64) arch="amd64" ;;
+            aarch64) arch="arm64" ;;
+            *) fn_print_warning "不支持的系统架构: $(uname -m)。将回退到 sed 方案。"; return ;;
+        esac
+        
+        local yq_url="https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${arch}"
+        if curl -sSL -o /usr/local/bin/yq "$yq_url" && chmod +x /usr/local/bin/yq; then
+            fn_print_success "yq 最新版已成功安装到 /usr/local/bin/yq"
+            # 再次验证
+            if yq --help | grep -q "eval (e)"; then
+                USE_YQ=true
+                fn_print_success "yq 验证通过！"
+            else
+                fn_print_warning "yq 安装后验证失败，将回退到 sed 方案。"
+            fi
         else
-            fn_print_warning "未检测到 yq。将使用 sed 修改配置，在 SillyTavern 更新后可能失效。"
+            fn_print_warning "yq 自动安装失败，请检查网络或权限。将回退到 sed 方案。"
         fi
     fi
 
     if command -v jq &> /dev/null; then USE_JQ=true; fi
     fn_print_success "核心依赖检查通过！"
 }
+## --- 修改结束 1 ---
 
 fn_apply_docker_config() {
     local config_content="$1"
@@ -77,7 +97,7 @@ fn_apply_docker_config() {
     fi
 }
 
-## --- 修改开始 1: 镜像配置交互 ---
+## --- 修改开始 2: 修复镜像测速逻辑 ---
 fn_speed_test_and_configure_mirrors() {
     fn_print_info "正在智能检测 Docker 镜像源可用性..."
     local mirrors=("docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live" "https://dockerproxy.1panel.live" "https://hub.rat.dev")
@@ -118,32 +138,31 @@ fn_speed_test_and_configure_mirrors() {
         fi
     else
         fn_print_warning "官方 Docker Hub 连接超时。"
-        local sorted_mirrors=$(echo "$results" | grep -v '9999' | grep -v 'docker.io' | LC_ALL=C sort -n)
+        local sorted_mirrors=$(echo -e "$results" | grep -v '^9999' | grep -v '|docker.io|' | LC_ALL=C sort -n)
         
         if [ -z "$sorted_mirrors" ]; then
             fn_print_error "所有备用镜像均测试失败！请检查您的网络连接。"
-            return
-        fi
-        
-        echo -ne "${YELLOW}是否从以下可用镜像中选择最快的进行配置？(默认是) [Y/n]: ${NC}"
-        read -r confirm_config < /dev/tty
-        confirm_config=${confirm_config:-y}
-
-        if [[ "$confirm_config" =~ ^[Yy]$ ]]; then
-            fn_print_info "可用镜像排行如下："
-            echo "$sorted_mirrors" | awk -F'|' '{ printf "  - %-30s %.2f 秒\n", $3, $1 }'
-
-            local best_mirrors=($(echo "$sorted_mirrors" | head -n 3 | cut -d'|' -f2))
-            fn_print_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
-            local mirrors_json=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
-            local config_content="{\n  \"registry-mirrors\": [${mirrors_json}]\n}"
-            fn_apply_docker_config "$config_content"
         else
-            fn_print_info "用户选择不配置镜像，操作跳过。"
+            echo -ne "${YELLOW}是否从以下可用镜像中选择最快的进行配置？(默认是) [Y/n]: ${NC}"
+            read -r confirm_config < /dev/tty
+            confirm_config=${confirm_config:-y}
+
+            if [[ "$confirm_config" =~ ^[Yy]$ ]]; then
+                fn_print_info "可用镜像排行如下："
+                echo "$sorted_mirrors" | awk -F'|' '{ printf "  - %-30s %.2f 秒\n", $3, $1 }'
+
+                local best_mirrors=($(echo "$sorted_mirrors" | head -n 3 | cut -d'|' -f2))
+                fn_print_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
+                local mirrors_json=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
+                local config_content="{\n  \"registry-mirrors\": [${mirrors_json}]\n}"
+                fn_apply_docker_config "$config_content"
+            else
+                fn_print_info "用户选择不配置镜像，操作跳过。"
+            fi
         fi
     fi
 }
-## --- 修改结束 1 ---
+## --- 修改结束 2 ---
 
 fn_apply_config_changes() {
     local tool_name
@@ -195,7 +214,7 @@ fn_create_project_structure() { fn_print_info "正在创建项目目录结构...
 
 clear
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v11.4${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v11.5${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
@@ -218,8 +237,6 @@ fn_print_step "[ 3 / 5 ] 创建项目文件"
 if [ -d "$INSTALL_DIR" ]; then fn_confirm_and_delete_dir "$INSTALL_DIR"; fi
 fn_create_project_structure
 
-## --- 修改开始 2: 增加 user 指令解决权限问题 ---
-# 获取目标用户的 UID 和 GID，用于 Docker 容器的用户映射
 TARGET_UID=$(id -u "$TARGET_USER")
 TARGET_GID=$(id -g "$TARGET_USER")
 
@@ -229,7 +246,6 @@ services:
     container_name: sillytavern
     hostname: sillytavern
     image: ghcr.io/sillytavern/sillytavern:latest
-    # 解决 Docker 卷权限问题，确保容器内创建的文件属于主机用户
     user: "${TARGET_UID}:${TARGET_GID}"
     environment:
       - NODE_ENV=production
@@ -243,7 +259,6 @@ services:
       - "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party"
     restart: unless-stopped
 EOF
-## --- 修改结束 2 ---
 fn_print_success "docker-compose.yml 文件创建成功！"
 
 # --- 阶段四：初始化与配置 ---
