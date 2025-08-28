@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.2.7 (稳定版)
+# 版本: 1.2
 # 作者: Qingjue
 
 # --- 初始化与环境设置 ---
@@ -194,95 +194,6 @@ fn_create_project_structure() {
     fn_print_success "项目目录创建并授权成功！"
 }
 
-# 带聚合总进度条的镜像拉取函数 (稳定版)
-fn_pull_with_progress_bar() {
-    local compose_file="$1"
-    local docker_compose_cmd="$2"
-    local image_name="ghcr.io/sillytavern/sillytavern:latest"
-
-    # 使用script命令创建伪终端(PTY)以强制docker进行无缓冲的实时输出
-    local pull_command
-    pull_command=$(printf "%s -f %s pull" "$docker_compose_cmd" "$compose_file")
-
-    script -q -c "$pull_command" /dev/null | awk '
-    BEGIN {
-        bar_width = 30
-        GREEN = "\033[1;32m"; YELLOW = "\033[1;33m"; NC = "\033[0m"
-    }
-
-    function size_to_kb(size_str,   val, unit) {
-        val = substr(size_str, 1, length(size_str)-2)
-        unit = substr(size_str, length(size_str)-1)
-        if (unit == "GB") return val * 1024 * 1024
-        if (unit == "MB") return val * 1024
-        if (unit == "kB") return val
-        return val / 1024
-    }
-
-    function kb_to_human(kb,   size, unit) {
-        if (kb >= 1024*1024) { size = kb / (1024*1024); unit = "GB" }
-        else if (kb >= 1024) { size = kb / 1024; unit = "MB" }
-        else { size = kb; unit = "kB" }
-        return sprintf("%.2f%s", size, unit)
-    }
-    
-    function redraw_progress() {
-        overall_progress_kb = 0; overall_total_kb = 0
-        
-        for (id in layer_total_kb) {
-            overall_total_kb += layer_total_kb[id]
-            overall_progress_kb += layer_progress_kb[id]
-        }
-        
-        percent = (overall_total_kb > 0) ? int(overall_progress_kb / overall_total_kb * 100) : 0
-        
-        filled_len = int(bar_width * percent / 100)
-        bar = ""
-        for (i = 1; i <= bar_width; i++) { bar = bar (i <= filled_len ? "█" : "░") }
-        
-        progress_human = kb_to_human(overall_progress_kb)
-        total_human = kb_to_human(overall_total_kb)
-        
-        printf "\r  %s[%s]%s %d%% (%s/%s)        ", YELLOW, bar, NC, percent, progress_human, total_human
-        fflush()
-    }
-
-    {
-        if (match($0, /^[a-f0-9]{12}/)) {
-            layer_id = substr($0, RSTART, RLENGTH)
-            
-            if ($0 ~ /Downloading/ && match($0, /[0-9.]+[kMGT]?B\/[0-9.]+[kMGT]?B/)) {
-                progress_str = substr($0, RSTART, RLENGTH)
-                split(progress_str, parts, "/")
-                current_str = parts[1]; total_str = parts[2]
-                gsub(/[^0-9.kMGTB]/, "", total_str)
-
-                layer_progress_kb[layer_id] = size_to_kb(current_str)
-                if (!(layer_id in layer_total_kb) || layer_total_kb[layer_id] == 0) {
-                    layer_total_kb[layer_id] = size_to_kb(total_str)
-                }
-            }
-            else if ($0 ~ /Pull complete/ || $0 ~ /Download complete/) {
-                 if (layer_id in layer_total_kb) { layer_progress_kb[layer_id] = layer_total_kb[layer_id] }
-            }
-            redraw_progress()
-        }
-    }
-
-    END {
-        bar = ""; for (i = 1; i <= bar_width; i++) bar = bar "█"
-        printf "\r  %s[%s]%s 100%% 完成                    \n", GREEN, bar, NC
-    }
-    '
-
-    # 使用docker inspect作为最终的、最可靠的成功验证方法
-    if docker image inspect "$image_name" >/dev/null 2>&1; then
-        fn_print_success "镜像拉取成功！"
-    else
-        fn_print_error "拉取 Docker 镜像失败！请检查您的网络或镜像源配置。"
-    fi
-}
-
 fn_verify_container_health() {
     local container_name="$1"
     local retries=10
@@ -312,7 +223,7 @@ fn_wait_for_service() {
     local seconds="${1:-10}"
     echo -n "  "
     while [ $seconds -gt 0 ]; do
-        echo -ne "服务正在后台稳定，请稍候... ${YELLOW}${seconds}s${NC}   \r"
+        echo -ne "服务正在后台稳定，请稍候... ${YELLOW}${seconds}${NC} 秒\r"
         sleep 1
         ((seconds--))
     done
@@ -355,13 +266,8 @@ fn_display_final_info() {
     echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗"
     echo -e "║                      部署成功！尽情享受吧！                      ║"
     echo -e "╚════════════════════════════════════════════════════════════╝${NC}"
-    echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC}"
-    if [[ "$run_mode" == "1" ]]; then 
-        echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"
-        echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"
-    elif [[ "$run_mode" == "2" ]]; then 
-        echo -e "  ${YELLOW}首次登录:${NC} 为确保看到新的登录页，请访问 ${GREEN}http://${SERVER_IP}:8000/login${NC}"
-    fi
+    echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC} (按住 Ctrl 并单击)"
+    if [[ "$run_mode" == "1" ]]; then echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"; echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"; elif [[ "$run_mode" == "2" ]]; then echo -e "  ${YELLOW}首次登录:${NC} 为确保看到新的登录页，请访问 ${GREEN}http://${SERVER_IP}:8000/login${NC} (按住 Ctrl 并单击)"; fi
     echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
 }
 
@@ -372,7 +278,7 @@ fn_display_final_info() {
 printf "\n" && tput reset
 
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.2.7${NC}     ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.2${NC}       ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的 Docker 自动化安装。"
@@ -423,19 +329,7 @@ fn_print_success "docker-compose.yml 文件创建成功！"
 
 # --- 阶段四：初始化与配置 ---
 fn_print_step "[ 4 / 5 ] 初始化与配置"
-fn_print_info "即将拉取 SillyTavern 镜像。"
-echo -e "  下载速度取决于您的网络带宽，以下为预估时间参考："
-echo -e "  ${YELLOW}┌──────────────────────────────────────────────────┐${NC}"
-echo -e "  ${YELLOW}│${NC} ${CYAN}带宽${NC}      ${BOLD}|${NC} ${CYAN}下载速度${NC}   ${BOLD}|${NC} ${CYAN}预估最快时间${NC}           ${YELLOW}│${NC}"
-echo -e "  ${YELLOW}├──────────────────────────────────────────────────┤${NC}"
-echo -e "  ${YELLOW}│${NC} 1M 带宽   ${BOLD}|${NC} ~0.125 MB/s ${BOLD}|${NC} 约 27 分钟             ${YELLOW}│${NC}"
-echo -e "  ${YELLOW}│${NC} 2M 带宽   ${BOLD}|${NC} ~0.25 MB/s  ${BOLD}|${NC} 约 13.5 分钟           ${YELLOW}│${NC}"
-echo -e "  ${YELLOW}│${NC} 3M 带宽   ${BOLD}|${NC} ~0.375 MB/s ${BOLD}|${NC} 约 9 分钟              ${YELLOW}│${NC}"
-echo -e "  ${YELLOW}│${NC} 100M 带宽 ${BOLD}|${NC} ~12.5 MB/s  ${BOLD}|${NC} 约 16.2 秒             ${YELLOW}│${NC}"
-echo -e "  ${YELLOW}└──────────────────────────────────────────────────┘${NC}"
-
-fn_pull_with_progress_bar "$COMPOSE_FILE" "$DOCKER_COMPOSE_CMD"
-
+fn_print_info "正在拉取 SillyTavern 镜像，可能需要几分钟..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" pull > /dev/null || fn_print_error "拉取 Docker 镜像失败！"
 fn_print_info "正在进行首次启动以生成最新的官方配置文件..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
 timeout=60; while [ ! -f "$CONFIG_FILE" ]; do if [ $timeout -eq 0 ]; then $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs; fn_print_error "等待配置文件生成超时！请检查以上日志输出。"; fi; sleep 1; ((timeout--)); done
 $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down > /dev/null; fn_print_success "最新的 config.yaml 文件已生成！"
@@ -451,7 +345,7 @@ SillyTavern 已临时启动，请完成管理员的初始设置：
 1. ${CYAN}【开放端口】${NC}
    请确保您已在服务器后台（如阿里云/腾讯云安全组）开放了 ${GREEN}8000${NC} 端口。
 2. ${CYAN}【访问并登录】${NC}
-   请打开浏览器，访问: ${GREEN}http://${SERVER_IP}:8000${NC}
+   请打开浏览器，访问: ${GREEN}http://${SERVER_IP}:8000${NC} (按住 Ctrl 并单击鼠标左键打开)
    使用以下默认凭据登录：
      ▶ 账号: ${YELLOW}user${NC}
      ▶ 密码: ${YELLOW}password${NC}
@@ -463,11 +357,10 @@ SillyTavern 已临时启动，请完成管理员的初始设置：
       ② 自定义您的日常使用账号和密码（建议账号用纯英文）。
       ③ 创建后，点击新账户旁的【↑】箭头，将其提升为 Admin (管理员)。
 4. ${CYAN}【需要帮助？】${NC}
-   可访问图文教程： ${GREEN}https://stdocs.723123.xyz${NC}
+   可访问图文教程： ${GREEN}https://stdocs.723123.xyz${NC} (按住 Ctrl 并单击鼠标左键打开)
 ${YELLOW}>>> 完成以上所有步骤后，请回到本窗口，然后按下【回车键】继续 <<<${NC}
 EOF
-)
-    echo -e "${MULTI_USER_GUIDE}"; read -p "" < /dev/tty
+); echo -e "${MULTI_USER_GUIDE}"; read -p "" < /dev/tty
     fn_print_info "正在切换到多用户登录页模式...";
     sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false # 关闭基础认证，启用登录页/" "$CONFIG_FILE"
     sed -i -E "s/^([[:space:]]*)enableDiscreetLogin: .*/\1enableDiscreetLogin: true # 隐藏登录用户列表/" "$CONFIG_FILE"
