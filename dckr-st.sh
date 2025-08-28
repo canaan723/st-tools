@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 12.0 (全自动依赖版)
-# 作者: Qingjue (由 AI 助手基于 v11.9 优化)
-# 更新日志 (v12.0):
-# - [核心] 新增依赖自动安装功能：脚本现在会自动检测并安装缺失的 bc, curl, tar 等基础软件包，无需用户手动操作。
+# 版本: 12.2 (终极透明版)
+# 作者: Qingjue (由 AI 助手基于 v12.1 优化)
+# 更新日志 (v12.2):
+# - [核心] 实现完全透明化：所有依赖检查都会明确打印出检测到的版本号，方便用户排错和了解环境。
+# - [优化] 进一步增强 yq 版本检查逻辑，使其输出更清晰、友好。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -30,7 +31,7 @@ fn_print_info() { echo -e "  $1"; }
 
 # --- 核心函数 ---
 
-## --- 修改开始 1: 新增依赖自动安装函数 ---
+## --- 修改开始 1: 全面透明化依赖检查 ---
 fn_auto_install_deps() {
     local pkgs_to_check=("bc" "curl" "tar")
     local pkgs_to_install=()
@@ -39,42 +40,35 @@ fn_auto_install_deps() {
     for pkg in "${pkgs_to_check[@]}"; do
         if ! command -v "$pkg" &> /dev/null; then
             pkgs_to_install+=("$pkg")
+        else
+            local version_info
+            # 尝试获取版本信息，只取第一行
+            version_info=$("$pkg" --version 2>/dev/null | head -n 1)
+            fn_print_success "检测到 $pkg: ${version_info}"
         fi
     done
 
     if [ ${#pkgs_to_install[@]} -eq 0 ]; then
-        fn_print_success "系统基础软件包均已安装。"
         return
     fi
 
     fn_print_warning "检测到以下必需的软件包缺失: ${pkgs_to_install[*]}"
     fn_print_info "正在尝试自动安装..."
 
-    # 权限检查：确认我们可以使用 sudo
     if ! sudo -v; then
         fn_print_error "无法获取 sudo 权限，无法自动安装依赖。请手动安装: ${pkgs_to_install[*]}"
     fi
 
     local pkg_manager=""
-    if command -v apt-get &> /dev/null; then
-        pkg_manager="apt-get"
-    elif command -v dnf &> /dev/null; then
-        pkg_manager="dnf"
-    elif command -v yum &> /dev/null; then
-        pkg_manager="yum"
-    elif command -v pacman &> /dev/null; then
-        pkg_manager="pacman"
-    else
+    if command -v apt-get &> /dev/null; then pkg_manager="apt-get"; elif command -v dnf &> /dev/null; then pkg_manager="dnf"; elif command -v yum &> /dev/null; then pkg_manager="yum"; elif command -v pacman &> /dev/null; then pkg_manager="pacman"; else
         fn_print_error "无法识别您的包管理器 (apt, dnf, yum, pacman)。请手动安装缺失的包: ${pkgs_to_install[*]}"
     fi
 
-    # 对 apt 系执行 update
     if [ "$pkg_manager" == "apt-get" ]; then
         fn_print_info "正在运行 'sudo apt-get update'..."
         sudo apt-get update -y || fn_print_warning "'apt-get update' 失败，但仍会尝试安装..."
     fi
 
-    # 执行安装
     local install_cmd
     case "$pkg_manager" in
         apt-get) install_cmd="sudo apt-get install -y ${pkgs_to_install[*]}" ;;
@@ -89,37 +83,103 @@ fn_auto_install_deps() {
     fi
 }
 
+fn_download_and_install_yq() {
+    # ... (此函数逻辑不变，已足够健壮) ...
+    local YQ_TARGET_VERSION="4.47.1"
+    local arch
+    case $(uname -m) in
+        x86_64) arch="amd64" ;;
+        aarch64) arch="arm64" ;;
+        *) fn_print_warning "不支持的系统架构: $(uname -m)。将回退到 sed 方案。"; return 1 ;;
+    esac
+
+    local yq_binary="yq_linux_${arch}"
+    local yq_archive="${yq_binary}.tar.gz"
+    local checksum_file="checksums"
+    local github_path_base="mikefarah/yq/releases/download/v${YQ_TARGET_VERSION}"
+
+    local mirror_bases=( "https://github.com" "https://gh-proxy.com/https://github.com" "https://gh.llkk.cc/https://github.com" )
+    local special_mirrors=( "https://git.723123.xyz/gh" )
+
+    fn_print_info "正在为 yq 下载源智能测速 (每个源超时 5 秒)..."
+    local speed_results=""
+    local test_urls=()
+    for base in "${mirror_bases[@]}"; do test_urls+=("${base}/${github_path_base}/${checksum_file}"); done
+    for base in "${special_mirrors[@]}"; do test_urls+=("${base}/${github_path_base}/${checksum_file}"); done
+
+    for url in "${test_urls[@]}"; do
+        echo -ne "  - 正在测试: ${YELLOW}${url%%/*}${NC}..."
+        local time_taken=$(curl -o /dev/null -s -w '%{time_total}' --max-time 5 "$url" || echo "9999")
+        if [[ $(echo "$time_taken > 0" | bc) -eq 1 && $(echo "$time_taken < 5" | bc) -eq 1 ]]; then
+            printf " ${GREEN}%.3f 秒${NC}\n" "$time_taken"
+            speed_results+="${time_taken}|${url}\n"
+        else
+            echo -e " ${RED}超时或失败${NC}"
+        fi
+    done
+
+    local sorted_urls=()
+    if [ -n "$speed_results" ]; then
+        while IFS= read -r line; do
+            sorted_urls+=("$(echo "$line" | cut -d'|' -f2 | sed "s/${checksum_file}$/${yq_archive}/")")
+        done <<< "$(echo -e "$speed_results" | sort -n)"
+    else
+        fn_print_warning "所有下载源测速失败！将按默认顺序尝试。"
+        for base in "${mirror_bases[@]}"; do sorted_urls+=("${base}/${github_path_base}/${yq_archive}"); done
+        for base in "${special_mirrors[@]}"; do sorted_urls+=("${base}/${github_path_base}/${yq_archive}"); done
+    fi
+
+    fn_print_info "将按以下顺序尝试下载:"
+    for url in "${sorted_urls[@]}"; do fn_print_info "  - ${url}"; done
+
+    local tmp_file; tmp_file=$(mktemp); trap 'rm -f "$tmp_file"' EXIT
+
+    for url in "${sorted_urls[@]}"; do
+        fn_print_info "正在尝试从: ${url}"
+        if curl -L --fail -o "$tmp_file" -s "$url"; then
+            if file "$tmp_file" | grep -q 'gzip compressed data'; then
+                fn_print_info "下载成功，正在解压和安装..."
+                if sudo tar xz -f "$tmp_file" -O "./${yq_binary}" > /usr/local/bin/yq; then
+                    sudo chmod +x /usr/local/bin/yq
+                    if command -v yq &> /dev/null && yq --version | grep -q "version ${YQ_TARGET_VERSION}"; then
+                        fn_print_success "yq v${YQ_TARGET_VERSION} 已成功安装并验证！"
+                        rm -f "$tmp_file"; trap - EXIT; return 0
+                    fi
+                fi
+            fi
+        fi
+        fn_print_warning "从该源处理失败，尝试下一个..."
+    done
+
+    fn_print_error "所有 yq 下载源均尝试失败。"
+    return 1
+}
+
 fn_check_dependencies() {
-    fn_print_info "正在检查所有依赖项..."
+    fn_print_info "--- 依赖环境全面检查 ---"
     
-    # 步骤 1: 自动安装基础包
     fn_auto_install_deps
 
-    # 步骤 2: 检查核心服务 (Docker, Docker Compose)
-    if ! command -v docker &> /dev/null; then fn_print_error "未检测到 Docker。请先根据您系统的官方文档安装 Docker。"; fi
+    if ! command -v docker &> /dev/null; then fn_print_error "未检测到 Docker。请先根据您系统的官方文档安装 Docker。"; else
+        fn_print_success "检测到 Docker: $(docker --version)"
+    fi
     if command -v docker-compose &> /dev/null; then DOCKER_COMPOSE_CMD="docker-compose"; elif docker compose version &> /dev/null; then DOCKER_COMPOSE_CMD="docker compose"; else fn_print_error "未检测到 Docker Compose。请先安装它。"; fi
-    
-    # 步骤 3: yq 智能检查与安装
+    fn_print_success "检测到 Docker Compose: $($DOCKER_COMPOSE_CMD version)"
+
     local YQ_TARGET_VERSION="4.47.1"
     local needs_install=false
-
     if ! command -v yq &> /dev/null; then
-        fn_print_info "yq 未安装，将安装指定版本 (v${YQ_TARGET_VERSION})..."
+        fn_print_info "yq 未安装，将开始智能安装流程..."
         needs_install=true
     else
-        local existing_version
-        if ! existing_version=$(yq --version 2>/dev/null | awk '{print $3}'); then
-            fn_print_warning "无法获取现有 yq 版本（可能已损坏），将尝试重新安装..."
+        local existing_version; existing_version=$(yq --version 2>/dev/null | awk '{print $3}')
+        if [ -z "$existing_version" ]; then
+            fn_print_warning "检测到 yq 命令，但无法获取版本号（可能已损坏），将尝试重新安装..."
             needs_install=true
         else
-            local highest_version
-            highest_version=$(printf "%s\n%s\n" "$existing_version" "$YQ_TARGET_VERSION" | sort -V | tail -n1)
-            
-            if [ "$highest_version" == "$existing_version" ] && [[ "$existing_version" != "$YQ_TARGET_VERSION" ]]; then
-                fn_print_success "检测到 yq v${existing_version}，满足要求 (>= v${YQ_TARGET_VERSION})，将使用现有版本。"
-                USE_YQ=true
-            elif [ "$existing_version" == "$YQ_TARGET_VERSION" ]; then
-                fn_print_success "检测到 yq v${existing_version}，版本正确。"
+            local highest_version; highest_version=$(printf "%s\n%s\n" "$existing_version" "$YQ_TARGET_VERSION" | sort -V | tail -n1)
+            if [ "$highest_version" == "$existing_version" ]; then
+                fn_print_success "检测到 yq v${existing_version}，满足要求 (>= v${YQ_TARGET_VERSION})，将使用此版本。"
                 USE_YQ=true
             else
                 fn_print_warning "检测到 yq v${existing_version}，低于推荐版本 v${YQ_TARGET_VERSION}，将进行升级..."
@@ -129,51 +189,17 @@ fn_check_dependencies() {
     fi
 
     if [ "$needs_install" = true ]; then
-        local arch
-        case $(uname -m) in
-            x86_64) arch="amd64" ;;
-            aarch64) arch="arm64" ;;
-            *) fn_print_warning "不支持的系统架构: $(uname -m)。将回退到 sed 方案。"; USE_YQ=false; return ;;
-        esac
-        
-        local yq_binary="yq_linux_${arch}"
-        local yq_archive="${yq_binary}.tar.gz"
-        local github_path="mikefarah/yq/releases/download/v${YQ_TARGET_VERSION}/${yq_archive}"
-
-        local download_urls=(
-            "https://github.com/${github_path}"
-            "https://gh-proxy.com/https://github.com/${github_path}"
-            "https://gh.llkk.cc/https://github.com/${github_path}"
-            "https://git.723123.xyz/gh/${github_path}"
-        )
-
-        local install_success=false
-        for url in "${download_urls[@]}"; do
-            fn_print_info "正在尝试从镜像源下载: ${url}"
-            if curl -sSL --fail "$url" | sudo tar xz -O "./${yq_binary}" > /usr/local/bin/yq; then
-                sudo chmod +x /usr/local/bin/yq
-                if command -v yq &> /dev/null && yq --version | grep -q "version ${YQ_TARGET_VERSION}"; then
-                    fn_print_success "yq v${YQ_TARGET_VERSION} 已成功安装并验证！"
-                    USE_YQ=true
-                    install_success=true
-                    break
-                else
-                    fn_print_warning "下载成功但文件验证失败，尝试下一个源..."
-                fi
-            else
-                fn_print_warning "从该源下载失败，尝试下一个..."
-            fi
-        done
-
-        if [ "$install_success" = false ]; then
-            fn_print_warning "所有 yq 下载源均尝试失败。将回退到基于文本的 sed 方案。"
+        if fn_download_and_install_yq; then
+            USE_YQ=true
+        else
+            fn_print_warning "yq 自动安装失败。将回退到基于文本的 sed 方案。"
             fn_print_warning "注意：sed 方案在未来 SillyTavern 更新后可能失效。"
             USE_YQ=false
         fi
     fi
 
-    if command -v jq &> /dev/null; then USE_JQ=true; fi
-    fn_print_success "所有依赖项检查完毕！"
+    if command -v jq &> /dev/null; then fn_print_success "检测到 jq: $(jq --version)"; USE_JQ=true; fi
+    fn_print_success "--- 所有依赖项检查完毕 ---"
 }
 ## --- 修改结束 1 ---
 
@@ -314,7 +340,7 @@ fn_create_project_structure() { fn_print_info "正在创建项目目录结构...
 
 clear
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v12.0${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v12.2${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
