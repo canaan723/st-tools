@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 11.3 (终极引用修复版)
-# 作者: Qingjue (由 AI 助手基于 v11.2 优化)
-# 更新日志 (v11.3):
-# - [修复] 彻底修复了 yq 命令中因不当的 shell 引用导致的 `unexpected EOF` 致命语法错误。
+# 版本: 11.4 (交互优化与权限修复版)
+# 作者: Qingjue (由 AI 助手基于 v11.3 优化)
+# 更新日志 (v11.4):
+# - [优化] Docker 镜像配置改为交互式，让用户确认操作。
+# - [修复] 解决了因 Docker 卷挂载导致普通用户无法删除 data 目录内文件的权限问题。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -56,28 +57,29 @@ fn_apply_docker_config() {
     if [[ -z "$config_content" ]]; then
         fn_print_info "正在清除 Docker 镜像配置..."
         if [ ! -f "/etc/docker/daemon.json" ]; then fn_print_success "无需操作，配置已是默认。"; return; fi
-        rm -f /etc/docker/daemon.json
+        sudo rm -f /etc/docker/daemon.json
     else
         fn_print_info "正在写入新的 Docker 镜像配置..."
-        echo -e "$config_content" > /etc/docker/daemon.json
+        echo -e "$config_content" | sudo tee /etc/docker/daemon.json > /dev/null
     fi
     fn_print_info "正在重启 Docker 服务以应用配置..."
-    if systemctl restart docker; then
+    if sudo systemctl restart docker; then
         fn_print_success "Docker 服务已重启，新配置生效！"
     else
         fn_print_warning "Docker 服务重启失败！配置可能存在问题。"
         fn_print_info "正在尝试自动回滚到默认配置..."
-        rm -f /etc/docker/daemon.json
-        if systemctl restart docker; then
+        sudo rm -f /etc/docker/daemon.json
+        if sudo systemctl restart docker; then
             fn_print_success "自动回滚成功！Docker 已恢复并使用官方源。"
         else
-            fn_print_error "自动回滚失败！Docker 服务无法启动。请手动执行 'systemctl status docker.service' 和 'journalctl -xeu docker.service' 进行排查。"
+            fn_print_error "自动回滚失败！Docker 服务无法启动。请手动执行 'sudo systemctl status docker.service' 和 'sudo journalctl -xeu docker.service' 进行排查。"
         fi
     fi
 }
 
+## --- 修改开始 1: 镜像配置交互 ---
 fn_speed_test_and_configure_mirrors() {
-    fn_print_info "正在智能检测并配置最佳 Docker 镜像..."
+    fn_print_info "正在智能检测 Docker 镜像源可用性..."
     local mirrors=("docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live" "https://dockerproxy.1panel.live" "https://hub.rat.dev")
     docker rmi hello-world > /dev/null 2>&1 || true
 
@@ -105,27 +107,43 @@ fn_speed_test_and_configure_mirrors() {
     done
 
     if [ "$official_hub_ok" = true ]; then
-        fn_print_success "官方 Docker Hub 可访问，将优先使用官方源。"
-        fn_apply_docker_config ""
+        fn_print_success "官方 Docker Hub 可访问。"
+        echo -ne "${YELLOW}是否清除本地镜像配置并使用官方源？(默认是) [Y/n]: ${NC}"
+        read -r confirm_clear < /dev/tty
+        confirm_clear=${confirm_clear:-y}
+        if [[ "$confirm_clear" =~ ^[Yy]$ ]]; then
+            fn_apply_docker_config ""
+        else
+            fn_print_info "用户选择保留当前镜像配置，操作跳过。"
+        fi
     else
-        fn_print_warning "官方 Docker Hub 连接超时，正在从可用镜像中选择最快的..."
+        fn_print_warning "官方 Docker Hub 连接超时。"
         local sorted_mirrors=$(echo "$results" | grep -v '9999' | grep -v 'docker.io' | LC_ALL=C sort -n)
         
         if [ -z "$sorted_mirrors" ]; then
             fn_print_error "所有备用镜像均测试失败！请检查您的网络连接。"
             return
         fi
+        
+        echo -ne "${YELLOW}是否从以下可用镜像中选择最快的进行配置？(默认是) [Y/n]: ${NC}"
+        read -r confirm_config < /dev/tty
+        confirm_config=${confirm_config:-y}
 
-        fn_print_info "可用镜像排行如下："
-        echo "$sorted_mirrors" | awk -F'|' '{ printf "  - %-30s %.2f 秒\n", $3, $1 }'
+        if [[ "$confirm_config" =~ ^[Yy]$ ]]; then
+            fn_print_info "可用镜像排行如下："
+            echo "$sorted_mirrors" | awk -F'|' '{ printf "  - %-30s %.2f 秒\n", $3, $1 }'
 
-        local best_mirrors=($(echo "$sorted_mirrors" | head -n 3 | cut -d'|' -f2))
-        fn_print_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
-        local mirrors_json=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
-        local config_content="{\n  \"registry-mirrors\": [${mirrors_json}]\n}"
-        fn_apply_docker_config "$config_content"
+            local best_mirrors=($(echo "$sorted_mirrors" | head -n 3 | cut -d'|' -f2))
+            fn_print_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
+            local mirrors_json=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
+            local config_content="{\n  \"registry-mirrors\": [${mirrors_json}]\n}"
+            fn_apply_docker_config "$config_content"
+        else
+            fn_print_info "用户选择不配置镜像，操作跳过。"
+        fi
     fi
 }
+## --- 修改结束 1 ---
 
 fn_apply_config_changes() {
     local tool_name
@@ -139,7 +157,6 @@ fn_apply_config_changes() {
         yq e -i '(.backups.common.numberOfBackups = 5) | (.backups.common.numberOfBackups | line_comment = "* 单文件保留的备份数量")' "$CONFIG_FILE"
         yq e -i '(.backups.chat.maxTotalBackups = 30) | (.backups.chat.maxTotalBackups | line_comment = "* 总聊天文件数量上限")' "$CONFIG_FILE"
         yq e -i '(.performance.lazyLoadCharacters = true) | (.performance.lazyLoadCharacters | line_comment = "* 懒加载、点击角色卡才加载")' "$CONFIG_FILE"
-        # 【关键修复】使用更简单、更健壮的双引号来包裹整个表达式
         yq e -i ".performance.memoryCacheCapacity = '128mb' | .performance.memoryCacheCapacity | line_comment = \"* 角色卡内存缓存 (根据2G内存推荐)\"" "$CONFIG_FILE"
         if [[ "$run_mode" == "1" ]]; then
             yq e -i '(.basicAuthMode = true) | (.basicAuthMode | line_comment = "* 启用基础认证")' "$CONFIG_FILE"
@@ -168,7 +185,6 @@ fn_apply_config_changes() {
     fi
 }
 
-# ... (其他函数 fn_get_public_ip, fn_confirm_and_delete_dir 等保持不变) ...
 fn_get_public_ip() { local ip; ip=$(curl -s --max-time 5 https://api.ipify.org) || ip=$(curl -s --max-time 5 https://ifconfig.me) || ip=$(hostname -I | awk '{print $1}'); echo "$ip"; }
 fn_confirm_and_delete_dir() { local dir_to_delete="$1"; fn_print_warning "目录 '$dir_to_delete' 已存在，其中可能包含您之前的聊天记录和角色卡。"; echo -ne "您确定要删除此目录并继续安装吗？(${GREEN}y${NC}/${RED}n${NC}): "; read -r c1 < /dev/tty; if [[ "$c1" != "y" ]]; then fn_print_error "操作被用户取消。"; fi; echo -ne "${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 (${GREEN}y${NC}/${RED}n${NC}): ${NC}"; read -r c2 < /dev/tty; if [[ "$c2" != "y" ]]; then fn_print_error "操作被用户取消。"; fi; echo -ne "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}"; read -r c3 < /dev/tty; if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。"; fi; fn_print_info "正在删除旧目录: $dir_to_delete..."; rm -rf "$dir_to_delete"; fn_print_success "旧目录已删除。"; }
 fn_create_project_structure() { fn_print_info "正在创建项目目录结构..."; mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"; chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"; fn_print_info "正在设置安全的文件权限..."; find "$INSTALL_DIR" -type d -exec chmod 755 {} +; find "$INSTALL_DIR" -type f -exec chmod 644 {} +; fn_print_success "项目目录创建并授权成功！"; }
@@ -179,7 +195,7 @@ fn_create_project_structure() { fn_print_info "正在创建项目目录结构...
 
 clear
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v11.3${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v11.4${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
@@ -201,12 +217,20 @@ if [[ "$run_mode" == "1" ]]; then read -p "请输入您的自定义用户名: " 
 fn_print_step "[ 3 / 5 ] 创建项目文件"
 if [ -d "$INSTALL_DIR" ]; then fn_confirm_and_delete_dir "$INSTALL_DIR"; fi
 fn_create_project_structure
+
+## --- 修改开始 2: 增加 user 指令解决权限问题 ---
+# 获取目标用户的 UID 和 GID，用于 Docker 容器的用户映射
+TARGET_UID=$(id -u "$TARGET_USER")
+TARGET_GID=$(id -g "$TARGET_USER")
+
 cat <<EOF > "$COMPOSE_FILE"
 services:
   sillytavern:
     container_name: sillytavern
     hostname: sillytavern
     image: ghcr.io/sillytavern/sillytavern:latest
+    # 解决 Docker 卷权限问题，确保容器内创建的文件属于主机用户
+    user: "${TARGET_UID}:${TARGET_GID}"
     environment:
       - NODE_ENV=production
       - FORCE_COLOR=1
@@ -219,6 +243,7 @@ services:
       - "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party"
     restart: unless-stopped
 EOF
+## --- 修改结束 2 ---
 fn_print_success "docker-compose.yml 文件创建成功！"
 
 # --- 阶段四：初始化与配置 ---
