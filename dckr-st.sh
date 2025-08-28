@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.2.4 (由AI助手优化)
+# 版本: 1.2.5 (由AI助手优化)
 # 作者: Qingjue
 
 # --- 初始化与环境设置 ---
@@ -194,7 +194,7 @@ fn_create_project_structure() {
     fn_print_success "项目目录创建并授权成功！"
 }
 
-# 带实时进度和下载大小的美观进度条
+# 带聚合总进度条的镜像拉取函数
 fn_pull_with_progress_bar() {
     local compose_file="$1"
     local docker_compose_cmd="$2"
@@ -203,11 +203,13 @@ fn_pull_with_progress_bar() {
     awk '
     BEGIN {
         bar_width = 30
-        GREEN = "\033[1;32m"
-        YELLOW = "\033[1;33m"
-        NC = "\033[0m"
+        GREEN = "\033[1;32m"; YELLOW = "\033[1;33m"; NC = "\033[0m"
+        # 关联数组，用于存储每个layer的进度和总大小
+        # layer_progress_kb[layer_id] = current_kb
+        # layer_total_kb[layer_id] = total_kb
     }
 
+    # 函数：将大小字符串（如 50.3MB）转换为KB
     function size_to_kb(size_str,   val, unit) {
         val = substr(size_str, 1, length(size_str)-2)
         unit = substr(size_str, length(size_str)-1)
@@ -217,36 +219,74 @@ fn_pull_with_progress_bar() {
         return val / 1024
     }
 
-    /Downloading/ && match($0, /[0-9.]+[kMGT]?B\/[0-9.]+[kMGT]?B/) {
-        progress_str = substr($0, RSTART, RLENGTH)
+    # 函数：将KB转换为人类可读的格式
+    function kb_to_human(kb,   size, unit) {
+        if (kb >= 1024*1024) {
+            size = kb / (1024*1024); unit = "GB"
+        } else if (kb >= 1024) {
+            size = kb / 1024; unit = "MB"
+        } else {
+            size = kb; unit = "kB"
+        }
+        return sprintf("%.2f%s", size, unit)
+    }
+    
+    # 函数：重绘总进度条
+    function redraw_progress() {
+        overall_progress_kb = 0
+        overall_total_kb = 0
         
-        split(progress_str, parts, "/")
-        current_str = parts[1]
-        total_str = parts[2]
+        # 汇总所有layer的进度和大小
+        for (id in layer_total_kb) {
+            overall_total_kb += layer_total_kb[id]
+            overall_progress_kb += layer_progress_kb[id]
+        }
         
-        # ==================== FIX START ====================
-        # 清理total_str中可能存在的乱码或多余字符
-        gsub(/[^0-9.kMGTB]/, "", total_str)
-        # ===================== FIX END =====================
-
-        current_kb = size_to_kb(current_str)
-        total_kb = size_to_kb(total_str)
-
-        if (total_kb > 0) {
-            percent = int(current_kb / total_kb * 100)
+        if (overall_total_kb > 0) {
+            percent = int(overall_progress_kb / overall_total_kb * 100)
         } else {
             percent = 0
         }
         
         filled_len = int(bar_width * percent / 100)
-        
         bar = ""
         for (i = 1; i <= bar_width; i++) {
             bar = bar (i <= filled_len ? "█" : "░")
         }
         
-        printf "\r  %s[%s]%s %d%% (%s/%s)        ", YELLOW, bar, NC, percent, current_str, total_str
+        # 格式化输出
+        progress_human = kb_to_human(overall_progress_kb)
+        total_human = kb_to_human(overall_total_kb)
+        
+        printf "\r  %s[%s]%s %d%% (%s/%s)        ", YELLOW, bar, NC, percent, progress_human, total_human
         fflush()
+    }
+
+    # 主逻辑：解析每一行docker pull的输出
+    {
+        # 匹配以12位十六进制字符开头的行（即layer ID）
+        if (match($0, /^[a-f0-9]{12}/)) {
+            layer_id = substr($0, RSTART, RLENGTH)
+            
+            # 如果是正在下载的行
+            if ($0 ~ /Downloading/ && match($0, /[0-9.]+[kMGT]?B\/[0-9.]+[kMGT]?B/)) {
+                progress_str = substr($0, RSTART, RLENGTH)
+                split(progress_str, parts, "/")
+                current_str = parts[1]
+                total_str = parts[2]
+                gsub(/[^0-9.kMGTB]/, "", total_str)
+
+                layer_progress_kb[layer_id] = size_to_kb(current_str)
+                layer_total_kb[layer_id] = size_to_kb(total_str)
+            }
+            # 如果是下载完成的行
+            else if ($0 ~ /Pull complete/ || $0 ~ /Download complete/) {
+                 if (layer_id in layer_total_kb) {
+                    layer_progress_kb[layer_id] = layer_total_kb[layer_id]
+                 }
+            }
+            redraw_progress()
+        }
     }
 
     END {
@@ -292,9 +332,7 @@ fn_wait_for_service() {
     local seconds="${1:-10}"
     echo -n "  "
     while [ $seconds -gt 0 ]; do
-        # ==================== FIX START ====================
         echo -ne "服务正在后台稳定，请稍候... ${YELLOW}${seconds}s${NC}\r"
-        # ===================== FIX END =====================
         sleep 1
         ((seconds--))
     done
@@ -337,7 +375,6 @@ fn_display_final_info() {
     echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗"
     echo -e "║                      部署成功！尽情享受吧！                      ║"
     echo -e "╚════════════════════════════════════════════════════════════╝${NC}"
-    # ==================== FIX START ====================
     echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC}"
     if [[ "$run_mode" == "1" ]]; then 
         echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"
@@ -345,7 +382,6 @@ fn_display_final_info() {
     elif [[ "$run_mode" == "2" ]]; then 
         echo -e "  ${YELLOW}首次登录:${NC} 为确保看到新的登录页，请访问 ${GREEN}http://${SERVER_IP}:8000/login${NC}"
     fi
-    # ===================== FIX END =====================
     echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
 }
 
@@ -417,7 +453,6 @@ echo -e "  ${YELLOW}│${NC} 2M 带宽   ${BOLD}|${NC} ~0.25 MB/s  ${BOLD}|${NC}
 echo -e "  ${YELLOW}│${NC} 3M 带宽   ${BOLD}|${NC} ~0.375 MB/s ${BOLD}|${NC} 约 9 分钟              ${YELLOW}│${NC}"
 echo -e "  ${YELLOW}│${NC} 100M 带宽 ${BOLD}|${NC} ~12.5 MB/s  ${BOLD}|${NC} 约 16.2 秒             ${YELLOW}│${NC}"
 echo -e "  ${YELLOW}└──────────────────────────────────────────────────┘${NC}"
-fn_print_warning "拉取过程将显示实时进度条，请耐心等待..."
 
 fn_pull_with_progress_bar "$COMPOSE_FILE" "$DOCKER_COMPOSE_CMD"
 
@@ -429,7 +464,6 @@ if [[ "$run_mode" == "1" ]]; then fn_print_success "单用户模式配置写入�
     fn_print_info "正在临时启动服务以设置管理员..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
     fn_verify_container_health "$CONTAINER_NAME"
     fn_wait_for_service
-    # ==================== FIX START ====================
     MULTI_USER_GUIDE=$(cat <<EOF
 
 ${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}
@@ -453,7 +487,6 @@ SillyTavern 已临时启动，请完成管理员的初始设置：
 ${YELLOW}>>> 完成以上所有步骤后，请回到本窗口，然后按下【回车键】继续 <<<${NC}
 EOF
 )
-    # ===================== FIX END =====================
     echo -e "${MULTI_USER_GUIDE}"; read -p "" < /dev/tty
     fn_print_info "正在切换到多用户登录页模式...";
     sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false # 关闭基础认证，启用登录页/" "$CONFIG_FILE"
