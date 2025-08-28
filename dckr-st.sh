@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.4 (根据用户数据修正)
+# 版本: 1.2.1 (由AI助手优化)
 # 作者: Qingjue
 
 # --- 初始化与环境设置 ---
@@ -272,39 +272,13 @@ fn_display_final_info() {
 }
 
 # ==============================================================================
-#   ★★★ 带进度提示的镜像拉取 (采纳用户提供的数据) ★★★
-# ==============================================================================
-fn_pull_image_with_progress() {
-    fn_print_info "正在准备拉取 SillyTavern 主镜像..."
-    echo -e "${YELLOW}镜像压缩包大小约为 201 MB，下载过程可能需要一些时间，请耐心等待。${NC}"
-    echo -e "为帮助您预估，以下是不同带宽下的【理论最快】下载时间参考："
-    printf "  ${BOLD}%-10s %-15s %-20s${NC}\n" "带宽" "理论速度" "预估时间"
-    printf "  ${CYAN}%-10s %-15s %-20s${NC}\n" "----------" "---------------" "--------------------"
-    printf "  %-10s %-15s %-20s\n" "1M" "0.125 MB/s" "约 27 分钟"
-    printf "  %-10s %-15s %-20s\n" "2M" "0.25 MB/s" "约 13.5 分钟"
-    printf "  %-10s %-15s %-20s\n" "3M" "0.375 MB/s" "约 9 分钟"
-    printf "  %-10s %-15s %-20s\n" "100M" "12.5 MB/s" "约 16.2 秒"
-    echo -e "\n${GREEN}您的实际速度取决于当前网络状况和所选镜像源的服务器负载。${NC}"
-    echo -e "${CYAN}Docker 将在下方显示实时下载进度条，请保持关注...${NC}\n"
-    
-    # 执行拉取命令，并显示实时输出
-    if ! $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" pull; then
-        fn_print_error "拉取 Docker 镜像失败！请检查您的网络连接或镜像源配置。"
-    fi
-    
-    echo "" # 在docker pull输出后增加一个空行，美化格式
-    fn_print_success "镜像拉取成功！"
-}
-
-
-# ==============================================================================
 #   主逻辑开始
 # ==============================================================================
 
 printf "\n" && tput reset
 
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.4${NC}       ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.2${NC}       ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的 Docker 自动化安装。"
@@ -355,7 +329,23 @@ fn_print_success "docker-compose.yml 文件创建成功！"
 
 # --- 阶段四：初始化与配置 ---
 fn_print_step "[ 4 / 5 ] 初始化与配置"
-fn_pull_image_with_progress
+# ==================== MODIFICATION START ====================
+fn_print_info "即将拉取 SillyTavern 镜像 (约 201M)。"
+echo -e "  下载速度取决于您的网络带宽，以下为预估时间参考："
+echo -e "  ${YELLOW}┌──────────────────────────────────────────────────┐${NC}"
+echo -e "  ${YELLOW}│${NC} ${CYAN}带宽${NC}      ${BOLD}|${NC} ${CYAN}下载速度${NC}   ${BOLD}|${NC} ${CYAN}预估最快时间${NC}           ${YELLOW}│${NC}"
+echo -e "  ${YELLOW}├──────────────────────────────────────────────────┤${NC}"
+echo -e "  ${YELLOW}│${NC} 1M 带宽   ${BOLD}|${NC} ~0.125 MB/s ${BOLD}|${NC} 约 27 分钟             ${YELLOW}│${NC}"
+echo -e "  ${YELLOW}│${NC} 2M 带宽   ${BOLD}|${NC} ~0.25 MB/s  ${BOLD}|${NC} 约 13.5 分钟           ${YELLOW}│${NC}"
+echo -e "  ${YELLOW}│${NC} 3M 带宽   ${BOLD}|${NC} ~0.375 MB/s ${BOLD}|${NC} 约 9 分钟              ${YELLOW}│${NC}"
+echo -e "  ${YELLOW}│${NC} 100M 带宽 ${BOLD}|${NC} ~12.5 MB/s  ${BOLD}|${NC} 约 16.2 秒             ${YELLOW}│${NC}"
+echo -e "  ${YELLOW}└──────────────────────────────────────────────────┘${NC}"
+fn_print_warning "拉取过程将显示 Docker 进度条，请耐心等待..."
+
+# 拉取镜像并显示进度条
+$DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" pull || fn_print_error "拉取 Docker 镜像失败！"
+# ===================== MODIFICATION END =====================
+
 fn_print_info "正在进行首次启动以生成最新的官方配置文件..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
 timeout=60; while [ ! -f "$CONFIG_FILE" ]; do if [ $timeout -eq 0 ]; then $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs; fn_print_error "等待配置文件生成超时！请检查以上日志输出。"; fi; sleep 1; ((timeout--)); done
 $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down > /dev/null; fn_print_success "最新的 config.yaml 文件已生成！"
