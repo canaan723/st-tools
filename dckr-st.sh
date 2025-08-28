@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.0
+# 版本: 1.2
 # 作者: Qingjue
 
 # --- 初始化与环境设置 ---
@@ -97,22 +97,11 @@ fn_apply_docker_config() {
 fn_speed_test_and_configure_mirrors() {
     fn_print_info "正在智能检测 Docker 镜像源可用性 (每个源超时 30 秒)..."
     local mirrors=(
-        "docker.io"
-        "https://docker.1ms.run"
-        "https://hub1.nat.tf"
-        "https://docker.1panel.live"
-        "https://dockerproxy.1panel.live"
-        "https://hub.rat.dev"
-        "https://docker.m.ixdev.cn"
-        "https://hub2.nat.tf"
-        "https://docker.1panel.dev"
-        "https://docker.amingg.com"
-        "https://docker.xuanyuan.me"
-        "https://dytt.online"
-        "https://lispy.org"
-        "https://docker.xiaogenban1993.com"
-        "https://docker-0.unsee.tech"
-        "https://666860.xyz"
+        "docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live"
+        "https://dockerproxy.1panel.live" "https://hub.rat.dev" "https://docker.m.ixdev.cn"
+        "https://hub2.nat.tf" "https://docker.1panel.dev" "https://docker.amingg.com"
+        "https://docker.xuanyuan.me" "https://dytt.online" "https://lispy.org"
+        "https://docker.xiaogenban1993.com" "https://docker-0.unsee.tech" "https://666860.xyz"
     )
     docker rmi hello-world > /dev/null 2>&1 || true
     local results=""; local official_hub_ok=false
@@ -134,9 +123,13 @@ fn_speed_test_and_configure_mirrors() {
         fi
     done
     if [ "$official_hub_ok" = true ]; then
-        fn_print_success "官方 Docker Hub 可访问。"; echo -ne "${YELLOW}是否清除本地镜像配置并使用官方源? [Y/n]: ${NC}"
-        read -r confirm_clear < /dev/tty; confirm_clear=${confirm_clear:-y}
-        if [[ "$confirm_clear" =~ ^[Yy]$ ]]; then fn_apply_docker_config ""; else fn_print_info "用户选择保留当前镜像配置，操作跳过。"; fi
+        if ! grep -q "registry-mirrors" /etc/docker/daemon.json 2>/dev/null; then
+            fn_print_success "官方 Docker Hub 可访问，且您未配置任何镜像，无需操作。"
+        else
+            fn_print_success "官方 Docker Hub 可访问。"; echo -ne "${YELLOW}是否清除本地镜像配置并使用官方源? [Y/n]: ${NC}"
+            read -r confirm_clear < /dev/tty; confirm_clear=${confirm_clear:-y}
+            if [[ "$confirm_clear" =~ ^[Yy]$ ]]; then fn_apply_docker_config ""; else fn_print_info "用户选择保留当前镜像配置，操作跳过。"; fi
+        fi
     else
         fn_print_warning "官方 Docker Hub 连接超时。"; local sorted_mirrors=$(echo -e "$results" | grep -v '^9999' | grep -v '|docker.io|' | LC_ALL=C sort -n)
         if [ -z "$sorted_mirrors" ]; then fn_print_error "所有备用镜像均测试失败！请检查您的网络连接。"; else
@@ -277,7 +270,7 @@ fn_display_final_info() {
 printf "\n" && tput reset
 
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.0${NC}       ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.2${NC}       ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
@@ -328,7 +321,10 @@ fn_print_success "docker-compose.yml 文件创建成功！"
 
 # --- 阶段四：初始化与配置 ---
 fn_print_step "[ 4 / 5 ] 初始化与配置"
-fn_print_info "正在拉取 SillyTavern 镜像，可能需要几分钟..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" pull > /dev/null || fn_print_error "拉取 Docker 镜像失败！"
+fn_print_info "正在拉取 SillyTavern 镜像，可能需要几分钟..."
+$DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" pull || fn_print_error "拉取 Docker 镜像失败！"
+fn_print_success "镜像拉取完成！"
+
 fn_print_info "正在进行首次启动以生成最新的官方配置文件..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
 timeout=60; while [ ! -f "$CONFIG_FILE" ]; do if [ $timeout -eq 0 ]; then $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs; fn_print_error "等待配置文件生成超时！请检查以上日志输出。"; fi; sleep 1; ((timeout--)); done
 $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down > /dev/null; fn_print_success "最新的 config.yaml 文件已生成！"
