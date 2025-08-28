@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.2.6 (由AI助手优化)
+# 版本: 1.2.5 (由AI助手优化)
 # 作者: Qingjue
 
 # --- 初始化与环境设置 ---
@@ -191,30 +191,38 @@ fn_confirm_and_delete_dir() {
 fn_create_project_structure() {
     fn_print_info "正在创建项目目录结构..."
     mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"
-    # 使用 sudo 确保即使目录由 root 创建，也能正确设置所有权
-    fn_print_info "正在设置文件所有权..."; sudo chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
+    fn_print_info "正在设置文件所有权..."; chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
     fn_print_success "项目目录创建并授权成功！"
 }
 
 # ==================== MODIFICATION START ====================
-# 改进1: 移除复杂的awk进度条，统一使用更稳定、兼容性更强的旋转动画
+# 全新重写的总进度条函数 (稳定版)
 fn_pull_with_progress_bar() {
     local compose_file="$1"
     local docker_compose_cmd="$2"
-    # IMAGE_NAME 变量不再需要传入，但保留函数签名以防未来扩展
+    # image_name 参数在新版中不再需要，但保留以兼容函数调用
+    # local image_name="$3"
 
-    # 使用简单的旋转动画，这种方式不依赖Docker输出格式，非常稳定
-    $docker_compose_cmd -f "$compose_file" pull > /dev/null 2>&1 &
-    local pid=$!
-    local spinner="/-\\|"
-    local i=0
-    while kill -0 $pid 2>/dev/null; do
-        printf "\r  ${YELLOW}[%s]${NC} 正在拉取镜像，请耐心等待..." "${spinner:$((i++%4)):1}"
-        sleep 0.1
+    fn_print_info "正在拉取 SillyTavern 镜像，请耐心等待..."
+    
+    # 使用 stdbuf 确保输出是行缓冲的，以便实时处理
+    # 将 stderr 重定向到 stdout，因为 docker pull 的进度条信息在 stderr
+    # grep --line-buffered 筛选出包含进度条特征的行
+    # while 循环读取每一行进度并用 \r 覆盖打印，实现动态效果
+    stdbuf -oL -eL $docker_compose_cmd -f "$compose_file" pull 2>&1 | \
+    grep --line-buffered -E '\[.*>.*\]|Extracting|Downloading|Pull complete|Verifying Checksum|Already exists' | \
+    while IFS= read -r line; do
+        # 清除当前行，然后打印新的进度信息
+        printf "\r%-80s" " " # 清理一行，防止旧内容残留
+        printf "\r  ${YELLOW}状态:${NC} %s" "$line"
     done
-    printf "\r%s\n" "                                                  " # 清除动画行
-    wait $pid
-    local exit_code=$?
+
+    # PIPESTATUS[0] 用于获取管道中第一个命令 (docker-compose pull) 的退出码
+    # 这是判断命令是否真正成功的关键
+    local exit_code=${PIPESTATUS[0]}
+
+    # 打印一个换行符，结束覆盖打印的行
+    echo ""
 
     if [ $exit_code -ne 0 ]; then
         fn_print_error "拉取 Docker 镜像失败！请检查您的网络或镜像源配置。"
@@ -228,7 +236,7 @@ fn_verify_container_health() {
     local container_name="$1"
     local retries=10
     local interval=3
-    local spinner="/-\\|"
+    local spinner="/-\|"
     fn_print_info "正在确认容器健康状态 (最多等待 ${retries}x${interval} 秒)..."
     echo -n "  "
     for i in $(seq 1 $retries); do
@@ -253,7 +261,9 @@ fn_wait_for_service() {
     local seconds="${1:-10}"
     echo -n "  "
     while [ $seconds -gt 0 ]; do
+        # ==================== MODIFICATION START ====================
         echo -ne "服务正在后台稳定，请稍候... ${YELLOW}${seconds}s${NC}  \r"
+        # ===================== MODIFICATION END =====================
         sleep 1
         ((seconds--))
     done
@@ -320,28 +330,8 @@ echo -e "\n本助手将引导您完成 SillyTavern 的 Docker 自动化安装。
 
 # --- 阶段一：环境检查与准备 ---
 fn_print_step "[ 1 / 5 ] 环境检查与准备"
-
-# ==================== MODIFICATION START ====================
-# 改进2: 移除强制root检查，改为按需使用sudo
-if [[ "$(id -u)" -eq 0 ]]; then
-    fn_print_error "请不要直接使用 root 用户运行此脚本。请切换到普通用户，脚本会在需要时通过 'sudo' 请求权限。"
-fi
-if ! command -v sudo &> /dev/null; then
-    fn_print_error "本脚本需要 'sudo' 命令来执行特权操作，但未在您的系统中找到它。"
-fi
-# 验证sudo权限，这也会缓存凭证，减少后续sudo命令的密码输入
-fn_print_info "本脚本将在必要时使用 'sudo' 请求管理员权限..."
-if ! sudo -v; then
-    fn_print_error "无法获取 sudo 权限。请检查您的用户是否在 sudoers 组中或密码是否正确。"
-fi
-# 使用 $USER 替代 $SUDO_USER，因为脚本现在由普通用户启动
-TARGET_USER="${USER}"
-USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
-if [ -z "$USER_HOME" ]; then
-    fn_print_error "无法找到用户 '$TARGET_USER' 的家目录。"
-fi
-# ===================== MODIFICATION END =====================
-
+if [ "$(id -u)" -ne 0 ]; then fn_print_error "本脚本需要以 root 权限运行。请使用 'sudo' 执行。"; fi
+TARGET_USER="${SUDO_USER:-root}"; if [ "$TARGET_USER" = "root" ]; then USER_HOME="/root"; fn_print_warning "您正以 root 用户身份直接运行脚本，将安装在 /root 目录下。"; else USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6); if [ -z "$USER_HOME" ]; then fn_print_error "无法找到用户 '$TARGET_USER' 的家目录。"; fi; fi
 INSTALL_DIR="$USER_HOME/sillytavern"; CONFIG_FILE="$INSTALL_DIR/config.yaml"; COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 fn_check_dependencies
 fn_speed_test_and_configure_mirrors
@@ -395,7 +385,7 @@ echo -e "  ${YELLOW}│${NC} 3M 带宽   ${BOLD}|${NC} ~0.375 MB/s ${BOLD}|${NC}
 echo -e "  ${YELLOW}│${NC} 100M 带宽 ${BOLD}|${NC} ~12.5 MB/s  ${BOLD}|${NC} 约 16.2 秒             ${YELLOW}│${NC}"
 echo -e "  ${YELLOW}└──────────────────────────────────────────────────┘${NC}"
 
-fn_pull_with_progress_bar "$COMPOSE_FILE" "$DOCKER_COMPOSE_CMD"
+fn_pull_with_progress_bar "$COMPOSE_FILE" "$DOCKER_COMPOSE_CMD" "$IMAGE_NAME"
 
 fn_print_info "正在进行首次启动以生成最新的官方配置文件..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
 timeout=60; while [ ! -f "$CONFIG_FILE" ]; do if [ $timeout -eq 0 ]; then $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs; fn_print_error "等待配置文件生成超时！请检查以上日志输出。"; fi; sleep 1; ((timeout--)); done
