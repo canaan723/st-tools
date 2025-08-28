@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.2.3 (由AI助手优化)
+# 版本: 1.2.4 (由AI助手优化)
 # 作者: Qingjue
 
 # --- 初始化与环境设置 ---
@@ -182,7 +182,7 @@ fn_confirm_and_delete_dir() {
     if [[ ! "$c2" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。"; fi
     echo -ne "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}"; read -r c3 < /dev/tty
     if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。"; fi
-    fn_print_info "正在停止可能正在运行的旧容器: $container_name..."; docker stop "$container_name" >/dev/null 2&>1 || true; fn_print_success "旧容器已停止。"
+    fn_print_info "正在停止可能正在运行的旧容器: $container_name..."; docker stop "$container_name" >/dev/null 2>&1 || true; fn_print_success "旧容器已停止。"
     fn_print_info "正在移除旧容器: $container_name..."; docker rm "$container_name" >/dev/null 2>&1 || true; fn_print_success "旧容器已移除。"
     fn_print_info "正在删除旧目录: $dir_to_delete..."; sudo rm -rf "$dir_to_delete"; fn_print_success "旧目录已彻底清理。"
 }
@@ -194,78 +194,67 @@ fn_create_project_structure() {
     fn_print_success "项目目录创建并授权成功！"
 }
 
-# ==================== MODIFICATION START ====================
-# 新增函数：带实时进度和下载大小的美观进度条
+# 带实时进度和下载大小的美观进度条
 fn_pull_with_progress_bar() {
     local compose_file="$1"
     local docker_compose_cmd="$2"
     
-    # 执行docker-compose pull，合并标准输出和标准错误，然后通过管道交给awk处理
-    # stdbuf -oL -eL 确保输出是行缓冲的，以便实时处理
     stdbuf -oL -eL $docker_compose_cmd -f "$compose_file" pull 2>&1 | \
     awk '
     BEGIN {
         bar_width = 30
-        # 定义颜色代码
         GREEN = "\033[1;32m"
         YELLOW = "\033[1;33m"
-        CYAN = "\033[1;36m"
         NC = "\033[0m"
     }
 
-    # awk函数：将大小字符串（如 50.3MB）转换为KB
     function size_to_kb(size_str,   val, unit) {
         val = substr(size_str, 1, length(size_str)-2)
         unit = substr(size_str, length(size_str)-1)
         if (unit == "GB") return val * 1024 * 1024
         if (unit == "MB") return val * 1024
         if (unit == "kB") return val
-        return val / 1024 # for B
+        return val / 1024
     }
 
-    # 匹配包含 "Downloading" 和进度信息的行
     /Downloading/ && match($0, /[0-9.]+[kMGT]?B\/[0-9.]+[kMGT]?B/) {
-        # 提取匹配到的进度字符串，例如 "50.3MB/201.0MB"
         progress_str = substr($0, RSTART, RLENGTH)
         
-        # 分割当前大小和总大小
         split(progress_str, parts, "/")
         current_str = parts[1]
         total_str = parts[2]
+        
+        # ==================== FIX START ====================
+        # 清理total_str中可能存在的乱码或多余字符
+        gsub(/[^0-9.kMGTB]/, "", total_str)
+        # ===================== FIX END =====================
 
-        # 转换为KB进行计算
         current_kb = size_to_kb(current_str)
         total_kb = size_to_kb(total_str)
 
-        # 计算百分比
         if (total_kb > 0) {
             percent = int(current_kb / total_kb * 100)
         } else {
             percent = 0
         }
         
-        # 计算进度条的填充长度
         filled_len = int(bar_width * percent / 100)
         
-        # 构建进度条字符串
         bar = ""
         for (i = 1; i <= bar_width; i++) {
             bar = bar (i <= filled_len ? "█" : "░")
         }
         
-        # 使用\r在单行打印进度条
-        printf "\r  %s[%s]%s %d%% (%s/%s)", YELLOW, bar, NC, percent, current_str, total_str
+        printf "\r  %s[%s]%s %d%% (%s/%s)        ", YELLOW, bar, NC, percent, current_str, total_str
         fflush()
     }
 
-    # 脚本结束时，打印一个100%的完整进度条和换行符
     END {
         bar = ""
         for (i = 1; i <= bar_width; i++) bar = bar "█"
         printf "\r  %s[%s]%s 100%% 完成                    \n", GREEN, bar, NC
     }
     '
-    # 检查docker-compose pull命令本身是否成功
     local exit_code=${PIPESTATUS[0]}
     if [ $exit_code -ne 0 ]; then
         fn_print_error "拉取 Docker 镜像失败！请检查您的网络或镜像源配置。"
@@ -273,7 +262,6 @@ fn_pull_with_progress_bar() {
         fn_print_success "镜像拉取成功！"
     fi
 }
-# ===================== MODIFICATION END =====================
 
 fn_verify_container_health() {
     local container_name="$1"
@@ -304,7 +292,9 @@ fn_wait_for_service() {
     local seconds="${1:-10}"
     echo -n "  "
     while [ $seconds -gt 0 ]; do
-        echo -ne "服务正在后台稳定，请稍候... ${YELLOW}${seconds}${NC} 秒\r"
+        # ==================== FIX START ====================
+        echo -ne "服务正在后台稳定，请稍候... ${YELLOW}${seconds}s${NC}\r"
+        # ===================== FIX END =====================
         sleep 1
         ((seconds--))
     done
@@ -347,8 +337,15 @@ fn_display_final_info() {
     echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗"
     echo -e "║                      部署成功！尽情享受吧！                      ║"
     echo -e "╚════════════════════════════════════════════════════════════╝${NC}"
-    echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC} (按住 Ctrl 并单击)"
-    if [[ "$run_mode" == "1" ]]; then echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"; echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"; elif [[ "$run_mode" == "2" ]]; then echo -e "  ${YELLOW}首次登录:${NC} 为确保看到新的登录页，请访问 ${GREEN}http://${SERVER_IP}:8000/login${NC} (按住 Ctrl 并单击)"; fi
+    # ==================== FIX START ====================
+    echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC}"
+    if [[ "$run_mode" == "1" ]]; then 
+        echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"
+        echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"
+    elif [[ "$run_mode" == "2" ]]; then 
+        echo -e "  ${YELLOW}首次登录:${NC} 为确保看到新的登录页，请访问 ${GREEN}http://${SERVER_IP}:8000/login${NC}"
+    fi
+    # ===================== FIX END =====================
     echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
 }
 
@@ -422,7 +419,6 @@ echo -e "  ${YELLOW}│${NC} 100M 带宽 ${BOLD}|${NC} ~12.5 MB/s  ${BOLD}|${NC}
 echo -e "  ${YELLOW}└──────────────────────────────────────────────────┘${NC}"
 fn_print_warning "拉取过程将显示实时进度条，请耐心等待..."
 
-# 调用新的带美观进度条的拉取函数
 fn_pull_with_progress_bar "$COMPOSE_FILE" "$DOCKER_COMPOSE_CMD"
 
 fn_print_info "正在进行首次启动以生成最新的官方配置文件..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
@@ -433,6 +429,7 @@ if [[ "$run_mode" == "1" ]]; then fn_print_success "单用户模式配置写入�
     fn_print_info "正在临时启动服务以设置管理员..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
     fn_verify_container_health "$CONTAINER_NAME"
     fn_wait_for_service
+    # ==================== FIX START ====================
     MULTI_USER_GUIDE=$(cat <<EOF
 
 ${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}
@@ -440,7 +437,7 @@ SillyTavern 已临时启动，请完成管理员的初始设置：
 1. ${CYAN}【开放端口】${NC}
    请确保您已在服务器后台（如阿里云/腾讯云安全组）开放了 ${GREEN}8000${NC} 端口。
 2. ${CYAN}【访问并登录】${NC}
-   请打开浏览器，访问: ${GREEN}http://${SERVER_IP}:8000${NC} (按住 Ctrl 并单击鼠标左键打开)
+   请打开浏览器，访问: ${GREEN}http://${SERVER_IP}:8000${NC}
    使用以下默认凭据登录：
      ▶ 账号: ${YELLOW}user${NC}
      ▶ 密码: ${YELLOW}password${NC}
@@ -452,10 +449,12 @@ SillyTavern 已临时启动，请完成管理员的初始设置：
       ② 自定义您的日常使用账号和密码（建议账号用纯英文）。
       ③ 创建后，点击新账户旁的【↑】箭头，将其提升为 Admin (管理员)。
 4. ${CYAN}【需要帮助？】${NC}
-   可访问图文教程： ${GREEN}https://stdocs.723123.xyz${NC} (按住 Ctrl 并单击鼠标左键打开)
+   可访问图文教程： ${GREEN}https://stdocs.723123.xyz${NC}
 ${YELLOW}>>> 完成以上所有步骤后，请回到本窗口，然后按下【回车键】继续 <<<${NC}
 EOF
-); echo -e "${MULTI_USER_GUIDE}"; read -p "" < /dev/tty
+)
+    # ===================== FIX END =====================
+    echo -e "${MULTI_USER_GUIDE}"; read -p "" < /dev/tty
     fn_print_info "正在切换到多用户登录页模式...";
     sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false # 关闭基础认证，启用登录页/" "$CONFIG_FILE"
     sed -i -E "s/^([[:space:]]*)enableDiscreetLogin: .*/\1enableDiscreetLogin: true # 隐藏登录用户列表/" "$CONFIG_FILE"
