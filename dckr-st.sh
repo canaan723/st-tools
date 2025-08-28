@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 21.0 (镜像源扩充版)
-# 作者: Qingjue (由 AI 助手基于 v20.0 优化)
-# 更新日志 (v21.0):
-# - [核心增强] 新增 10 个备用 Docker 镜像源，大幅提升网络适应性。
+# 版本: 1.0
+# 作者: Qingjue
 
 # --- 初始化与环境设置 ---
 set -e
@@ -15,7 +13,7 @@ RED='\033[1;31m'
 YELLOW='\033[1;33m'
 CYAN='\033[1;36m'
 BOLD='\033[1m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # --- 全局变量 ---
 BC_VER="-" BC_STATUS="-"
@@ -98,16 +96,13 @@ fn_apply_docker_config() {
 }
 fn_speed_test_and_configure_mirrors() {
     fn_print_info "正在智能检测 Docker 镜像源可用性 (每个源超时 30 秒)..."
-    ## --- 修改开始: 整合新的镜像源列表 ---
     local mirrors=(
         "docker.io"
-        # --- 常用备用源 ---
         "https://docker.1ms.run"
         "https://hub1.nat.tf"
         "https://docker.1panel.live"
         "https://dockerproxy.1panel.live"
         "https://hub.rat.dev"
-        # --- 新增源 (v21.0) ---
         "https://docker.m.ixdev.cn"
         "https://hub2.nat.tf"
         "https://docker.1panel.dev"
@@ -119,7 +114,6 @@ fn_speed_test_and_configure_mirrors() {
         "https://docker-0.unsee.tech"
         "https://666860.xyz"
     )
-    ## --- 修改结束 ---
     docker rmi hello-world > /dev/null 2>&1 || true
     local results=""; local official_hub_ok=false
     for mirror in "${mirrors[@]}"; do
@@ -132,7 +126,7 @@ fn_speed_test_and_configure_mirrors() {
             if [[ "$mirror" == "docker.io" ]]; then
                 official_hub_ok=true
                 docker rmi "$pull_target" > /dev/null 2>&1 || true
-                break # 熔断：官方源可用，立即中断测试
+                break
             fi
             docker rmi "$pull_target" > /dev/null 2>&1 || true
         else
@@ -159,21 +153,21 @@ fn_speed_test_and_configure_mirrors() {
 }
 
 fn_apply_config_changes() {
-    fn_print_info "正在使用 ${BOLD}sed${NC} 精准修改配置..."
-    sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # * 允许外部访问/" "$CONFIG_FILE"
-    sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false # * 关闭IP白名单模式/" "$CONFIG_FILE"
-    sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400 # * 24小时退出登录/" "$CONFIG_FILE"
-    sed -i -E "s/^([[:space:]]*)numberOfBackups: .*/\1numberOfBackups: 5 # * 单文件保留的备份数量/" "$CONFIG_FILE"
-    sed -i -E "s/^([[:space:]]*)maxTotalBackups: .*/\1maxTotalBackups: 30 # * 总聊天文件数量上限/" "$CONFIG_FILE"
-    sed -i -E "s/^([[:space:]]*)lazyLoadCharacters: .*/\1lazyLoadCharacters: true # * 懒加载、点击角色卡才加载/" "$CONFIG_FILE"
-    sed -i -E "s/^([[:space:]]*)memoryCacheCapacity: .*/\1memoryCacheCapacity: '128mb' # * 角色卡内存缓存 (根据2G内存推荐)/" "$CONFIG_FILE"
+    fn_print_info "正在使用 sed 精准修改配置..."
+    sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # 允许外部访问/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false # 关闭IP白名单模式/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400 # 24小时退出登录/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)numberOfBackups: .*/\1numberOfBackups: 5 # 单文件保留的备份数量/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)maxTotalBackups: .*/\1maxTotalBackups: 30 # 总聊天文件数量上限/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)lazyLoadCharacters: .*/\1lazyLoadCharacters: true # 懒加载、点击角色卡才加载/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)memoryCacheCapacity: .*/\1memoryCacheCapacity: '128mb' # 角色卡内存缓存/" "$CONFIG_FILE"
     if [[ "$run_mode" == "1" ]]; then
-        sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # * 启用基础认证/" "$CONFIG_FILE"
+        sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 启用基础认证/" "$CONFIG_FILE"
         sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$single_user\"/}" "$CONFIG_FILE"
         sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$single_pass\"/}" "$CONFIG_FILE"
     elif [[ "$run_mode" == "2" ]]; then
-        sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # * 临时开启基础认证以设置管理员/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # * 启用多用户模式/" "$CONFIG_FILE"
+        sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 临时开启基础认证以设置管理员/" "$CONFIG_FILE"
+        sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # 启用多用户模式/" "$CONFIG_FILE"
     fi
 }
 
@@ -283,12 +277,12 @@ fn_display_final_info() {
 printf "\n" && tput reset
 
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v21.0${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.0${NC}       ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
 
-# --- 阶段一：环境自检与准备 ---
+# --- 阶段一：环境检查与准备 ---
 fn_print_step "[ 1 / 5 ] 环境检查与准备"
 if [ "$(id -u)" -ne 0 ]; then fn_print_error "本脚本需要以 root 权限运行。请使用 'sudo' 执行。"; fi
 TARGET_USER="${SUDO_USER:-root}"; if [ "$TARGET_USER" = "root" ]; then USER_HOME="/root"; fn_print_warning "您正以 root 用户身份直接运行脚本，将安装在 /root 目录下。"; else USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6); if [ -z "$USER_HOME" ]; then fn_print_error "无法找到用户 '$TARGET_USER' 的家目录。"; fi; fi
@@ -367,8 +361,8 @@ ${YELLOW}>>> 完成以上所有步骤后，请回到本窗口，然后按下【�
 EOF
 ); echo -e "${MULTI_USER_GUIDE}"; read -p "" < /dev/tty
     fn_print_info "正在切换到多用户登录页模式...";
-    sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false # * 关闭基础认证，启用登录页/" "$CONFIG_FILE"
-    sed -i -E "s/^([[:space:]]*)enableDiscreetLogin: .*/\1enableDiscreetLogin: true # * 隐藏登录用户列表/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false # 关闭基础认证，启用登录页/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)enableDiscreetLogin: .*/\1enableDiscreetLogin: true # 隐藏登录用户列表/" "$CONFIG_FILE"
     fn_print_success "多用户模式配置写入完成！"
 fi
 
