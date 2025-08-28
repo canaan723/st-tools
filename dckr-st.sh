@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 16.3 (小白友好版)
-# 作者: Qingjue (由 AI 助手基于 v16.2 优化)
-# 更新日志 (v16.3):
-# - [体验优化] 根据建议，将更适合新手的“单用户模式”设为默认安装选项。
+# 版本: 16.4 (清理权限修复版)
+# 作者: Qingjue (由 AI 助手基于 v16.3 优化)
+# 更新日志 (v16.4):
+# - [修复] 修正了清理旧目录时的权限问题，确保能成功删除由容器创建的 root 文件。
 
 # --- 初始化与环境设置 ---
 set -e
@@ -153,6 +153,8 @@ fn_apply_config_changes() {
 }
 
 fn_get_public_ip() { local ip; ip=$(curl -s --max-time 5 https://api.ipify.org) || ip=$(curl -s --max-time 5 https://ifconfig.me) || ip=$(hostname -I | awk '{print $1}'); echo "$ip"; }
+
+## --- 修改开始: 使用 sudo 强制删除 ---
 fn_confirm_and_delete_dir() {
     local dir_to_delete="$1"; local container_name="$2"
     fn_print_warning "目录 '$dir_to_delete' 已存在，其中可能包含您之前的聊天记录和角色卡。"
@@ -164,8 +166,11 @@ fn_confirm_and_delete_dir() {
     if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。"; fi
     fn_print_info "正在停止可能正在运行的旧容器: $container_name..."; docker stop "$container_name" >/dev/null 2>&1 || true; fn_print_success "旧容器已停止。"
     fn_print_info "正在移除旧容器: $container_name..."; docker rm "$container_name" >/dev/null 2>&1 || true; fn_print_success "旧容器已移除。"
-    fn_print_info "正在删除旧目录: $dir_to_delete..."; rm -rf "$dir_to_delete"; fn_print_success "旧目录已彻底清理。"
+    fn_print_info "正在删除旧目录: $dir_to_delete..."; 
+    sudo rm -rf "$dir_to_delete"
+    fn_print_success "旧目录已彻底清理。"
 }
+## --- 修改结束 ---
 
 fn_create_project_structure() {
     fn_print_info "正在创建项目目录结构..."
@@ -211,7 +216,7 @@ fn_verify_container_health() {
 printf "\n" && tput reset
 
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v16.3${NC}      ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v16.4${NC}      ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
@@ -227,9 +232,7 @@ fn_speed_test_and_configure_mirrors
 # --- 阶段二：交互式配置 ---
 fn_print_step "[ 2 / 5 ] 选择运行模式"
 echo "请选择您希望的运行模式："; echo -e "  [1] ${CYAN}单用户模式${NC} (简单，适合个人使用)"; echo -e "  [2] ${CYAN}多用户模式${NC} (拥有独立的登录页面)"
-## --- 修改开始: 将默认值改为 1 ---
 read -p "请输入选项数字 [默认为 1]: " run_mode < /dev/tty; run_mode=${run_mode:-1}
-## --- 修改结束 ---
 if [[ "$run_mode" == "1" ]]; then read -p "请输入您的自定义用户名: " single_user < /dev/tty; read -p "请输入您的自定义密码: " single_pass < /dev/tty; if [ -z "$single_user" ] || [ -z "$single_pass" ]; then fn_print_error "用户名和密码不能为空！"; fi; elif [[ "$run_mode" != "2" ]]; then fn_print_error "无效输入，脚本已终止。"; fi
 
 # --- 阶段三：自动化部署 ---
