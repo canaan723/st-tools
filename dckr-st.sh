@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.2
-# 作者: Qingjue
+# 版本: 1.3
+# 作者: Qingjue (由 AI 助手协作完成)
 
 # --- 初始化与环境设置 ---
 set -e
@@ -95,7 +95,7 @@ fn_apply_docker_config() {
     fi
 }
 fn_speed_test_and_configure_mirrors() {
-    fn_print_info "正在智能检测 Docker 镜像源可用性 (每个源超时 30 秒)..."
+    fn_print_info "正在智能检测 Docker 镜像源可用性 (每个源超时 10 秒)..."
     local mirrors=(
         "docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live"
         "https://dockerproxy.1panel.live" "https://hub.rat.dev" "https://docker.m.ixdev.cn"
@@ -109,7 +109,7 @@ fn_speed_test_and_configure_mirrors() {
         local pull_target="hello-world" display_name="$mirror"
         if [[ "$mirror" != "docker.io" ]]; then pull_target="${mirror#https://}/library/hello-world"; else display_name="Official Docker Hub"; fi
         echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..."; local start_time=$(date +%s.%N)
-        if timeout 30 docker pull "$pull_target" > /dev/null 2>&1; then
+        if timeout 10 docker pull "$pull_target" > /dev/null 2>&1; then
             local end_time=$(date +%s.%N); local duration=$(echo "$end_time - $start_time" | bc)
             printf " ${GREEN}%.2f 秒${NC}\n" "$duration"; results+="${duration}|${mirror}|${display_name}\n"
             if [[ "$mirror" == "docker.io" ]]; then
@@ -270,7 +270,7 @@ fn_display_final_info() {
 printf "\n" && tput reset
 
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.2${NC}       ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.3${NC}       ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的自动化安装。"
@@ -322,6 +322,7 @@ fn_print_success "docker-compose.yml 文件创建成功！"
 # --- 阶段四：初始化与配置 ---
 fn_print_step "[ 4 / 5 ] 初始化与配置"
 fn_print_info "正在拉取 SillyTavern 镜像，可能需要几分钟..."
+# 在非交互式脚本中，Docker会自动使用日志友好模式输出，此处不加 >/dev/null 以显示进度
 $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" pull || fn_print_error "拉取 Docker 镜像失败！"
 fn_print_success "镜像拉取完成！"
 
