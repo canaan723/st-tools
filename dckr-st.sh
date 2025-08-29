@@ -304,7 +304,7 @@ fn_display_final_info() {
         echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"
         echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"
     elif [[ "$run_mode" == "2" ]]; then 
-        echo -e "  ${YELLOW}首次登录:${NC} 为确保看到新的登录页，请访问 ${GREEN}http://${SERVER_IP}:8000/login${NC}"
+        echo -e "  ${YELLOW}首次登录:${NC} 请访问 ${GREEN}http://${SERVER_IP}:8000/login${NC}" 测试账号能否正常登录
     fi
     echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
 }
@@ -314,7 +314,7 @@ fn_display_final_info() {
 main() {
     tput reset
     echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.1${NC}       ${CYAN}║${NC}"
+    echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.0${NC}       ${CYAN}║${NC}"
     echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
     echo -e "\n本助手将引导您完成 SillyTavern 的 Docker 自动化安装。"
@@ -375,7 +375,7 @@ EOF
     TIME_ESTIMATE_TABLE=$(cat <<EOF
   下载速度取决于您的网络带宽，以下为预估时间参考：
   ${YELLOW}┌──────────────────────────────────────────────────┐${NC}
-  ${YELLOW}│${NC} ${CYAN}带宽${NC}      ${BOLD}|${NC} ${CYAN}下载速度${NC}   ${BOLD}|${NC} ${CYAN}预估最快时间${NC}           ${YELLOW}│${NC}
+  ${YELLOW}│${NC} ${CYAN}带宽${NC}      ${BOLD}|${NC} ${CYAN}下载速度${NC}    ${BOLD}|${NC} ${CYAN}预估最快时间${NC}           ${YELLOW}│${NC}
   ${YELLOW}├──────────────────────────────────────────────────┤${NC}
   ${YELLOW}│${NC} 1M 带宽   ${BOLD}|${NC} ~0.125 MB/s ${BOLD}|${NC} 约 27 分钟             ${YELLOW}│${NC}
   ${YELLOW}│${NC} 2M 带宽   ${BOLD}|${NC} ~0.25 MB/s  ${BOLD}|${NC} 约 13.5 分钟           ${YELLOW}│${NC}
@@ -408,12 +408,12 @@ SillyTavern 已临时启动，请完成管理员的初始设置：
      ▶ 账号: ${YELLOW}user${NC}
      ▶ 密码: ${YELLOW}password${NC}
 3. ${CYAN}【设置管理员】${NC}
-   登录后，请立即在右上角的【管理员面板】中操作：
+   登录后，请立即在【用户设置】标签页的【管理员面板】中操作：
    A. ${GREEN}设置密码${NC}：为默认账户 \`default-user\` 设置一个强大的新密码。
    B. ${GREEN}创建新账户 (推荐)${NC}：
-      ① 点击“创建用户”。
-      ② 自定义您的日常使用账号和密码（建议账号用纯英文）。
-      ③ 创建后，点击新账户旁的【↑】箭头，将其提升为 Admin (管理员)。
+      ① 点击“新用户”。
+      ② 自定义日常使用的账号和密码（【用户句柄】是账号，建议账号用纯英文或纯数字）。
+      ③ 创建后，点击新账户旁的【↑】箭头，将其身份提升为 Admin (管理员)。
 4. ${CYAN}【需要帮助？】${NC}
    可访问图文教程： ${GREEN}https://stdocs.723123.xyz${NC}
 ${YELLOW}>>> 完成以上所有步骤后，请回到本窗口，然后按下【回车键】继续 <<<${NC}
