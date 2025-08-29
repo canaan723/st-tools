@@ -254,14 +254,14 @@ fn_verify_container_health() {
 
 fn_wait_for_service() {
     local seconds="${1:-10}"
-    echo -n "  "
     while [ $seconds -gt 0 ]; do
-        echo -ne "服务正在后台稳定，请稍候... ${YELLOW}${seconds}s${NC}  \r"
+        printf "  服务正在后台稳定，请稍候... ${YELLOW}%2d 秒${NC}  \r" "$seconds"
         sleep 1
         ((seconds--))
     done
     echo -e "                                           \r"
 }
+
 
 fn_check_and_explain_status() {
     local container_name="$1"
