@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SillyTavern Docker 一键部署脚本
-# 版本: 1.2.5 (由AI助手优化)
+# 版本: 1.2.6 (由AI助手优化)
 # 作者: Qingjue
 
 # --- 初始化与环境设置 ---
@@ -195,73 +195,62 @@ fn_create_project_structure() {
     fn_print_success "项目目录创建并授权成功！"
 }
 
-# ==================== MODIFICATION START ====================
-# 全新重写的总进度条函数 (绝对稳定版 - ANSI原地更新/无清屏)
+# ==================== MODIFICATION START (Function) ====================
+# 全新重写的总进度条函数 (绝对稳定版 - 清屏重绘)
 fn_pull_with_progress_bar() {
     local compose_file="$1"
     local docker_compose_cmd="$2"
     local time_estimate_table="$3" # 接收预估时间表格作为参数
-    local LOG_WINDOW_SIZE=5 # 定义我们日志窗口的高度（显示5行）
-
-    # 1. 只打印一次 "页眉" (预估时间表格)
-    echo -e "${time_estimate_table}"
-    echo -e "\n${CYAN}--- 实时拉取进度 (下方为最新的 ${LOG_WINDOW_SIZE} 条日志) ---${NC}"
-    # 为我们的日志窗口预留空间
-    for i in $(seq 1 $LOG_WINDOW_SIZE); do echo ""; done
 
     # 创建一个临时文件来存储 docker pull 的完整日志
     local PULL_LOG
     PULL_LOG=$(mktemp)
-    trap 'rm -f "$PULL_LOG"' EXIT
+    trap 'rm -f "$PULL_LOG"' EXIT # 确保脚本退出时删除临时文件
 
-    # 在后台静默执行拉取
+    # 在后台静默执行拉取，并将所有日志写入文件
     $docker_compose_cmd -f "$compose_file" pull > "$PULL_LOG" 2>&1 &
-    local pull_pid=$!
+    local pid=$!
 
-    # 循环更新日志窗口
-    while kill -0 $pull_pid 2>/dev/null; do
-        # \033[<N>A 是ANSI代码，意思是“将光标向上移动N行”
-        # 我们移动到日志窗口的顶部
-        printf "\033[${LOG_WINDOW_SIZE}A"
-
-        # \033[J 是ANSI代码，意思是“清除从光标到屏幕末尾的内容”
-        # 这会擦掉旧的日志
-        printf "\033[J"
-
-        # 从日志文件中提取最新的5行关键信息并打印出来
-        grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists' "$PULL_LOG" | tail -n "${LOG_WINDOW_SIZE}"
+    # 前台循环，清屏并重绘界面
+    while kill -0 $pid 2>/dev/null; do
+        clear # 1. 清空屏幕
+        echo -e "${time_estimate_table}" # 2. 重新打印预估时间表格
+        echo -e "\n${CYAN}--- 实时拉取进度 (下方为最新日志) ---${NC}"
+        
+        # 3. 从日志文件中提取并显示最新的5行进度
+        # 使用 grep 筛选关键行，避免显示不重要的信息
+        grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists' "$PULL_LOG" | tail -n 5
         
         sleep 1
     done
-
-    # 拉取结束后，最后一次更新日志窗口以显示最终状态
-    printf "\033[${LOG_WINDOW_SIZE}A"
-    printf "\033[J"
-    grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists' "$PULL_LOG" | tail -n "${LOG_WINDOW_SIZE}"
-    echo -e "\n${CYAN}--- 拉取任务已结束 ---${NC}"
 
     # 清理陷阱
     trap - EXIT
     rm -f "$PULL_LOG"
 
-    wait $pull_pid
+    # 等待后台任务结束并获取退出码
+    wait $pid
     local exit_code=$?
+    
+    # 最后一次清理屏幕并显示最终结果
+    clear
+    echo -e "${time_estimate_table}"
+    echo -e "\n${CYAN}--- 实时拉取进度 ---${NC}"
 
     if [ $exit_code -ne 0 ]; then
-        fn_print_error "拉取 Docker 镜像失败！请检查以上日志以确定问题。"
+        fn_print_error "拉取 Docker 镜像失败！请检查网络或镜像源配置。"
     else
         fn_print_success "镜像拉取成功！"
     fi
 }
-# ===================== MODIFICATION END =====================
-
+# ===================== MODIFICATION END (Function) =====================
 
 fn_verify_container_health() {
     local container_name="$1"
     local retries=10
     local interval=3
     local spinner="/-\|"
-    fn_print_info "正在确认容器健康状态..."
+    fn_print_info "正在确认容器健康状态 (最多等待 ${retries}x${interval} 秒)..."
     echo -n "  "
     for i in $(seq 1 $retries); do
         local status
@@ -285,9 +274,7 @@ fn_wait_for_service() {
     local seconds="${1:-10}"
     echo -n "  "
     while [ $seconds -gt 0 ]; do
-        # ==================== MODIFICATION START ====================
         echo -ne "服务正在后台稳定，请稍候... ${YELLOW}${seconds}s${NC}  \r"
-        # ===================== MODIFICATION END =====================
         sleep 1
         ((seconds--))
     done
@@ -347,7 +334,7 @@ fn_display_final_info() {
 printf "\n" && tput reset
 
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.4${NC}       ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.2${NC}       ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的 Docker 自动化安装。"
@@ -398,6 +385,7 @@ fn_print_success "docker-compose.yml 文件创建成功！"
 
 # --- 阶段四：初始化与配置 ---
 fn_print_step "[ 4 / 5 ] 初始化与配置"
+
 # ==================== MODIFICATION START (Caller) ====================
 fn_print_info "即将拉取 SillyTavern 镜像，下载期间将持续显示预估时间。"
 
@@ -443,7 +431,7 @@ SillyTavern 已临时启动，请完成管理员的初始设置：
    A. ${GREEN}设置密码${NC}：为默认账户 \`default-user\` 设置一个强大的新密码。
    B. ${GREEN}创建新账户 (推荐)${NC}：
       ① 点击“创建用户”。
-      ② 自定义您的日常使用账号和密码（建议账号用纯英文或纯数字）。
+      ② 自定义您的日常使用账号和密码（建议账号用纯英文）。
       ③ 创建后，点击新账户旁的【↑】箭头，将其提升为 Admin (管理员)。
 4. ${CYAN}【需要帮助？】${NC}
    可访问图文教程： ${GREEN}https://stdocs.723123.xyz${NC}
