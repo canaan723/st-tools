@@ -232,7 +232,7 @@ fn_verify_container_health() {
     local retries=10
     local interval=3
     local spinner="/-\|"
-    fn_print_info "正在确认容器健康状态 (最多等待 ${retries}x${interval} 秒)..."
+    fn_print_info "正在确认容器健康状态..."
     echo -n "  "
     for i in $(seq 1 $retries); do
         local status
@@ -297,7 +297,7 @@ fn_check_and_explain_status() {
 
 fn_display_final_info() {
     echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗"
-    echo -e "║                      部署成功！尽情享受吧！                      ║"
+    echo -e "║                   部署成功！尽情享受吧！                   ║"
     echo -e "╚════════════════════════════════════════════════════════════╝${NC}"
     echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC}"
     if [[ "$run_mode" == "1" ]]; then 
@@ -315,7 +315,7 @@ main() {
     tput reset
     echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
     echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.0${NC}       ${CYAN}║${NC}"
-    echo -e "${CYAN}║     (Docker 一键部署脚本)     ${CYAN}║${NC}"
+    echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
     echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
     echo -e "\n本助手将引导您完成 SillyTavern 的 Docker 自动化安装。"
 
