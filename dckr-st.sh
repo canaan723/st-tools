@@ -195,12 +195,16 @@ fn_create_project_structure() {
     fn_print_success "项目目录创建并授权成功！"
 }
 
-# ==================== MODIFICATION START (Function) ====================
-# 全新重写的总进度条函数 (绝对稳定版 - 清屏重绘)
+# ==================== MODIFICATION START ====================
+# 全新重写的总进度条函数 (绝对稳定版 - 无清屏/日志流)
 fn_pull_with_progress_bar() {
     local compose_file="$1"
     local docker_compose_cmd="$2"
     local time_estimate_table="$3" # 接收预估时间表格作为参数
+
+    # 1. 只打印一次 "页眉" (预估时间表格)
+    echo -e "${time_estimate_table}"
+    echo -e "\n${CYAN}--- 实时拉取进度将在下方滚动显示 ---${NC}"
 
     # 创建一个临时文件来存储 docker pull 的完整日志
     local PULL_LOG
@@ -209,42 +213,34 @@ fn_pull_with_progress_bar() {
 
     # 在后台静默执行拉取，并将所有日志写入文件
     $docker_compose_cmd -f "$compose_file" pull > "$PULL_LOG" 2>&1 &
-    local pid=$!
+    local pull_pid=$!
 
-    # 前台循环，清屏并重绘界面
-    while kill -0 $pid 2>/dev/null; do
-        clear # 1. 清空屏幕
-        echo -e "${time_estimate_table}" # 2. 重新打印预估时间表格
-        echo -e "\n${CYAN}--- 实时拉取进度 (下方为最新日志) ---${NC}"
-        
-        # 3. 从日志文件中提取并显示最新的5行进度
-        # 使用 grep 筛选关键行，避免显示不重要的信息
-        grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists' "$PULL_LOG" | tail -n 5
-        
-        sleep 1
-    done
+    # 使用 tail -f 实时跟踪并过滤日志文件，也将其放入后台
+    # --line-buffered 确保 grep 在管道中立即输出匹配的行
+    (tail -f -n +1 "$PULL_LOG" | grep --line-buffered -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists') &
+    local tail_pid=$!
+
+    # 等待后台的 pull 进程结束
+    wait $pull_pid
+    local exit_code=$?
+
+    # pull 结束后，给 tail 一点时间输出最后的日志，然后终止 tail 进程
+    sleep 0.5
+    kill $tail_pid >/dev/null 2>&1
 
     # 清理陷阱
     trap - EXIT
     rm -f "$PULL_LOG"
 
-    # 等待后台任务结束并获取退出码
-    wait $pid
-    local exit_code=$?
-    
-    # 最后一次清理屏幕并显示最终结果
-    clear
-    echo -e "${time_estimate_table}"
-    echo -e "\n${CYAN}--- 实时拉取进度 ---${NC}"
+    echo -e "${CYAN}--- 拉取任务已结束 ---${NC}"
 
     if [ $exit_code -ne 0 ]; then
-        fn_print_error "拉取 Docker 镜像失败！请检查网络或镜像源配置。"
+        fn_print_error "拉取 Docker 镜像失败！请检查以上滚动日志以确定问题。"
     else
         fn_print_success "镜像拉取成功！"
     fi
 }
-# ===================== MODIFICATION END (Function) =====================
-
+# ===================== MODIFICATION END =====================
 
 
 fn_verify_container_health() {
@@ -252,7 +248,7 @@ fn_verify_container_health() {
     local retries=10
     local interval=3
     local spinner="/-\|"
-    fn_print_info "正在确认容器健康状态 (最多等待 ${retries}x${interval} 秒)..."
+    fn_print_info "正在确认容器健康状态..."
     echo -n "  "
     for i in $(seq 1 $retries); do
         local status
@@ -338,7 +334,7 @@ fn_display_final_info() {
 printf "\n" && tput reset
 
 echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.3${NC}       ${CYAN}║${NC}"
+echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.4${NC}       ${CYAN}║${NC}"
 echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
 echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 echo -e "\n本助手将引导您完成 SillyTavern 的 Docker 自动化安装。"
@@ -434,7 +430,7 @@ SillyTavern 已临时启动，请完成管理员的初始设置：
    A. ${GREEN}设置密码${NC}：为默认账户 \`default-user\` 设置一个强大的新密码。
    B. ${GREEN}创建新账户 (推荐)${NC}：
       ① 点击“创建用户”。
-      ② 自定义您的日常使用账号和密码（建议账号用纯英文）。
+      ② 自定义您的日常使用账号和密码（建议账号用纯英文或纯数字）。
       ③ 创建后，点击新账户旁的【↑】箭头，将其提升为 Admin (管理员)。
 4. ${CYAN}【需要帮助？】${NC}
    可访问图文教程： ${GREEN}https://stdocs.723123.xyz${NC}
