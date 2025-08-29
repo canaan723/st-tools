@@ -195,37 +195,56 @@ fn_create_project_structure() {
     fn_print_success "项目目录创建并授权成功！"
 }
 
-# ==================== MODIFICATION START ====================
-# 全新重写的总进度条函数 (绝对稳定版 - 利用 run 触发 TTY 原生进度)
+# ==================== MODIFICATION START (Function) ====================
+# 全新重写的总进度条函数 (绝对稳定版 - 清屏重绘)
 fn_pull_with_progress_bar() {
     local compose_file="$1"
     local docker_compose_cmd="$2"
-    
-    fn_print_info "正在拉取镜像... 将使用 'run' 命令来触发一个干净的原生TTY进度条。"
-    fn_print_info "这会短暂创建一个容器来确保镜像被拉取，然后自动删除，请放心。"
-    echo "" # 增加空行以获得更好的视觉效果
+    local time_estimate_table="$3" # 接收预估时间表格作为参数
 
-    # 使用 'run --rm' 技巧:
-    # 1. 'run' 会为命令分配一个 TTY，这使得 Docker 的进度条变成单行覆盖模式。
-    # 2. 在运行命令前，'run' 会自动检查并拉取不存在的镜像。
-    # 3. 我们运行一个无害的、会立即退出的命令 '/bin/true'。
-    # 4. '--rm' 标志确保这个临时创建的容器在命令结束后被立即自动删除。
-    # 最终效果：用一种干净的方式执行了 'pull'。
-    $docker_compose_cmd -f "$compose_file" run --rm sillytavern /bin/true
+    # 创建一个临时文件来存储 docker pull 的完整日志
+    local PULL_LOG
+    PULL_LOG=$(mktemp)
+    trap 'rm -f "$PULL_LOG"' EXIT # 确保脚本退出时删除临时文件
 
-    # 命令执行完毕后，捕获其退出码
+    # 在后台静默执行拉取，并将所有日志写入文件
+    $docker_compose_cmd -f "$compose_file" pull > "$PULL_LOG" 2>&1 &
+    local pid=$!
+
+    # 前台循环，清屏并重绘界面
+    while kill -0 $pid 2>/dev/null; do
+        clear # 1. 清空屏幕
+        echo -e "${time_estimate_table}" # 2. 重新打印预估时间表格
+        echo -e "\n${CYAN}--- 实时拉取进度 (下方为最新日志) ---${NC}"
+        
+        # 3. 从日志文件中提取并显示最新的5行进度
+        # 使用 grep 筛选关键行，避免显示不重要的信息
+        grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists' "$PULL_LOG" | tail -n 5
+        
+        sleep 1
+    done
+
+    # 清理陷阱
+    trap - EXIT
+    rm -f "$PULL_LOG"
+
+    # 等待后台任务结束并获取退出码
+    wait $pid
     local exit_code=$?
+    
+    # 最后一次清理屏幕并显示最终结果
+    clear
+    echo -e "${time_estimate_table}"
+    echo -e "\n${CYAN}--- 实时拉取进度 ---${NC}"
 
-    echo "" # 再次增加空行
-
-    # 根据退出码判断成功或失败
     if [ $exit_code -ne 0 ]; then
-        fn_print_error "拉取 Docker 镜像或执行临时容器时失败！请检查以上 Docker 输出日志以确定问题。"
+        fn_print_error "拉取 Docker 镜像失败！请检查网络或镜像源配置。"
     else
         fn_print_success "镜像拉取成功！"
     fi
 }
-# ===================== MODIFICATION END =====================
+# ===================== MODIFICATION END (Function) =====================
+
 
 
 fn_verify_container_health() {
@@ -370,18 +389,26 @@ fn_print_success "docker-compose.yml 文件创建成功！"
 
 # --- 阶段四：初始化与配置 ---
 fn_print_step "[ 4 / 5 ] 初始化与配置"
-fn_print_info "即将拉取 SillyTavern 镜像。"
-echo -e "  下载速度取决于您的网络带宽，以下为预估时间参考："
-echo -e "  ${YELLOW}┌──────────────────────────────────────────────────┐${NC}"
-echo -e "  ${YELLOW}│${NC} ${CYAN}带宽${NC}      ${BOLD}|${NC} ${CYAN}下载速度${NC}   ${BOLD}|${NC} ${CYAN}预估最快时间${NC}           ${YELLOW}│${NC}"
-echo -e "  ${YELLOW}├──────────────────────────────────────────────────┤${NC}"
-echo -e "  ${YELLOW}│${NC} 1M 带宽   ${BOLD}|${NC} ~0.125 MB/s ${BOLD}|${NC} 约 27 分钟             ${YELLOW}│${NC}"
-echo -e "  ${YELLOW}│${NC} 2M 带宽   ${BOLD}|${NC} ~0.25 MB/s  ${BOLD}|${NC} 约 13.5 分钟           ${YELLOW}│${NC}"
-echo -e "  ${YELLOW}│${NC} 3M 带宽   ${BOLD}|${NC} ~0.375 MB/s ${BOLD}|${NC} 约 9 分钟              ${YELLOW}│${NC}"
-echo -e "  ${YELLOW}│${NC} 100M 带宽 ${BOLD}|${NC} ~12.5 MB/s  ${BOLD}|${NC} 约 16.2 秒             ${YELLOW}│${NC}"
-echo -e "  ${YELLOW}└──────────────────────────────────────────────────┘${NC}"
+# ==================== MODIFICATION START (Caller) ====================
+fn_print_info "即将拉取 SillyTavern 镜像，下载期间将持续显示预估时间。"
 
-fn_pull_with_progress_bar "$COMPOSE_FILE" "$DOCKER_COMPOSE_CMD" "$IMAGE_NAME"
+# 将整个预估时间表格的内容存入一个变量
+TIME_ESTIMATE_TABLE=$(cat <<EOF
+  下载速度取决于您的网络带宽，以下为预估时间参考：
+  ${YELLOW}┌──────────────────────────────────────────────────┐${NC}
+  ${YELLOW}│${NC} ${CYAN}带宽${NC}      ${BOLD}|${NC} ${CYAN}下载速度${NC}   ${BOLD}|${NC} ${CYAN}预估最快时间${NC}           ${YELLOW}│${NC}
+  ${YELLOW}├──────────────────────────────────────────────────┤${NC}
+  ${YELLOW}│${NC} 1M 带宽   ${BOLD}|${NC} ~0.125 MB/s ${BOLD}|${NC} 约 27 分钟             ${YELLOW}│${NC}
+  ${YELLOW}│${NC} 2M 带宽   ${BOLD}|${NC} ~0.25 MB/s  ${BOLD}|${NC} 约 13.5 分钟           ${YELLOW}│${NC}
+  ${YELLOW}│${NC} 3M 带宽   ${BOLD}|${NC} ~0.375 MB/s ${BOLD}|${NC} 约 9 分钟              ${YELLOW}│${NC}
+  ${YELLOW}│${NC} 100M 带宽 ${BOLD}|${NC} ~12.5 MB/s  ${BOLD}|${NC} 约 16.2 秒             ${YELLOW}│${NC}
+  ${YELLOW}└──────────────────────────────────────────────────┘${NC}
+EOF
+)
+
+# 调用新函数，并将表格变量作为参数传递进去
+fn_pull_with_progress_bar "$COMPOSE_FILE" "$DOCKER_COMPOSE_CMD" "$TIME_ESTIMATE_TABLE"
+# ===================== MODIFICATION END (Caller) =====================
 
 fn_print_info "正在进行首次启动以生成最新的官方配置文件..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
 timeout=60; while [ ! -f "$CONFIG_FILE" ]; do if [ $timeout -eq 0 ]; then $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs; fn_print_error "等待配置文件生成超时！请检查以上日志输出。"; fi; sleep 1; ((timeout--)); done
