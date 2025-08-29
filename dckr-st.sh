@@ -93,7 +93,7 @@ fn_apply_docker_config() {
     fi
 }
 fn_speed_test_and_configure_mirrors() {
-    fn_print_info "正在智能检测 Docker 镜像源可用性..."
+    fn_print_info "正在检测 Docker 镜像源可用性..."
     local mirrors=(
         "docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live"
         "https://dockerproxy.1panel.live" "https://hub.rat.dev" "https://docker.m.ixdev.cn"
@@ -330,7 +330,7 @@ main() {
 
     # 阶段二：交互式配置
     fn_print_step "[ 2 / 5 ] 选择运行模式"
-    echo "请选择您希望的运行模式："; echo -e "  [1] ${CYAN}单用户模式${NC} (一键完成，仅适合个人使用)"; echo -e "  [2] ${CYAN}多用户模式${NC} (拥有独立登录页面，适合多人使用)"
+    echo "请选择您希望的运行模式："; echo -e "  [1] ${CYAN}单用户模式${NC} (一键完成，弹窗认证，仅适合个人使用)"; echo -e "  [2] ${CYAN}多用户模式${NC} (需要简单配置，拥有独立登录页面，单人或多人通用)"
     read -p "请输入选项数字 [默认为 1]: " run_mode < /dev/tty; run_mode=${run_mode:-1}
     if [[ "$run_mode" == "1" ]]; then 
         read -p "请输入您的自定义用户名: " single_user < /dev/tty
