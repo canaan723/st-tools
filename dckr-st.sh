@@ -196,46 +196,59 @@ fn_create_project_structure() {
 }
 
 # ==================== MODIFICATION START ====================
-# 全新重写的总进度条函数 (绝对稳定版 - 无清屏/日志流)
+# 全新重写的总进度条函数 (绝对稳定版 - ANSI原地更新/无清屏)
 fn_pull_with_progress_bar() {
     local compose_file="$1"
     local docker_compose_cmd="$2"
     local time_estimate_table="$3" # 接收预估时间表格作为参数
+    local LOG_WINDOW_SIZE=5 # 定义我们日志窗口的高度（显示5行）
 
     # 1. 只打印一次 "页眉" (预估时间表格)
     echo -e "${time_estimate_table}"
-    echo -e "\n${CYAN}--- 实时拉取进度将在下方滚动显示 ---${NC}"
+    echo -e "\n${CYAN}--- 实时拉取进度 (下方为最新的 ${LOG_WINDOW_SIZE} 条日志) ---${NC}"
+    # 为我们的日志窗口预留空间
+    for i in $(seq 1 $LOG_WINDOW_SIZE); do echo ""; done
 
     # 创建一个临时文件来存储 docker pull 的完整日志
     local PULL_LOG
     PULL_LOG=$(mktemp)
-    trap 'rm -f "$PULL_LOG"' EXIT # 确保脚本退出时删除临时文件
+    trap 'rm -f "$PULL_LOG"' EXIT
 
-    # 在后台静默执行拉取，并将所有日志写入文件
+    # 在后台静默执行拉取
     $docker_compose_cmd -f "$compose_file" pull > "$PULL_LOG" 2>&1 &
     local pull_pid=$!
 
-    # 使用 tail -f 实时跟踪并过滤日志文件，也将其放入后台
-    # --line-buffered 确保 grep 在管道中立即输出匹配的行
-    (tail -f -n +1 "$PULL_LOG" | grep --line-buffered -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists') &
-    local tail_pid=$!
+    # 循环更新日志窗口
+    while kill -0 $pull_pid 2>/dev/null; do
+        # \033[<N>A 是ANSI代码，意思是“将光标向上移动N行”
+        # 我们移动到日志窗口的顶部
+        printf "\033[${LOG_WINDOW_SIZE}A"
 
-    # 等待后台的 pull 进程结束
-    wait $pull_pid
-    local exit_code=$?
+        # \033[J 是ANSI代码，意思是“清除从光标到屏幕末尾的内容”
+        # 这会擦掉旧的日志
+        printf "\033[J"
 
-    # pull 结束后，给 tail 一点时间输出最后的日志，然后终止 tail 进程
-    sleep 0.5
-    kill $tail_pid >/dev/null 2>&1
+        # 从日志文件中提取最新的5行关键信息并打印出来
+        grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists' "$PULL_LOG" | tail -n "${LOG_WINDOW_SIZE}"
+        
+        sleep 1
+    done
+
+    # 拉取结束后，最后一次更新日志窗口以显示最终状态
+    printf "\033[${LOG_WINDOW_SIZE}A"
+    printf "\033[J"
+    grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists' "$PULL_LOG" | tail -n "${LOG_WINDOW_SIZE}"
+    echo -e "\n${CYAN}--- 拉取任务已结束 ---${NC}"
 
     # 清理陷阱
     trap - EXIT
     rm -f "$PULL_LOG"
 
-    echo -e "${CYAN}--- 拉取任务已结束 ---${NC}"
+    wait $pull_pid
+    local exit_code=$?
 
     if [ $exit_code -ne 0 ]; then
-        fn_print_error "拉取 Docker 镜像失败！请检查以上滚动日志以确定问题。"
+        fn_print_error "拉取 Docker 镜像失败！请检查以上日志以确定问题。"
     else
         fn_print_success "镜像拉取成功！"
     fi
