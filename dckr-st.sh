@@ -196,28 +196,31 @@ fn_create_project_structure() {
 }
 
 # ==================== MODIFICATION START ====================
-# 全新重写的总进度条函数 (绝对稳定版 - 原生输出)
+# 全新重写的总进度条函数 (绝对稳定版 - 利用 run 触发 TTY 原生进度)
 fn_pull_with_progress_bar() {
     local compose_file="$1"
     local docker_compose_cmd="$2"
     
-    fn_print_info "正在拉取 SillyTavern 镜像，将直接显示 Docker 原生进度..."
-    # 增加一个空行，让 Docker 的输出界面更清晰
-    echo ""
+    fn_print_info "正在拉取镜像... 将使用 'run' 命令来触发一个干净的原生TTY进度条。"
+    fn_print_info "这会短暂创建一个容器来确保镜像被拉取，然后自动删除，请放心。"
+    echo "" # 增加空行以获得更好的视觉效果
 
-    # 直接执行 pull 命令，不使用任何管道符 | 或重定向 >
-    # 让 Docker 完全接管终端的输出，这是最稳定的方式
-    $docker_compose_cmd -f "$compose_file" pull
+    # 使用 'run --rm' 技巧:
+    # 1. 'run' 会为命令分配一个 TTY，这使得 Docker 的进度条变成单行覆盖模式。
+    # 2. 在运行命令前，'run' 会自动检查并拉取不存在的镜像。
+    # 3. 我们运行一个无害的、会立即退出的命令 '/bin/true'。
+    # 4. '--rm' 标志确保这个临时创建的容器在命令结束后被立即自动删除。
+    # 最终效果：用一种干净的方式执行了 'pull'。
+    $docker_compose_cmd -f "$compose_file" run --rm sillytavern /bin/true
 
     # 命令执行完毕后，捕获其退出码
     local exit_code=$?
 
-    # 再次增加一个空行，与后续脚本输出分隔
-    echo ""
+    echo "" # 再次增加空行
 
     # 根据退出码判断成功或失败
     if [ $exit_code -ne 0 ]; then
-        fn_print_error "拉取 Docker 镜像失败！请检查以上 Docker 输出日志以确定问题。"
+        fn_print_error "拉取 Docker 镜像或执行临时容器时失败！请检查以上 Docker 输出日志以确定问题。"
     else
         fn_print_success "镜像拉取成功！"
     fi
