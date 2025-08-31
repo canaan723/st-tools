@@ -7,8 +7,6 @@
 # ===================================================================================
 
 # --- 全局设置 ---
-# set -e: 如果任何命令以非零状态退出，则立即退出脚本。
-# set -o pipefail: 如果管道中的任何命令失败，则整个管道的退出状态为失败。
 set -e
 set -o pipefail
 
@@ -19,13 +17,12 @@ readonly RED='\033[0;31m'
 readonly BLUE='\033[0;34m'
 readonly CYAN='\033[1;36m'
 readonly BOLD='\033[1m'
-readonly NC='\033[0m' # No Color
+readonly NC='\033[0m'
 
 # ==============================================================================
 # SECTION: 辅助工具函数
 # ==============================================================================
 
-# 日志输出函数
 log_info() { echo -e "${GREEN}[INFO] $1${NC}"; }
 log_warn() { echo -e "${YELLOW}[WARN] $1${NC}"; }
 log_error() { echo -e "\n${RED}[ERROR] $1${NC}\n"; exit 1; }
@@ -33,7 +30,6 @@ log_action() { echo -e "${YELLOW}[ACTION] $1${NC}"; }
 log_step() { echo -e "\n${BLUE}--- $1: $2 ---${NC}"; }
 log_success() { echo -e "${GREEN}✓ $1${NC}"; }
 
-# 检查脚本是否以root权限运行
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then
        echo -e "\n${RED}错误: 此脚本需要 root 权限执行。${NC}"
@@ -44,8 +40,7 @@ check_root() {
 
 # ==============================================================================
 # MODULE 1: 服务器初始化
-# DESCRIPTION: 执行服务器安全加固和基础优化。
-# REQUIRES: root权限
+# (此模块与原版相同，为保持完整性而包含)
 # ==============================================================================
 run_initialization() {
     tput reset
@@ -153,8 +148,7 @@ EOF
 
 # ==============================================================================
 # MODULE 2: 安装 1Panel
-# DESCRIPTION: 安装1Panel面板并确保Docker环境就绪。
-# REQUIRES: root权限
+# (此模块与原版相同，为保持完整性而包含)
 # ==============================================================================
 install_1panel() {
     tput reset
@@ -214,8 +208,6 @@ install_1panel() {
 
 # ==============================================================================
 # MODULE 3: 部署 SillyTavern
-# DESCRIPTION: 自动化部署SillyTavern Docker容器。
-# REQUIRES: root权限, Docker, Docker Compose
 # ==============================================================================
 install_sillytavern() {
     # --- 模块内变量定义 ---
@@ -392,7 +384,6 @@ install_sillytavern() {
     }
 
     fn_apply_config_changes() {
-        # 通用配置
         sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # 允许外部访问/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false # 关闭IP白名单模式/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400 # 24小时退出登录/" "$CONFIG_FILE"
@@ -400,8 +391,6 @@ install_sillytavern() {
         sed -i -E "s/^([[:space:]]*)maxTotalBackups: .*/\1maxTotalBackups: 30 # 总聊天文件数量上限/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)lazyLoadCharacters: .*/\1lazyLoadCharacters: true # 懒加载、点击角色卡才加载/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)memoryCacheCapacity: .*/\1memoryCacheCapacity: '128mb' # 角色卡内存缓存/" "$CONFIG_FILE"
-        
-        # 模式特定配置
         if [[ "$run_mode" == "1" ]]; then
             sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 启用基础认证/" "$CONFIG_FILE"
             sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$single_user\"/}" "$CONFIG_FILE"
@@ -424,18 +413,14 @@ install_sillytavern() {
         log_warn "目录 '$dir_to_delete' 已存在，可能包含之前的聊天记录和角色卡。"
         read -r -p "确定要【彻底清理】并继续安装吗？此操作会停止并删除旧容器。[Y/n]: " c1 < /dev/tty
         if [[ ! "${c1:-y}" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。"; fi
-        
         read -r -p "$(echo -e "${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 [Y/n]: ${NC}")" c2 < /dev/tty
         if [[ ! "${c2:-y}" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。"; fi
-
         read -r -p "$(echo -e "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}")" c3 < /dev/tty
         if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。"; fi
-
         fn_print_info "正在停止并移除旧容器: $container_name..."
         docker stop "$container_name" > /dev/null 2>&1 || true
         docker rm "$container_name" > /dev/null 2>&1 || true
         log_success "旧容器已停止并移除。"
-
         fn_print_info "正在删除旧目录: $dir_to_delete..."
         sudo rm -rf "$dir_to_delete"
         log_success "旧目录已彻底清理。"
@@ -466,15 +451,23 @@ install_sillytavern() {
             grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists' "$PULL_LOG" | tail -n 5
             sleep 1
         done
-        trap - EXIT
-        rm -f "$PULL_LOG"
         
         wait $pid
         local exit_code=$?
-        clear
+        trap - EXIT
+
         if [ $exit_code -ne 0 ]; then
-            fn_print_error "拉取 Docker 镜像失败！请检查网络或镜像源配置。"
+            clear
+            echo -e "${RED}Docker 镜像拉取失败！${NC}" >&2
+            echo -e "${YELLOW}以下是来自 Docker 的原始错误日志：${NC}" >&2
+            echo "--------------------------------------------------" >&2
+            cat "$PULL_LOG" >&2
+            echo "--------------------------------------------------" >&2
+            rm -f "$PULL_LOG"
+            fn_print_error "请根据以上日志排查问题，可能原因包括网络不通、镜像源失效或 Docker 服务异常。"
         else
+            clear
+            rm -f "$PULL_LOG"
             log_success "镜像拉取成功！"
         fi
     }
@@ -562,6 +555,13 @@ install_sillytavern() {
     CONFIG_FILE="$INSTALL_DIR/config.yaml"
     COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
     fn_check_dependencies
+    
+    fn_print_info "正在检查 Docker 服务状态..."
+    if ! docker info > /dev/null 2>&1; then
+        fn_print_error "无法连接到 Docker 服务。请确保 Docker 正在运行 (可使用 'sudo systemctl status docker' 命令检查)。"
+    fi
+    log_success "Docker 服务连接正常。"
+
     fn_speed_test_and_configure_mirrors
     SERVER_IP=$(fn_get_public_ip)
 
