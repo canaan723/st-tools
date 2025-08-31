@@ -1,12 +1,13 @@
 #!/bin/bash
 
 # ===================================================================================
-# SillyTavern 一站式部署助手 v2.7
+# SillyTavern 一站式部署助手 v2.8
 #
 # 作者: Qingjue
 #
-# v2.6: 优化Docker镜像测速，隐藏超时产生的"Killed"信息；增加配置的镜像源数量至5个。
 # v2.7: 修正镜像拉取时的带宽预估表；修复拉取完成后表格重复显示的问题。
+# v2.8: 关键修复 - 在执行docker-compose前切换到正确的项目目录，解决
+#       脚本异常退出和潜在的 "getcwd" 错误。
 # ===================================================================================
 
 # --- 全局颜色定义 ---
@@ -348,7 +349,6 @@ install_sillytavern() {
             clear; echo -e "${time_estimate_table}"; echo -e "\n${CYAN}--- 实时拉取进度 (下方为最新日志) ---${NC}"; grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists' "$PULL_LOG" | tail -n 5; sleep 1
         done
         trap - EXIT; rm -f "$PULL_LOG"; wait $pid; local exit_code=$?
-        # FIX: Clear screen once and show only the final result, no duplicate table.
         clear
         if [ $exit_code -ne 0 ]; then fn_print_error "拉取 Docker 镜像失败！请检查网络或镜像源配置。"; else fn_print_success "镜像拉取成功！"; fi
     }
@@ -405,6 +405,11 @@ install_sillytavern() {
     fn_print_step "[ 3/5 ] 创建项目文件"
     if [ -d "$INSTALL_DIR" ]; then fn_confirm_and_delete_dir "$INSTALL_DIR" "$CONTAINER_NAME"; fi
     fn_create_project_structure
+    
+    # FIX: Change to the project directory before running any docker-compose commands.
+    cd "$INSTALL_DIR"
+    fn_print_info "工作目录已切换至: $(pwd)"
+
     cat <<EOF > "$COMPOSE_FILE"
 services:
   sillytavern:
@@ -428,7 +433,6 @@ EOF
     fn_print_success "docker-compose.yml 文件创建成功！"
 
     fn_print_step "[ 4/5 ] 初始化与配置"
-    # FIX: Corrected bandwidth table
     fn_print_info "即将拉取 SillyTavern 镜像，下载期间将持续显示预估时间。"; TIME_ESTIMATE_TABLE=$(cat <<EOF
   下载速度取决于网络带宽，以下为预估时间参考：
   ${YELLOW}┌──────────────────────────────────────────────────┐${NC}
