@@ -3,7 +3,7 @@
 # SillyTavern 助手 v1.0
 #
 # 作者: Qingjue
-# 功能: 提供服务器初始化、1Panel安装及SillyTavern Docker化部署的一键脚本。
+# 功能: 提供服务器初始化、1Panel安装及SillyTavern Docker化部署的一站式解决方案。
 # ===================================================================================
 
 # --- 全局设置 ---
@@ -17,7 +17,7 @@ readonly RED='\033[0;31m'
 readonly BLUE='\033[0;34m'
 readonly CYAN='\033[1;36m'
 readonly BOLD='\033[1m'
-readonly NC='\033[0m'
+readonly NC='\033[0m' # No Color
 
 # ==============================================================================
 # SECTION: 辅助工具函数
@@ -40,7 +40,6 @@ check_root() {
 
 # ==============================================================================
 # MODULE 1: 服务器初始化
-# (此模块与原版相同，为保持完整性而包含)
 # ==============================================================================
 run_initialization() {
     tput reset
@@ -148,7 +147,6 @@ EOF
 
 # ==============================================================================
 # MODULE 2: 安装 1Panel
-# (此模块与原版相同，为保持完整性而包含)
 # ==============================================================================
 install_1panel() {
     tput reset
@@ -434,6 +432,7 @@ install_sillytavern() {
         log_success "项目目录创建并授权成功！"
     }
 
+    # --- [FIXED FUNCTION] ---
     fn_pull_with_progress_bar() {
         local compose_file="$1"
         local docker_compose_cmd="$2"
@@ -445,7 +444,8 @@ install_sillytavern() {
         $docker_compose_cmd -f "$compose_file" pull > "$PULL_LOG" 2>&1 &
         local pid=$!
         while kill -0 $pid 2>/dev/null; do
-            clear
+            # [FIX] Add '|| true' to prevent script exit if 'clear' fails in a non-standard terminal
+            clear || true 
             echo -e "${time_estimate_table}"
             echo -e "\n${CYAN}--- 实时拉取进度 (下方为最新日志) ---${NC}"
             grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists' "$PULL_LOG" | tail -n 5
@@ -456,8 +456,10 @@ install_sillytavern() {
         local exit_code=$?
         trap - EXIT
 
+        # Clear one last time to remove the progress UI
+        clear || true
+
         if [ $exit_code -ne 0 ]; then
-            clear
             echo -e "${RED}Docker 镜像拉取失败！${NC}" >&2
             echo -e "${YELLOW}以下是来自 Docker 的原始错误日志：${NC}" >&2
             echo "--------------------------------------------------" >&2
@@ -466,7 +468,6 @@ install_sillytavern() {
             rm -f "$PULL_LOG"
             fn_print_error "请根据以上日志排查问题，可能原因包括网络不通、镜像源失效或 Docker 服务异常。"
         else
-            clear
             rm -f "$PULL_LOG"
             log_success "镜像拉取成功！"
         fi
