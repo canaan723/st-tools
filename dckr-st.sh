@@ -1,27 +1,18 @@
 #!/usr/bin/env bash
-# ===================================================================================
-# SillyTavern 助手 v1.0
-#
-# 作者: Qingjue
-# 功能: 提供服务器初始化、1Panel安装及SillyTavern Docker化部署的一站式解决方案。
-# ===================================================================================
 
-# --- 全局设置 ---
+# SillyTavern 助手 v1.0
+# 作者: Qingjue | 小红书号: 826702880
+
 set -e
 set -o pipefail
 
-# --- 全局常量与颜色定义 ---
 readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[1;33m'
 readonly RED='\033[0;31m'
 readonly BLUE='\033[0;34m'
 readonly CYAN='\033[1;36m'
 readonly BOLD='\033[1m'
-readonly NC='\033[0m' # No Color
-
-# ==============================================================================
-# SECTION: 辅助工具函数
-# ==============================================================================
+readonly NC='\033[0m'
 
 log_info() { echo -e "${GREEN}[INFO] $1${NC}"; }
 log_warn() { echo -e "${YELLOW}[WARN] $1${NC}"; }
@@ -38,9 +29,6 @@ check_root() {
     fi
 }
 
-# ==============================================================================
-# MODULE 1: 服务器初始化
-# ==============================================================================
 run_initialization() {
     tput reset
     echo -e "${CYAN}即将执行【服务器初始化】流程...${NC}"
@@ -102,10 +90,8 @@ run_initialization() {
            -e '/vm.swappiness=10/d' /etc/sysctl.conf
     cat <<EOF >> /etc/sysctl.conf
 
-# Enable BBR congestion control
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
-# Set swappiness
 vm.swappiness=10
 EOF
     log_success "内核参数配置完成。"
@@ -144,10 +130,6 @@ EOF
     fi
 }
 
-
-# ==============================================================================
-# MODULE 2: 安装 1Panel
-# ==============================================================================
 install_1panel() {
     tput reset
     echo -e "${CYAN}即将执行【安装 1Panel】流程...${NC}"
@@ -203,12 +185,7 @@ install_1panel() {
     log_warn "若刚才有用户被添加到 docker 组，务必先退出并重新登录SSH！"
 }
 
-
-# ==============================================================================
-# MODULE 3: 部署 SillyTavern
-# ==============================================================================
 install_sillytavern() {
-    # --- 模块内变量定义 ---
     local BC_VER="-" BC_STATUS="-"
     local CURL_VER="-" CURL_STATUS="-"
     local TAR_VER="-" TAR_STATUS="-"
@@ -217,7 +194,6 @@ install_sillytavern() {
     local CONTAINER_NAME="sillytavern"
     local IMAGE_NAME="ghcr.io/sillytavern/sillytavern:latest"
 
-    # --- 模块内辅助函数 ---
     fn_print_step() { echo -e "\n${CYAN}═══ $1 ═══${NC}"; }
     fn_print_info() { echo -e "  $1"; }
     fn_print_error() { echo -e "\n${RED}✗ 错误: $1${NC}\n" >&2; exit 1; }
@@ -432,7 +408,6 @@ install_sillytavern() {
         log_success "项目目录创建并授权成功！"
     }
 
-    # --- [CORRECTLY FIXED FUNCTION] ---
     fn_pull_with_progress_bar() {
         local compose_file="$1"
         local docker_compose_cmd="$2"
@@ -447,7 +422,6 @@ install_sillytavern() {
             clear || true 
             echo -e "${time_estimate_table}"
             echo -e "\n${CYAN}--- 实时拉取进度 (下方为最新日志) ---${NC}"
-            # [FIX] Add '|| true' to grep to prevent script exit when the log file is temporarily empty.
             grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists' "$PULL_LOG" | tail -n 5 || true
             sleep 1
         done
@@ -537,7 +511,6 @@ install_sillytavern() {
         echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
     }
     
-    # --- 主逻辑开始 ---
     tput reset
     echo -e "${CYAN}SillyTavern Docker 自动化安装流程${NC}"
 
@@ -562,7 +535,18 @@ install_sillytavern() {
     fi
     log_success "Docker 服务连接正常。"
 
-    fn_speed_test_and_configure_mirrors
+    echo
+    log_action "是否需要进行 Docker 镜像速度测试并自动配置加速源？"
+    fn_print_info "如果您的服务器网络环境良好（尤其是在海外），可以输入 n 跳过。"
+    read -r -p "请输入 [Y/n] (默认: Y, 直接回车即可开始测试): " confirm_test < /dev/tty
+    confirm_test=${confirm_test:-y}
+
+    if [[ "$confirm_test" =~ ^[Yy]$ ]]; then
+        fn_speed_test_and_configure_mirrors
+    else
+        log_info "已跳过 Docker 镜像测速。"
+    fi
+    
     SERVER_IP=$(fn_get_public_ip)
 
     fn_print_step "[ 2/5 ] 选择运行模式"
@@ -618,7 +602,7 @@ EOF
   ${YELLOW}│${NC} ${CYAN}带宽${NC}      ${BOLD}|${NC} ${CYAN}下载速度${NC}    ${BOLD}|${NC} ${CYAN}预估最快时间${NC}           ${YELLOW}│${NC}
   ${YELLOW}├──────────────────────────────────────────────────┤${NC}
   ${YELLOW}│${NC} 1M 带宽   ${BOLD}|${NC} ~0.125 MB/s ${BOLD}|${NC} 约 27 分钟             ${YELLOW}│${NC}
-  ${YELLOW}│${NC} 2M 带宽   ${BOLD}|${NC} ~0.25 MB/s  ${BOLD}|${NC} 約 13.5 分钟           ${YELLOW}│${NC}
+  ${YELLOW}│${NC} 2M 带宽   ${BOLD}|${NC} ~0.25 MB/s  ${BOLD}|${NC} 约 13.5 分钟           ${YELLOW}│${NC}
   ${YELLOW}│${NC} 10M 带宽  ${BOLD}|${NC} ~1.25 MB/s  ${BOLD}|${NC} 约 2.7 分钟            ${YELLOW}│${NC}
   ${YELLOW}│${NC} 100M 带宽 ${BOLD}|${NC} ~12.5 MB/s  ${BOLD}|${NC} 约 16 秒               ${YELLOW}│${NC}
   ${YELLOW}└──────────────────────────────────────────────────┘${NC}
@@ -704,15 +688,11 @@ EOF
     done
 }
 
-
-# ==============================================================================
-# SECTION: 主菜单与脚本入口
-# ==============================================================================
 main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.0修复2${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.0${NC}       ${CYAN}║${NC}"
         echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
         echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
         echo -e "\n${BOLD}使用说明:${NC}"
@@ -744,5 +724,4 @@ main_menu() {
     done
 }
 
-# --- 脚本入口 ---
 main_menu
