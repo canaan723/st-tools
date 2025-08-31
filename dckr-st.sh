@@ -537,7 +537,7 @@ install_sillytavern() {
 
     echo
     log_action "是否需要进行 Docker 镜像速度测试并自动配置加速源？"
-    fn_print_info "如果您的服务器网络环境良好（尤其是在海外），可以输入 n 跳过。"
+    fn_print_info "如果自己配置过镜像加速，可以输入 n 跳过。"
     read -r -p "请输入 [Y/n] (默认: Y, 直接回车即可开始测试): " confirm_test < /dev/tty
     confirm_test=${confirm_test:-y}
 
