@@ -1,15 +1,13 @@
 #!/bin/bash
 
 # ===================================================================================
-# SillyTavern 一站式部署助手 v2.4
+# SillyTavern 一站式部署助手 v2.5
 #
-# 作者: Qingjue
+# 作者: Qingjue | 整合与优化: AI
 #
-# 整合了服务器初始化、1Panel安装 和 SillyTavern Docker部署功能。
-# v2.1: 修复了步骤1重启后清屏导致关键信息丢失的问题。
-# v2.2: 将Docker镜像源优化逻辑移回步骤3，确保模块独立性。
-# v2.3: 全面优化脚本内的中文提示，使其更清晰、简洁、专业。
 # v2.4: 恢复所有长耗时命令的输出，实现完全透明；更新主菜单标题。
+# v2.5: 增强Docker镜像测速的超时机制，防止卡死；
+#       增加1Panel安装Docker失败后的备用安装方案，提高健壮性。
 # ===================================================================================
 
 # --- 全局颜色定义 ---
@@ -165,13 +163,30 @@ install_1panel() {
         fi
     fi
 
-    echo -e "\n${BLUE}--- 步骤 1/2: 运行 1Panel 官方安装脚本 ---${NC}"
+    echo -e "\n${BLUE}--- 步骤 1/3: 运行 1Panel 官方安装脚本 ---${NC}"
     echo -e "${YELLOW}即将进入 1Panel 交互式安装界面，需根据其提示操作。${NC}"
     echo -e "按 ${GREEN}Enter${NC} 键开始..."
     read -p ""
     bash -c "$(curl -sSL https://resource.fit2cloud.com/1panel/package/v2/quick_start.sh)"
     
-    echo -e "\n${BLUE}--- 步骤 2/2: 自动化后续配置 ---${NC}"
+    echo -e "\n${BLUE}--- 步骤 2/3: 检查并确保 Docker 已安装 ---${NC}"
+    if ! command -v docker &> /dev/null; then
+        warn "1Panel 安装程序似乎已结束，但未检测到 Docker。"
+        action "正在尝试使用备用脚本安装 Docker..."
+        bash <(curl -sSL https://linuxmirrors.cn/docker.sh)
+        
+        # Final check
+        if ! command -v docker &> /dev/null; then
+            echo -e "\n${RED}[错误] 备用脚本也未能成功安装 Docker。请检查网络或手动安装 Docker 后再继续。${NC}"
+            return 1
+        else
+            info "备用脚本成功安装 Docker！"
+        fi
+    else
+        info "Docker 已成功安装。"
+    fi
+
+    echo -e "\n${BLUE}--- 步骤 3/3: 自动化后续配置 ---${NC}"
     REAL_USER="${SUDO_USER:-$(whoami)}"
     if [ "$REAL_USER" != "root" ]; then
         if groups "$REAL_USER" | grep -q '\bdocker\b'; then
@@ -243,7 +258,8 @@ install_sillytavern() {
             local pull_target="hello-world"; local display_name="$mirror"; local timeout_duration=10
             if [[ "$mirror" == "docker.io" ]]; then timeout_duration=15; display_name="Official Docker Hub"; else pull_target="${mirror#https://}/library/hello-world"; fi
             echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..."; local start_time=$(date +%s.%N)
-            if timeout "$timeout_duration" docker pull "$pull_target" > /dev/null 2>&1; then
+            # FIX: Added -k flag for forceful kill after an initial timeout, preventing hangs.
+            if timeout -k 15 "$timeout_duration" docker pull "$pull_target" > /dev/null 2>&1; then
                 local end_time=$(date +%s.%N); local duration=$(echo "$end_time - $start_time" | bc); printf " ${GREEN}%.2f 秒${NC}\n" "$duration"; results+="${duration}|${mirror}|${display_name}\n"
                 docker rmi "$pull_target" > /dev/null 2>&1 || true
                 if [[ "$mirror" == "docker.io" ]]; then official_hub_ok=true; break; fi
