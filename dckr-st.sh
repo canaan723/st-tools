@@ -323,10 +323,10 @@ install_sillytavern() {
         fn_print_info "--- 依赖环境诊断开始 ---"
         for pkg in "bc" "curl" "tar"; do
             if command -v "$pkg" &> /dev/null; then
-                declare -g "${pkg^^}_VER"="$(fn_get_cleaned_version_num "$($pkg --version 2>/dev/null || echo 'N/A')")"
-                declare -g "${pkg^^}_STATUS"="OK"
+                declare "${pkg^^}_VER"="$(fn_get_cleaned_version_num "$($pkg --version 2>/dev/null || echo 'N/A')")"
+                declare "${pkg^^}_STATUS"="OK"
             else
-                declare -g "${pkg^^}_STATUS"="Not Found"
+                declare "${pkg^^}_STATUS"="Not Found"
             fi
         done
         if ! command -v docker &> /dev/null; then
