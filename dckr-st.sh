@@ -1,13 +1,12 @@
 #!/bin/bash
 
 # ===================================================================================
-# SillyTavern 一站式部署助手 v2.5
+# SillyTavern 一站式部署助手 v2.7
 #
-# 作者: Qingjue | 整合与优化: AI
+# 作者: Qingjue
 #
-# v2.4: 恢复所有长耗时命令的输出，实现完全透明；更新主菜单标题。
-# v2.5: 增强Docker镜像测速的超时机制，防止卡死；
-#       增加1Panel安装Docker失败后的备用安装方案，提高健壮性。
+# v2.6: 优化Docker镜像测速，隐藏超时产生的"Killed"信息；增加配置的镜像源数量至5个。
+# v2.7: 修正镜像拉取时的带宽预估表；修复拉取完成后表格重复显示的问题。
 # ===================================================================================
 
 # --- 全局颜色定义 ---
@@ -258,8 +257,7 @@ install_sillytavern() {
             local pull_target="hello-world"; local display_name="$mirror"; local timeout_duration=10
             if [[ "$mirror" == "docker.io" ]]; then timeout_duration=15; display_name="Official Docker Hub"; else pull_target="${mirror#https://}/library/hello-world"; fi
             echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..."; local start_time=$(date +%s.%N)
-            # FIX: Added -k flag for forceful kill after an initial timeout, preventing hangs.
-            if timeout -k 15 "$timeout_duration" docker pull "$pull_target" > /dev/null 2>&1; then
+            if (timeout -k 15 "$timeout_duration" docker pull "$pull_target" >/dev/null) 2>/dev/null; then
                 local end_time=$(date +%s.%N); local duration=$(echo "$end_time - $start_time" | bc); printf " ${GREEN}%.2f 秒${NC}\n" "$duration"; results+="${duration}|${mirror}|${display_name}\n"
                 docker rmi "$pull_target" > /dev/null 2>&1 || true
                 if [[ "$mirror" == "docker.io" ]]; then official_hub_ok=true; break; fi
@@ -278,7 +276,7 @@ install_sillytavern() {
                 fn_print_info "以下是可用的备用镜像及其速度："; echo "$sorted_mirrors" | grep . | awk -F'|' '{ printf "  - %-30s %.2f 秒\n", $3, $1 }'
                 echo -ne "${YELLOW}是否配置最快的可用镜像? [Y/n]: ${NC}"; read -r confirm_config < /dev/tty; confirm_config=${confirm_config:-y}
                 if [[ "$confirm_config" =~ ^[Yy]$ ]]; then
-                    local best_mirrors=($(echo "$sorted_mirrors" | head -n 3 | cut -d'|' -f2)); fn_print_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"; local mirrors_json=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//'); local config_content="{\n  \"registry-mirrors\": [${mirrors_json}]\n}"; fn_apply_docker_config "$config_content"
+                    local best_mirrors=($(echo "$sorted_mirrors" | head -n 5 | cut -d'|' -f2)); fn_print_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"; local mirrors_json=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//'); local config_content="{\n  \"registry-mirrors\": [${mirrors_json}]\n}"; fn_apply_docker_config "$config_content"
                 else fn_print_info "选择不配置镜像，操作跳过。"; fi
             fi
         fi
@@ -350,7 +348,8 @@ install_sillytavern() {
             clear; echo -e "${time_estimate_table}"; echo -e "\n${CYAN}--- 实时拉取进度 (下方为最新日志) ---${NC}"; grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists' "$PULL_LOG" | tail -n 5; sleep 1
         done
         trap - EXIT; rm -f "$PULL_LOG"; wait $pid; local exit_code=$?
-        clear; echo -e "${time_estimate_table}"; echo -e "\n${CYAN}--- 实时拉取进度 ---${NC}"
+        # FIX: Clear screen once and show only the final result, no duplicate table.
+        clear
         if [ $exit_code -ne 0 ]; then fn_print_error "拉取 Docker 镜像失败！请检查网络或镜像源配置。"; else fn_print_success "镜像拉取成功！"; fi
     }
 
@@ -429,13 +428,15 @@ EOF
     fn_print_success "docker-compose.yml 文件创建成功！"
 
     fn_print_step "[ 4/5 ] 初始化与配置"
+    # FIX: Corrected bandwidth table
     fn_print_info "即将拉取 SillyTavern 镜像，下载期间将持续显示预估时间。"; TIME_ESTIMATE_TABLE=$(cat <<EOF
   下载速度取决于网络带宽，以下为预估时间参考：
   ${YELLOW}┌──────────────────────────────────────────────────┐${NC}
   ${YELLOW}│${NC} ${CYAN}带宽${NC}      ${BOLD}|${NC} ${CYAN}下载速度${NC}    ${BOLD}|${NC} ${CYAN}预估最快时间${NC}           ${YELLOW}│${NC}
   ${YELLOW}├──────────────────────────────────────────────────┤${NC}
+  ${YELLOW}│${NC} 1M 带宽   ${BOLD}|${NC} ~0.125 MB/s ${BOLD}|${NC} 约 27 分钟             ${YELLOW}│${NC}
+  ${YELLOW}│${NC} 2M 带宽   ${BOLD}|${NC} ~0.25 MB/s  ${BOLD}|${NC} 约 13.5 分钟           ${YELLOW}│${NC}
   ${YELLOW}│${NC} 10M 带宽  ${BOLD}|${NC} ~1.25 MB/s  ${BOLD}|${NC} 约 2.7 分钟            ${YELLOW}│${NC}
-  ${YELLOW}│${NC} 50M 带宽  ${BOLD}|${NC} ~6.25 MB/s  ${BOLD}|${NC} 约 32 秒               ${YELLOW}│${NC}
   ${YELLOW}│${NC} 100M 带宽 ${BOLD}|${NC} ~12.5 MB/s  ${BOLD}|${NC} 约 16 秒               ${YELLOW}│${NC}
   ${YELLOW}└──────────────────────────────────────────────────┘${NC}
 EOF
