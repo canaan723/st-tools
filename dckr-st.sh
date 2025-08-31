@@ -1,8 +1,15 @@
 #!/bin/bash
 
 # ===================================================================================
-# SillyTavern 一站式部署助手 v2.3
+# SillyTavern 一站式部署助手 v2.4
+#
 # 作者: Qingjue
+#
+# 整合了服务器初始化、1Panel安装 和 SillyTavern Docker部署功能。
+# v2.1: 修复了步骤1重启后清屏导致关键信息丢失的问题。
+# v2.2: 将Docker镜像源优化逻辑移回步骤3，确保模块独立性。
+# v2.3: 全面优化脚本内的中文提示，使其更清晰、简洁、专业。
+# v2.4: 恢复所有长耗时命令的输出，实现完全透明；更新主菜单标题。
 # ===================================================================================
 
 # --- 全局颜色定义 ---
@@ -67,7 +74,7 @@ run_initialization() {
     step_title "步骤 4" "安装Fail2ban"
     info "目的: 自动阻止有恶意登录企图的IP地址。"
     action "正在更新包列表并安装 Fail2ban..."
-    apt-get update > /dev/null 2>&1
+    apt-get update
     apt-get install -y fail2ban
     systemctl enable fail2ban
     systemctl start fail2ban
@@ -88,8 +95,8 @@ run_initialization() {
 
     step_title "步骤 6" "升级系统软件包"
     info "目的: 应用最新的安全补丁和软件更新。"
-    action "正在执行系统升级，过程可能需要一些时间..."
-    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" > /dev/null 2>&1
+    action "正在执行系统升级，此过程可能需要一些时间，请耐心等待..."
+    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
     info "所有软件包已升级至最新版本。"
 
     local SWAP_SIZE="2G"
@@ -121,7 +128,7 @@ EOF
 
     step_title "步骤 8" "应用配置并准备重启"
     action "正在应用内核参数..."
-    sysctl -p > /dev/null 2>&1
+    sysctl -p
     info "所有配置已写入。服务器需要重启以使所有更改完全生效。"
     action "是否立即重启服务器? [Y/n]"
     read -n 1 -r REPLY
@@ -151,7 +158,7 @@ install_1panel() {
     
     if ! command -v curl &> /dev/null; then
         echo -e "${YELLOW}[INFO] 未检测到 curl，正在尝试安装...${NC}"
-        apt-get update > /dev/null && apt-get install -y curl
+        apt-get update && apt-get install -y curl
         if ! command -v curl &> /dev/null; then
             echo -e "${RED}[错误] curl 安装失败，请手动安装后再试。${NC}"
             return 1
@@ -216,12 +223,12 @@ install_sillytavern() {
             fn_print_info "正在写入新的 Docker 镜像配置..."; echo -e "$config_content" | sudo tee /etc/docker/daemon.json > /dev/null
         fi
         fn_print_info "正在重启 Docker 服务以应用配置..."
-        if sudo systemctl restart docker > /dev/null 2>&1; then
+        if sudo systemctl restart docker; then
             fn_print_success "Docker 服务已重启，新配置生效！"
         else
             fn_print_warning "Docker 服务重启失败！配置可能存在问题。"; fn_print_info "正在尝试自动回滚到默认配置..."
             sudo rm -f /etc/docker/daemon.json
-            if sudo systemctl restart docker > /dev/null 2>&1; then fn_print_success "自动回滚成功！Docker 已恢复并使用官方源。"; else
+            if sudo systemctl restart docker; then fn_print_success "自动回滚成功！Docker 已恢复并使用官方源。"; else
                 fn_print_error "自动回滚失败！请手动执行 'sudo systemctl status docker.service' 和 'sudo journalctl -xeu docker.service' 进行排查。"
             fi
         fi
@@ -229,24 +236,15 @@ install_sillytavern() {
 
     fn_speed_test_and_configure_mirrors() {
         fn_print_info "正在检测 Docker 镜像源可用性..."
-        local mirrors=(
-            "docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live"
-            "https://dockerproxy.1panel.live" "https://hub.rat.dev" "https://docker.m.ixdev.cn"
-            "https://hub2.nat.tf" "https://docker.1panel.dev" "https://docker.amingg.com"
-            "https://docker.xuanyuan.me" "https://dytt.online" "https://lispy.org"
-            "https://docker.xiaogenban1993.com" "https://docker-0.unsee.tech" "https://666860.xyz"
-        )
+        local mirrors=( "docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live" "https://dockerproxy.1panel.live" "https://hub.rat.dev" "https://docker.m.ixdev.cn" "https://hub2.nat.tf" "https://docker.1panel.dev" "https://docker.amingg.com" "https://docker.xuanyuan.me" "https://dytt.online" "https://lispy.org" "https://docker.xiaogenban1993.com" "https://docker-0.unsee.tech" "https://666860.xyz" )
         docker rmi hello-world > /dev/null 2>&1 || true
         local results=""; local official_hub_ok=false
         for mirror in "${mirrors[@]}"; do
-            local pull_target="hello-world"
-            local display_name="$mirror"
-            local timeout_duration=10
+            local pull_target="hello-world"; local display_name="$mirror"; local timeout_duration=10
             if [[ "$mirror" == "docker.io" ]]; then timeout_duration=15; display_name="Official Docker Hub"; else pull_target="${mirror#https://}/library/hello-world"; fi
             echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..."; local start_time=$(date +%s.%N)
             if timeout "$timeout_duration" docker pull "$pull_target" > /dev/null 2>&1; then
-                local end_time=$(date +%s.%N); local duration=$(echo "$end_time - $start_time" | bc)
-                printf " ${GREEN}%.2f 秒${NC}\n" "$duration"; results+="${duration}|${mirror}|${display_name}\n"
+                local end_time=$(date +%s.%N); local duration=$(echo "$end_time - $start_time" | bc); printf " ${GREEN}%.2f 秒${NC}\n" "$duration"; results+="${duration}|${mirror}|${display_name}\n"
                 docker rmi "$pull_target" > /dev/null 2>&1 || true
                 if [[ "$mirror" == "docker.io" ]]; then official_hub_ok=true; break; fi
             else
@@ -254,11 +252,8 @@ install_sillytavern() {
             fi
         done
         if [ "$official_hub_ok" = true ]; then
-            if ! grep -q "registry-mirrors" /etc/docker/daemon.json 2>/dev/null; then
-                fn_print_success "官方 Docker Hub 可访问，且未配置任何镜像，无需操作。"
-            else
-                fn_print_success "官方 Docker Hub 可访问。"; echo -ne "${YELLOW}是否清除本地镜像配置并使用官方源? [Y/n]: ${NC}"
-                read -r confirm_clear < /dev/tty; confirm_clear=${confirm_clear:-y}
+            if ! grep -q "registry-mirrors" /etc/docker/daemon.json 2>/dev/null; then fn_print_success "官方 Docker Hub 可访问，且未配置任何镜像，无需操作。"; else
+                fn_print_success "官方 Docker Hub 可访问。"; echo -ne "${YELLOW}是否清除本地镜像配置并使用官方源? [Y/n]: ${NC}"; read -r confirm_clear < /dev/tty; confirm_clear=${confirm_clear:-y}
                 if [[ "$confirm_clear" =~ ^[Yy]$ ]]; then fn_apply_docker_config ""; else fn_print_info "选择保留当前镜像配置，操作跳过。"; fi
             fi
         else
@@ -267,11 +262,8 @@ install_sillytavern() {
                 fn_print_info "以下是可用的备用镜像及其速度："; echo "$sorted_mirrors" | grep . | awk -F'|' '{ printf "  - %-30s %.2f 秒\n", $3, $1 }'
                 echo -ne "${YELLOW}是否配置最快的可用镜像? [Y/n]: ${NC}"; read -r confirm_config < /dev/tty; confirm_config=${confirm_config:-y}
                 if [[ "$confirm_config" =~ ^[Yy]$ ]]; then
-                    local best_mirrors=($(echo "$sorted_mirrors" | head -n 3 | cut -d'|' -f2))
-                    fn_print_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"; local mirrors_json=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
-                    local config_content="{\n  \"registry-mirrors\": [${mirrors_json}]\n}"; fn_apply_docker_config "$config_content"
-                else
-                    fn_print_info "选择不配置镜像，操作跳过。"; fi
+                    local best_mirrors=($(echo "$sorted_mirrors" | head -n 3 | cut -d'|' -f2)); fn_print_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"; local mirrors_json=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//'); local config_content="{\n  \"registry-mirrors\": [${mirrors_json}]\n}"; fn_apply_docker_config "$config_content"
+                else fn_print_info "选择不配置镜像，操作跳过。"; fi
             fi
         fi
     }
@@ -339,8 +331,7 @@ install_sillytavern() {
         local compose_file="$1"; local docker_compose_cmd="$2"; local time_estimate_table="$3"; local PULL_LOG; PULL_LOG=$(mktemp)
         trap 'rm -f "$PULL_LOG"' EXIT; $docker_compose_cmd -f "$compose_file" pull > "$PULL_LOG" 2>&1 &
         local pid=$!; while kill -0 $pid 2>/dev/null; do
-            clear; echo -e "${time_estimate_table}"; echo -e "\n${CYAN}--- 实时拉取进度 (下方为最新日志) ---${NC}"
-            grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists' "$PULL_LOG" | tail -n 5; sleep 1
+            clear; echo -e "${time_estimate_table}"; echo -e "\n${CYAN}--- 实时拉取进度 (下方为最新日志) ---${NC}"; grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists' "$PULL_LOG" | tail -n 5; sleep 1
         done
         trap - EXIT; rm -f "$PULL_LOG"; wait $pid; local exit_code=$?
         clear; echo -e "${time_estimate_table}"; echo -e "\n${CYAN}--- 实时拉取进度 ---${NC}"
@@ -422,7 +413,7 @@ EOF
     fn_print_success "docker-compose.yml 文件创建成功！"
 
     fn_print_step "[ 4/5 ] 初始化与配置"
-    fn_print_info "即将拉取 SillyTavern 镜像，下载期间将显示预估时间。"; TIME_ESTIMATE_TABLE=$(cat <<EOF
+    fn_print_info "即将拉取 SillyTavern 镜像，下载期间将持续显示预估时间。"; TIME_ESTIMATE_TABLE=$(cat <<EOF
   下载速度取决于网络带宽，以下为预估时间参考：
   ${YELLOW}┌──────────────────────────────────────────────────┐${NC}
   ${YELLOW}│${NC} ${CYAN}带宽${NC}      ${BOLD}|${NC} ${CYAN}下载速度${NC}    ${BOLD}|${NC} ${CYAN}预估最快时间${NC}           ${YELLOW}│${NC}
@@ -434,12 +425,12 @@ EOF
 EOF
 )
     fn_pull_with_progress_bar "$COMPOSE_FILE" "$DOCKER_COMPOSE_CMD" "$TIME_ESTIMATE_TABLE"
-    fn_print_info "正在进行首次启动以生成官方配置文件..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
+    fn_print_info "正在进行首次启动以生成官方配置文件..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d
     timeout=60; while [ ! -f "$CONFIG_FILE" ]; do if [ $timeout -eq 0 ]; then $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs; fn_print_error "等待配置文件生成超时！请检查日志输出。"; fi; sleep 1; ((timeout--)); done
-    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down > /dev/null; fn_print_success "config.yaml 文件已生成！"
+    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down; fn_print_success "config.yaml 文件已生成！"
     fn_apply_config_changes
     if [[ "$run_mode" == "1" ]]; then fn_print_success "单用户模式配置写入完成！"; else
-        fn_print_info "正在临时启动服务以设置管理员..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null
+        fn_print_info "正在临时启动服务以设置管理员..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d
         fn_verify_container_health "$CONTAINER_NAME"; fn_wait_for_service
         MULTI_USER_GUIDE=$(cat <<EOF
 
@@ -467,7 +458,7 @@ EOF
     fi
 
     fn_print_step "[ 5/5 ] 启动并验证服务"
-    fn_print_info "正在应用最终配置并重启服务..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate > /dev/null
+    fn_print_info "正在应用最终配置并重启服务..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate
     fn_verify_container_health "$CONTAINER_NAME"; fn_wait_for_service; fn_display_final_info
 
     while true; do
@@ -489,10 +480,10 @@ EOF
 main_menu() {
     while true; do
         tput reset
-        echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║              ${BOLD}SillyTavern 一站式部署助手 v1.0${NC}                    ${CYAN}║${NC}"
-        echo -e "${CYAN}║                  ${BOLD}by Qingjue | XHS:826702880${NC}                      ${CYAN}║${NC}"
-        echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════════╝${NC}"
+        echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.0${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
+        echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
         echo -e "\n${BOLD}使用说明:${NC}"
         echo -e "  • ${YELLOW}全新服务器${NC}: 请按 ${GREEN}1 -> 2 -> 3${NC} 的顺序分步执行。"
         echo -e "  • ${YELLOW}已有Docker环境${NC}: 可直接从【步骤3】开始。"
