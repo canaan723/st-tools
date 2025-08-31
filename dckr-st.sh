@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # ===================================================================================
-# SillyTavern 一站式部署助手 v2.8
+# SillyTavern 一站式部署助手 v2.9
 #
-# 作者: Qingjue
+# 作者: Qingjue | 整合与优化: AI
 #
-# v2.7: 修正镜像拉取时的带宽预估表；修复拉取完成后表格重复显示的问题。
-# v2.8: 关键修复 - 在执行docker-compose前切换到正确的项目目录，解决
-#       脚本异常退出和潜在的 "getcwd" 错误。
+# v2.8: 关键修复 - 在执行docker-compose前切换到正确的项目目录。
+# v2.9: 精简docker-compose命令的运行时输出，使其更简洁；
+#       仅在命令失败时显示详细日志，提升用户体验。
 # ===================================================================================
 
 # --- 全局颜色定义 ---
@@ -406,7 +406,6 @@ install_sillytavern() {
     if [ -d "$INSTALL_DIR" ]; then fn_confirm_and_delete_dir "$INSTALL_DIR" "$CONTAINER_NAME"; fi
     fn_create_project_structure
     
-    # FIX: Change to the project directory before running any docker-compose commands.
     cd "$INSTALL_DIR"
     fn_print_info "工作目录已切换至: $(pwd)"
 
@@ -446,12 +445,23 @@ EOF
 EOF
 )
     fn_pull_with_progress_bar "$COMPOSE_FILE" "$DOCKER_COMPOSE_CMD" "$TIME_ESTIMATE_TABLE"
-    fn_print_info "正在进行首次启动以生成官方配置文件..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d
-    timeout=60; while [ ! -f "$CONFIG_FILE" ]; do if [ $timeout -eq 0 ]; then $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs; fn_print_error "等待配置文件生成超时！请检查日志输出。"; fi; sleep 1; ((timeout--)); done
-    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down; fn_print_success "config.yaml 文件已生成！"
+    fn_print_info "正在进行首次启动以生成官方配置文件..."
+    # FIX: Suppress docker-compose output for a cleaner experience.
+    if ! $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null 2>&1; then
+        fn_print_error "首次启动容器失败！请检查以下日志："
+        $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50
+        exit 1
+    fi
+    timeout=60; while [ ! -f "$CONFIG_FILE" ]; do if [ $timeout -eq 0 ]; then $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50; fn_print_error "等待配置文件生成超时！请检查日志输出。"; fi; sleep 1; ((timeout--)); done
+    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down > /dev/null 2>&1; fn_print_success "config.yaml 文件已生成！"
     fn_apply_config_changes
     if [[ "$run_mode" == "1" ]]; then fn_print_success "单用户模式配置写入完成！"; else
-        fn_print_info "正在临时启动服务以设置管理员..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d
+        fn_print_info "正在临时启动服务以设置管理员..."
+        if ! $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null 2>&1; then
+            fn_print_error "临时启动容器以设置管理员失败！请检查以下日志："
+            $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50
+            exit 1
+        fi
         fn_verify_container_health "$CONTAINER_NAME"; fn_wait_for_service
         MULTI_USER_GUIDE=$(cat <<EOF
 
@@ -479,7 +489,12 @@ EOF
     fi
 
     fn_print_step "[ 5/5 ] 启动并验证服务"
-    fn_print_info "正在应用最终配置并重启服务..."; $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate
+    fn_print_info "正在应用最终配置并重启服务..."
+    if ! $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate > /dev/null 2>&1; then
+        fn_print_error "应用最终配置并启动服务失败！请检查以下日志："
+        $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50
+        exit 1
+    fi
     fn_verify_container_health "$CONTAINER_NAME"; fn_wait_for_service; fn_display_final_info
 
     while true; do
