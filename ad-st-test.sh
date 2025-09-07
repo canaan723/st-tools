@@ -1,8 +1,8 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v2.3 (错误修正稳定版)
+# SillyTavern 助手 v2.4 (终极容错版)
 # 作者: Qingjue | 小红书号: 826702880
-# v2.3: 修复了镜像测速输出污染和备份菜单无法勾选的严重 BUG。
+# v2.4: 引入智能换源重试机制，彻底解决因 Termux 镜像源质量问题导致的安装失败。
 
 # --- 脚本环境与色彩定义 ---
 BOLD='\033[1m'
@@ -15,7 +15,7 @@ NC='\033[0m'
 # --- 核心配置 ---
 ST_DIR="$HOME/SillyTavern"
 MIRROR_LIST=(
- #   "https://github.com/SillyTavern/SillyTavern.git"
+    "https://github.com/SillyTavern/SillyTavern.git"
     "https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
     "https://git.723123.xyz/gh/SillyTavern/SillyTavern.git"
     "https://xget.xi-xu.me/gh/SillyTavern/SillyTavern.git"
@@ -48,63 +48,37 @@ fn_print_error_exit() { echo -e "\n${RED}✗ ${BOLD}$1${NC}\n${RED}流程已终�
 fn_press_any_key() { echo -e "\n${CYAN}请按任意键返回...${NC}"; read -n 1 -s; }
 fn_check_command() { command -v "$1" >/dev/null 2>&1; }
 
-# [修复] 将所有提示信息重定向到 stderr (>&2)，避免污染 stdout
 fn_find_fastest_mirror() {
     if [ ${#CACHED_MIRRORS[@]} -gt 0 ]; then
         fn_print_success "已使用缓存的测速结果。" >&2
-        printf '%s\n' "${CACHED_MIRRORS[@]}"
-        return 0
+        printf '%s\n' "${CACHED_MIRRORS[@]}"; return 0
     fi
-
     fn_print_warning "开始测试 Git 镜像连通性与速度..." >&2
     local github_url="https://github.com/SillyTavern/SillyTavern.git"
     local temp_sorted_list=()
-
     echo -e "  [1/?] 正在优先测试 GitHub 官方源..." >&2
     if timeout 15s git ls-remote "$github_url" HEAD >/dev/null 2>&1; then
         fn_print_success "GitHub 官方源直连可用，将优先使用！" >&2
         temp_sorted_list=("$github_url")
     else
         fn_print_error "GitHub 官方源连接超时，将测试其他镜像..." >&2
-        local other_mirrors=()
-        for mirror in "${MIRROR_LIST[@]}"; do [[ "$mirror" != "$github_url" ]] && other_mirrors+=("$mirror"); done
+        local other_mirrors=(); for mirror in "${MIRROR_LIST[@]}"; do [[ "$mirror" != "$github_url" ]] && other_mirrors+=("$mirror"); done
         if [ ${#other_mirrors[@]} -eq 0 ]; then fn_print_error "没有其他可用的镜像进行测试。" >&2; return 1; fi
-        
         echo -e "${YELLOW}已启动并行测试，等待所有镜像响应...${NC}" >&2
         local results_file; results_file=$(mktemp)
         local pids=()
-        
         for mirror_url in "${other_mirrors[@]}"; do
-            (
-                local mirror_host; mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
-                local start_time=$(date +%s.%N)
-                if timeout 15s git ls-remote "$mirror_url" HEAD >/dev/null 2>&1; then
-                    local end_time=$(date +%s.%N)
-                    local elapsed_time=$(echo "$end_time - $start_time" | bc)
-                    echo "$elapsed_time $mirror_url" >> "$results_file"
-                    echo -e "  [${GREEN}✓${NC}] 测试成功: ${CYAN}${mirror_host}${NC} - 耗时 ${GREEN}${elapsed_time}s${NC}" >&2
-                else
-                    echo -e "  [${RED}✗${NC}] 测试失败: ${CYAN}${mirror_host}${NC} - ${RED}连接超时或无效${NC}" >&2
-                fi
-            ) &
+            ( local mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||'); local start_time=$(date +%s.%N); if timeout 15s git ls-remote "$mirror_url" HEAD >/dev/null 2>&1; then local end_time=$(date +%s.%N); local elapsed_time=$(echo "$end_time - $start_time" | bc); echo "$elapsed_time $mirror_url" >> "$results_file"; echo -e "  [${GREEN}✓${NC}] 测试成功: ${CYAN}${mirror_host}${NC} - 耗时 ${GREEN}${elapsed_time}s${NC}" >&2; else echo -e "  [${RED}✗${NC}] 测试失败: ${CYAN}${mirror_host}${NC} - ${RED}连接超时或无效${NC}" >&2; fi ) &
             pids+=($!)
         done
         wait "${pids[@]}"
-
         if [ ! -s "$results_file" ]; then fn_print_error "所有镜像都无法连接。" >&2; rm -f "$results_file"; return 1; fi
-        
         local fastest_line=$(sort -n "$results_file" | head -n 1)
         fn_print_success "已选定最快镜像: $(echo "$fastest_line" | awk '{print $2}' | sed -e 's|https://||' -e 's|/.*$||') (耗时 $(echo "$fastest_line" | awk '{print $1}')s)" >&2
         mapfile -t temp_sorted_list < <(sort -n "$results_file" | awk '{print $2}')
         rm -f "$results_file"
     fi
-
-    if [ ${#temp_sorted_list[@]} -gt 0 ]; then
-        CACHED_MIRRORS=("${temp_sorted_list[@]}")
-        printf '%s\n' "${CACHED_MIRRORS[@]}"
-    else
-        return 1
-    fi
+    if [ ${#temp_sorted_list[@]} -gt 0 ]; then CACHED_MIRRORS=("${temp_sorted_list[@]}"); printf '%s\n' "${CACHED_MIRRORS[@]}"; else return 1; fi
 }
 
 fn_run_npm_install_with_retry() {
@@ -115,8 +89,7 @@ fn_run_npm_install_with_retry() {
     npm cache clean --force >/dev/null 2>&1
     npm install --no-audit --no-fund --omit=dev && fn_print_success "依赖包重试同步成功。" && return 0
     fn_print_warning "国内镜像安装失败，将切换到NPM官方源进行最后尝试..."
-    npm config delete registry
-    local exit_code; npm install --no-audit --no-fund --omit=dev; exit_code=$?
+    npm config delete registry; local exit_code; npm install --no-audit --no-fund --omit=dev; exit_code=$?
     fn_print_warning "正在将 NPM 源恢复为国内镜像..."; npm config set registry https://registry.npmmirror.com
     if [ $exit_code -eq 0 ]; then fn_print_success "使用官方源安装依赖成功！"; return 0; else fn_print_error "所有安装尝试均失败。"; return 1; fi
 }
@@ -125,29 +98,63 @@ fn_run_npm_install_with_retry() {
 #   核心功能模块
 # =========================================================================
 
+# [新增] 智能换源与更新函数，带自动重试
+fn_update_source_with_retry() {
+    fn_print_header "1/5: 配置软件源"
+    echo -e "${YELLOW}即将开始配置 Termux 软件源...${NC}"
+    echo -e "  - 稍后会弹出一个蓝白色窗口，请根据提示操作。"
+    echo -e "  - ${GREEN}推荐：${NC}依次选择 ${BOLD}第一项${NC} -> ${BOLD}第三项${NC} (国内最优)。"
+    echo -e "\n${CYAN}请按任意键以继续...${NC}"; read -n 1 -s
+    
+    for i in {1..3}; do
+        termux-change-repo
+        fn_print_warning "正在更新软件包列表 (第 $i/3 次尝试)..."
+        if pkg update -y; then
+            fn_print_success "软件源配置并更新成功！"
+            return 0
+        fi
+        if [ $i -lt 3 ]; then
+            fn_print_error "当前选择的镜像源似乎有问题，正在尝试自动切换..."
+            sleep 2
+        fi
+    done
+
+    fn_print_error "已尝试 3 次，但均无法成功更新软件源。"
+    return 1
+}
+
 main_start() {
     clear; fn_print_header "启动 SillyTavern"
     if [ ! -f "$ST_DIR/start.sh" ]; then fn_print_warning "SillyTavern 尚未安装，请先部署。"; fn_press_any_key; return; fi
     cd "$ST_DIR" || fn_print_error_exit "无法进入 SillyTavern 目录。"
     echo -e "正在配置NPM镜像并准备启动环境..."; npm config set registry https://registry.npmmirror.com
-    echo -e "${YELLOW}环境准备就绪，正在启动SillyTavern服务...${NC}"; echo -e "${YELLOW}首次启动或更新后会自动安装依赖，耗时可能较长，请耐心等待...${NC}"
+    echo -e "${YELLOW}环境准备就绪，正在启动SillyTavern服务...${NC}"; echo -e "${YELLOW}首次启动或更新后会自动安装依赖，耗时可能较长...${NC}"
     bash start.sh
     echo -e "\n${YELLOW}SillyTavern 已停止运行。${NC}"; fn_press_any_key
 }
 
 main_install() {
     clear; fn_print_header "SillyTavern 首次部署向导"
-    fn_print_header "1/5: 配置软件源"; echo -e "${YELLOW}即将开始配置 Termux 软件源...${NC}"; echo -e "  - 稍后会弹出一个蓝白色窗口，请根据提示操作。"; echo -e "  - ${GREEN}推荐：${NC}依次选择 ${BOLD}第一项${NC} -> ${BOLD}第三项${NC} (国内最优)。"; echo -e "\n${CYAN}请按任意键以继续...${NC}"; read -n 1 -s; termux-change-repo
-    fn_print_header "2/5: 安装核心依赖"; echo -e "${YELLOW}正在更新软件包列表并安装核心依赖...${NC}"; yes | pkg update && yes | pkg upgrade || fn_print_error_exit "软件源更新失败！"; yes | pkg install git nodejs-lts rsync zip termux-api coreutils gawk bc || fn_print_error_exit "核心依赖安装失败！"; fn_print_success "核心依赖安装完毕。"
+    
+    # [改造] 调用新的智能换源函数
+    if ! fn_update_source_with_retry; then
+        fn_print_error_exit "软件源配置失败，无法继续安装。"
+    fi
+
+    fn_print_header "2/5: 安装核心依赖"; echo -e "${YELLOW}正在安装核心依赖...${NC}"
+    yes | pkg upgrade -y # 升级已安装的包
+    yes | pkg install git nodejs-lts rsync zip termux-api coreutils gawk bc || fn_print_error_exit "核心依赖安装失败！"
+    fn_print_success "核心依赖安装完毕。"
+
     fn_print_header "3/5: 下载 ST 主程序"
     if [ -f "$ST_DIR/start.sh" ]; then fn_print_warning "检测到完整的 SillyTavern 安装，跳过下载。"; elif [ -d "$ST_DIR" ] && [ -n "$(ls -A "$ST_DIR")" ]; then fn_print_error_exit "目录 $ST_DIR 已存在但安装不完整。请手动删除该目录后再试。"; else
         mapfile -t sorted_mirrors < <(fn_find_fastest_mirror)
-        if [ ${#sorted_mirrors[@]} -eq 0 ]; then fn_print_error_exit "所有镜像均测试失败，无法下载主程序。"; fi
+        if [ ${#sorted_mirrors[@]} -eq 0 ]; then fn_print_error_exit "Git 镜像测试失败，无法下载主程序。"; fi
         local download_success=false
         for mirror_url in "${sorted_mirrors[@]}"; do
-            local mirror_host; mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
+            local mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
             fn_print_warning "正在尝试从镜像 [${mirror_host}] 下载 (${REPO_BRANCH} 分支)..."
-            if git clone --depth 1 -b "$REPO_BRANCH" "$mirror_url" "$ST_DIR"; then fn_print_success "主程序下载完成。"; download_success=true; break; else fn_print_error "使用镜像 [${mirror_host}] 下载失败！正在切换下一条线路..."; rm -rf "$ST_DIR"; fi
+            if git clone --depth 1 -b "$REPO_BRANCH" "$mirror_url" "$ST_DIR"; then fn_print_success "主程序下载完成。"; download_success=true; break; else fn_print_error "使用镜像 [${mirror_host}] 下载失败！正在切换..."; rm -rf "$ST_DIR"; fi
         done
         if ! $download_success; then fn_print_error_exit "所有线路均下载失败，请检查网络后重试。"; fi
     fi
@@ -162,10 +169,10 @@ main_update_st() {
     if [ ! -d "$ST_DIR/.git" ]; then fn_print_warning "未找到Git仓库，请先完整部署。"; fn_press_any_key; return; fi
     cd "$ST_DIR" || fn_print_error_exit "无法进入 SillyTavern 目录: $ST_DIR"
     mapfile -t sorted_mirrors < <(fn_find_fastest_mirror)
-    if [ ${#sorted_mirrors[@]} -eq 0 ]; then fn_print_error_exit "所有镜像均测试失败，无法更新。"; fi
+    if [ ${#sorted_mirrors[@]} -eq 0 ]; then fn_print_error_exit "所有 Git 镜像均测试失败，无法更新。"; fi
     local update_success=false
     for mirror_url in "${sorted_mirrors[@]}"; do
-        local mirror_host; mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
+        local mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
         fn_print_warning "正在尝试使用镜像 [${mirror_host}] 更新..."
         git remote set-url origin "$mirror_url"
         local git_output; git_output=$(git pull origin "$REPO_BRANCH" 2>&1)
@@ -173,7 +180,7 @@ main_update_st() {
             fn_print_success "代码更新成功。"; if fn_run_npm_install_with_retry; then update_success=true; fi; break
         else
             if echo "$git_output" | grep -qE "overwritten by merge|Please commit|unmerged files"; then
-                clear; fn_print_header "检测到更新冲突！"; fn_print_warning "原因: 你可能修改过酒馆的文件，导致无法自动合并。"; echo "--- 冲突文件预览 ---"; echo "$git_output" | grep -E "^\s+" | head -n 5; echo "--------------------"
+                clear; fn_print_header "检测到更新冲突！"; fn_print_warning "原因: 你可能修改过酒馆的文件。"; echo "--- 冲突文件预览 ---"; echo "$git_output" | grep -E "^\s+" | head -n 5; echo "--------------------"
                 echo -e "\n请选择操作方式：\n  [${GREEN}回车${NC}] ${BOLD}自动备份并重新安装 (推荐)${NC}\n  [1]    ${YELLOW}强制覆盖更新 (危险)${NC}\n  [0]    ${CYAN}放弃更新${NC}"
                 read -p "请输入选项: " choice
                 case "$choice" in
@@ -197,87 +204,16 @@ main_update_st() {
 }
 
 main_update_script() {
-    clear; fn_print_header "更新助手脚本"; echo -e "${YELLOW}正在从 Gitee 下载新版本...${NC}"; local temp_file; temp_file=$(mktemp)
-    if ! curl -L -o "$temp_file" "$SCRIPT_URL"; then rm -f "$temp_file"; fn_print_warning "下载失败，请检查网络。"; elif cmp -s "$SCRIPT_SELF_PATH" "$temp_file"; then rm -f "$temp_file"; fn_print_success "当前已是最新版本。"; else
+    clear; fn_print_header "更新助手脚本"; echo -e "${YELLOW}正在从 Gitee 下载新版本...${NC}"; local temp_file=$(mktemp)
+    if ! curl -L -o "$temp_file" "$SCRIPT_URL"; then rm -f "$temp_file"; fn_print_warning "下载失败。"; elif cmp -s "$SCRIPT_SELF_PATH" "$temp_file"; then rm -f "$temp_file"; fn_print_success "当前已是最新版本。"; else
         sed -i 's/\r$//' "$temp_file"; chmod +x "$temp_file"; mv "$temp_file" "$SCRIPT_SELF_PATH"; rm -f "$UPDATE_FLAG_FILE"; echo -e "${GREEN}助手更新成功！正在自动重启...${NC}"; sleep 2; exec "$SCRIPT_SELF_PATH" --updated
     fi; fn_press_any_key
 }
 
-check_for_updates_on_start() { ( local temp_file; temp_file=$(mktemp); if curl -L -s --connect-timeout 10 -o "$temp_file" "$SCRIPT_URL"; then if ! cmp -s "$SCRIPT_SELF_PATH" "$temp_file"; then touch "$UPDATE_FLAG_FILE"; else rm -f "$UPDATE_FLAG_FILE"; fi; fi; rm -f "$temp_file" ) & }
-
-fn_create_shortcut() {
-    local BASHRC_FILE="$HOME/.bashrc"; local ALIAS_CMD="alias st='\"$SCRIPT_SELF_PATH\"'"; local ALIAS_COMMENT="# SillyTavern 助手快捷命令"
-    if ! grep -qF "$ALIAS_CMD" "$BASHRC_FILE"; then chmod +x "$SCRIPT_SELF_PATH"; echo -e "\n$ALIAS_COMMENT\n$ALIAS_CMD" >> "$BASHRC_FILE"; fn_print_success "已创建快捷命令 'st'。请重启 Termux 或执行 'source ~/.bashrc' 生效。"; fi
-}
-
-main_manage_autostart() {
-    local BASHRC_FILE="$HOME/.bashrc"; local AUTOSTART_CMD="[ -f \"$SCRIPT_SELF_PATH\" ] && \"$SCRIPT_SELF_PATH\""; grep -qF "$AUTOSTART_CMD" "$BASHRC_FILE" && is_set=true || is_set=false
-    if [[ "$1" == "set_default" ]]; then if ! $is_set; then echo -e "\n# SillyTavern 助手\n$AUTOSTART_CMD" >> "$BASHRC_FILE"; fn_print_success "已设置 Termux 启动时自动运行本助手。"; fi; return; fi
-    clear; fn_print_header "管理助手自启"
-    if $is_set; then
-        echo -e "当前状态: ${GREEN}已启用${NC}"; read -p "是否取消自启？ (y/n): " confirm
-        if [[ "$confirm" =~ ^[yY]$ ]]; then sed -i "/# SillyTavern 助手/d" "$BASHRC_FILE"; sed -i "\|$AUTOSTART_CMD|d" "$BASHRC_FILE"; fn_print_success "已取消自启。"; fi
-    else
-        echo -e "当前状态: ${RED}未启用${NC}"; read -p "是否设置自启？ (y/n): " confirm
-        if [[ "$confirm" =~ ^[yY]$ ]]; then echo -e "\n# SillyTavern 助手\n$AUTOSTART_CMD" >> "$BASHRC_FILE"; fn_print_success "已成功设置自启。"; fi
-    fi; fn_press_any_key
-}
-
-# --- 数据管理与文档部分 ---
-run_backup_interactive() {
-    clear; fn_print_header "创建自定义备份"
-    if [ ! -f "$ST_DIR/start.sh" ]; then fn_print_warning "SillyTavern 尚未安装。"; fn_press_any_key; return; fi
-    cd "$ST_DIR" || fn_print_error_exit "无法进入 SillyTavern 目录: $ST_DIR"
-    declare -A ALL_PATHS=(["./data"]="用户数据" ["./public/scripts/extensions/third-party"]="前端扩展" ["./plugins"]="后端扩展" ["./config.yaml"]="服务器配置")
-    local options=("./data" "./public/scripts/extensions/third-party" "./plugins" "./config.yaml")
-    local default_selection=("./data" "./plugins" "./public/scripts/extensions/third-party")
-    local selection_to_load=(); if [ -f "$CONFIG_FILE" ]; then mapfile -t selection_to_load < "$CONFIG_FILE"; fi
-    if [ ${#selection_to_load[@]} -eq 0 ]; then selection_to_load=("${default_selection[@]}"); fi
-    declare -A selection_status; for key in "${options[@]}"; do selection_status["$key"]=false; done
-    for key in "${selection_to_load[@]}"; do if [[ -v selection_status["$key"] ]]; then selection_status["$key"]=true; fi; done
-
-    while true; do
-        clear; fn_print_header "请选择要备份的内容"; echo "输入数字可切换勾选状态。"
-        for i in "${!options[@]}"; do
-            local key="${options[$i]}"; local description="${ALL_PATHS[$key]}"
-            if ${selection_status[$key]}; then printf "  [%-2d] ${GREEN}[✓] %s${NC}\n" "$((i+1))" "$key"; else printf "  [%-2d] [ ] %s${NC}\n" "$((i+1))" "$key"; fi
-            printf "      ${CYAN}(%s)${NC}\n" "$description"
-        done
-        echo -e "      ${GREEN}[回车] 开始备份${NC}      ${RED}[0] 取消备份${NC}"
-        read -p "请操作: " user_choice
-        case "$user_choice" in
-            "") break ;;
-            0) fn_print_warning "备份已取消。"; fn_press_any_key; return ;;
-            *)
-                if [[ "$user_choice" =~ ^[0-9]+$ ]] && [ "$user_choice" -ge 1 ] && [ "$user_choice" -le "${#options[@]}" ]; then
-                    local selected_key="${options[$((user_choice-1))]}"
-                    # [修复] 使用标准的 if/else 替换不兼容的 ! 语法
-                    if ${selection_status[$selected_key]}; then
-                        selection_status[$selected_key]=false
-                    else
-                        selection_status[$selected_key]=true
-                    fi
-                else
-                    fn_print_warning "无效输入。"; sleep 1
-                fi ;;
-        esac
-    done
-
-    local paths_to_backup=(); for key in "${options[@]}"; do if ${selection_status[$key]}; then if [ -e "$key" ]; then paths_to_backup+=("$key"); else fn_print_warning "路径 '$key' 不存在，已跳过。"; fi; fi; done
-    if [ ${#paths_to_backup[@]} -eq 0 ]; then fn_print_warning "未选择任何有效项目，备份已取消。"; fn_press_any_key; return; fi
-    mkdir -p "$BACKUP_ROOT_DIR"; local timestamp=$(date +"%Y-%m-%d_%H-%M"); local backup_name="ST_备份_${timestamp}"; local backup_zip_path="${BACKUP_ROOT_DIR}/${backup_name}.zip"
-    echo -e "\n${YELLOW}正在压缩文件...${NC}"; echo "包含项目:"; for item in "${paths_to_backup[@]}"; do echo "  - $item"; done
-    local exclude_params=(-x "*/.git/*" -x "*/_cache/*" -x "*.log" -x "*/backups/*")
-    if ! zip -rq "$backup_zip_path" "${paths_to_backup[@]}" "${exclude_params[@]}"; then fn_print_error "备份失败！"; fn_press_any_key; return; fi
-    printf "%s\n" "${paths_to_backup[@]}" > "$CONFIG_FILE"; fn_print_success "备份成功：${backup_name}.zip"
-    mapfile -t all_backups < <(find "$BACKUP_ROOT_DIR" -maxdepth 1 -name "*.zip" -printf "%T@ %p\n" | sort -nr | cut -d' ' -f2-)
-    if [ "${#all_backups[@]}" -gt $BACKUP_LIMIT ]; then
-        fn_print_warning "备份数量超过上限 (${#all_backups[@]}/${BACKUP_LIMIT})，正在清理旧备份..."
-        local backups_to_delete=("${all_backups[@]:$BACKUP_LIMIT}")
-        for old_backup in "${backups_to_delete[@]}"; do rm "$old_backup"; echo "  - 已删除: $(basename "$old_backup")"; done
-        fn_print_success "清理完成。"
-    fi; fn_press_any_key
-}
+check_for_updates_on_start() { ( local temp_file=$(mktemp); if curl -L -s --connect-timeout 10 -o "$temp_file" "$SCRIPT_URL"; then if ! cmp -s "$SCRIPT_SELF_PATH" "$temp_file"; then touch "$UPDATE_FLAG_FILE"; else rm -f "$UPDATE_FLAG_FILE"; fi; fi; rm -f "$temp_file" ) & }
+fn_create_shortcut() { local BASHRC_FILE="$HOME/.bashrc"; local ALIAS_CMD="alias st='\"$SCRIPT_SELF_PATH\"'"; local ALIAS_COMMENT="# SillyTavern 助手快捷命令"; if ! grep -qF "$ALIAS_CMD" "$BASHRC_FILE"; then chmod +x "$SCRIPT_SELF_PATH"; echo -e "\n$ALIAS_COMMENT\n$ALIAS_CMD" >> "$BASHRC_FILE"; fn_print_success "已创建快捷命令 'st'。请重启 Termux 或执行 'source ~/.bashrc' 生效。"; fi; }
+main_manage_autostart() { local BASHRC_FILE="$HOME/.bashrc"; local AUTOSTART_CMD="[ -f \"$SCRIPT_SELF_PATH\" ] && \"$SCRIPT_SELF_PATH\""; grep -qF "$AUTOSTART_CMD" "$BASHRC_FILE" && is_set=true || is_set=false; if [[ "$1" == "set_default" ]]; then if ! $is_set; then echo -e "\n# SillyTavern 助手\n$AUTOSTART_CMD" >> "$BASHRC_FILE"; fn_print_success "已设置 Termux 启动时自动运行本助手。"; fi; return; fi; clear; fn_print_header "管理助手自启"; if $is_set; then echo -e "当前状态: ${GREEN}已启用${NC}"; read -p "是否取消自启？ (y/n): " confirm; if [[ "$confirm" =~ ^[yY]$ ]]; then sed -i "/# SillyTavern 助手/d" "$BASHRC_FILE"; sed -i "\|$AUTOSTART_CMD|d" "$BASHRC_FILE"; fn_print_success "已取消自启。"; fi; else echo -e "当前状态: ${RED}未启用${NC}"; read -p "是否设置自启？ (y/n): " confirm; if [[ "$confirm" =~ ^[yY]$ ]]; then echo -e "\n# SillyTavern 助手\n$AUTOSTART_CMD" >> "$BASHRC_FILE"; fn_print_success "已成功设置自启。"; fi; fi; fn_press_any_key; }
+run_backup_interactive() { clear; fn_print_header "创建自定义备份"; if [ ! -f "$ST_DIR/start.sh" ]; then fn_print_warning "SillyTavern 尚未安装。"; fn_press_any_key; return; fi; cd "$ST_DIR" || fn_print_error_exit "无法进入 SillyTavern 目录: $ST_DIR"; declare -A ALL_PATHS=(["./data"]="用户数据" ["./public/scripts/extensions/third-party"]="前端扩展" ["./plugins"]="后端扩展" ["./config.yaml"]="服务器配置"); local options=("./data" "./public/scripts/extensions/third-party" "./plugins" "./config.yaml"); local default_selection=("./data" "./plugins" "./public/scripts/extensions/third-party"); local selection_to_load=(); if [ -f "$CONFIG_FILE" ]; then mapfile -t selection_to_load < "$CONFIG_FILE"; fi; if [ ${#selection_to_load[@]} -eq 0 ]; then selection_to_load=("${default_selection[@]}"); fi; declare -A selection_status; for key in "${options[@]}"; do selection_status["$key"]=false; done; for key in "${selection_to_load[@]}"; do if [[ -v selection_status["$key"] ]]; then selection_status["$key"]=true; fi; done; while true; do clear; fn_print_header "请选择要备份的内容"; echo "输入数字可切换勾选状态。"; for i in "${!options[@]}"; do local key="${options[$i]}"; local description="${ALL_PATHS[$key]}"; if ${selection_status[$key]}; then printf "  [%-2d] ${GREEN}[✓] %s${NC}\n" "$((i+1))" "$key"; else printf "  [%-2d] [ ] %s${NC}\n" "$((i+1))" "$key"; fi; printf "      ${CYAN}(%s)${NC}\n" "$description"; done; echo -e "      ${GREEN}[回车] 开始备份${NC}      ${RED}[0] 取消备份${NC}"; read -p "请操作: " user_choice; case "$user_choice" in "") break ;; 0) fn_print_warning "备份已取消。"; fn_press_any_key; return ;; *) if [[ "$user_choice" =~ ^[0-9]+$ ]] && [ "$user_choice" -ge 1 ] && [ "$user_choice" -le "${#options[@]}" ]; then local selected_key="${options[$((user_choice-1))]}"; if ${selection_status[$selected_key]}; then selection_status[$selected_key]=false; else selection_status[$selected_key]=true; fi; else fn_print_warning "无效输入。"; sleep 1; fi ;; esac; done; local paths_to_backup=(); for key in "${options[@]}"; do if ${selection_status[$key]}; then if [ -e "$key" ]; then paths_to_backup+=("$key"); else fn_print_warning "路径 '$key' 不存在，已跳过。"; fi; fi; done; if [ ${#paths_to_backup[@]} -eq 0 ]; then fn_print_warning "未选择任何有效项目，备份已取消。"; fn_press_any_key; return; fi; mkdir -p "$BACKUP_ROOT_DIR"; local timestamp=$(date +"%Y-%m-%d_%H-%M"); local backup_name="ST_备份_${timestamp}"; local backup_zip_path="${BACKUP_ROOT_DIR}/${backup_name}.zip"; echo -e "\n${YELLOW}正在压缩文件...${NC}"; echo "包含项目:"; for item in "${paths_to_backup[@]}"; do echo "  - $item"; done; local exclude_params=(-x "*/.git/*" -x "*/_cache/*" -x "*.log" -x "*/backups/*"); if ! zip -rq "$backup_zip_path" "${paths_to_backup[@]}" "${exclude_params[@]}"; then fn_print_error "备份失败！"; fn_press_any_key; return; fi; printf "%s\n" "${paths_to_backup[@]}" > "$CONFIG_FILE"; fn_print_success "备份成功：${backup_name}.zip"; mapfile -t all_backups < <(find "$BACKUP_ROOT_DIR" -maxdepth 1 -name "*.zip" -printf "%T@ %p\n" | sort -nr | cut -d' ' -f2-); if [ "${#all_backups[@]}" -gt $BACKUP_LIMIT ]; then fn_print_warning "备份数量超过上限 (${#all_backups[@]}/${BACKUP_LIMIT})，清理旧备份..."; local backups_to_delete=("${all_backups[@]:$BACKUP_LIMIT}"); for old_backup in "${backups_to_delete[@]}"; do rm "$old_backup"; echo "  - 已删除: $(basename "$old_backup")"; done; fn_print_success "清理完成。"; fi; fn_press_any_key; }
 main_migration_guide() { clear; fn_print_header "数据迁移 / 恢复指南"; echo -e "${YELLOW}请按以下步骤操作：${NC}\n  1. 找到备份压缩包 (位于: ${CYAN}${BACKUP_ROOT_DIR}/${NC})\n  2. 将压缩包复制到 SillyTavern 根目录 (位于: ${CYAN}${ST_DIR}/${NC})\n  3. 在根目录中，将压缩包 '解压到当前目录'。\n  4. 如提示文件已存在，请选择 ${YELLOW}'全部覆盖'${NC}。"; fn_press_any_key; }
 run_delete_backup() { clear; fn_print_header "删除旧备份"; mkdir -p "$BACKUP_ROOT_DIR"; mapfile -t backup_files < <(find "$BACKUP_ROOT_DIR" -maxdepth 1 -name "*.zip" -printf "%T@ %p\n" | sort -nr | cut -d' ' -f2-); if [ ${#backup_files[@]} -eq 0 ]; then fn_print_warning "未找到任何备份文件。"; fn_press_any_key; return; fi; echo -e "检测到以下备份 (当前/上限: ${#backup_files[@]}/${BACKUP_LIMIT}):"; for i in "${!backup_files[@]}"; do local file="${backup_files[$i]}"; local size=$(du -h "$file" | cut -f1); printf "    [%-2d] %-40s (%s)\n" "$((i+1))" "$(basename "$file")" "$size"; done; read -p "输入要删除的备份编号 (其他键取消): " choice; if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#backup_files[@]}" ]; then fn_print_warning "操作已取消。"; fn_press_any_key; return; fi; local chosen_backup="${backup_files[$((choice-1))]}"; read -p "确认删除 '$(basename "$chosen_backup")' 吗？(y/n): " confirm; if [[ "$confirm" =~ ^[yY]$ ]]; then rm "$chosen_backup"; fn_print_success "备份已删除。"; else fn_print_warning "操作已取消。"; fi; fn_press_any_key; }
 main_data_management_menu() { while true; do clear; fn_print_header "SillyTavern 数据管理"; echo -e "      [1] ${GREEN}创建自定义备份${NC}\n      [2] ${CYAN}数据迁移/恢复指南${NC}\n      [3] ${RED}删除旧备份${NC}\n      [0] ${CYAN}返回主菜单${NC}"; read -p "    请输入选项: " choice; case $choice in 1) run_backup_interactive ;; 2) main_migration_guide ;; 3) run_delete_backup ;; 0) break ;; *) fn_print_warning "无效输入。"; sleep 1 ;; esac; done; }
@@ -294,7 +230,7 @@ while true; do
     clear
     echo -e "${CYAN}${BOLD}"; cat << "EOF"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v2.3      ║
+    ║      SillyTavern 助手 v2.4      ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
