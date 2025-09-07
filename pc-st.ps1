@@ -1,10 +1,10 @@
 ﻿[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-# SillyTavern 助手 v1.2
+# SillyTavern 助手 v1.3
 # 原始作者: Qingjue | 小红书号: 826702880
 
 # --- 核心配置 ---
-$ScriptSelfUpdateUrl = "https://gitee.com/canaan723/st-assistant/raw/main/pc-st.ps1"
+$ScriptSelfUpdateUrl = "https://gitee.com/canaan723/st-tools/raw/main/pc-st.ps1"
 $HelpDocsUrl = "https://stdocs.723123.xyz"
 $ScriptBaseDir = Split-Path -Path $PSCommandPath -Parent
 $ST_Dir = Join-Path $ScriptBaseDir "SillyTavern"
@@ -194,7 +194,7 @@ Check-ForUpdatesOnStart
 while ($true) {
     Clear-Host; Write-Host @"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v1.2      ║
+    ║      SillyTavern 助手 v1.3      ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 "@ -ForegroundColor Cyan
