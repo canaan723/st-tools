@@ -1,35 +1,18 @@
-# 工作流名称
-name: Sync to Gitee
+name: Sync main to Gitee
 
-# 触发条件：当代码被 push 到 GitHub 的 main 分支时触发
 on:
   push:
     branches: [ main ]
 
-# 定义任务
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      # 步骤1: 检出 GitHub 仓库的源码
       - name: Checkout
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
 
-      # 步骤2: 推送到 Gitee
-      - name: Push to Gitee
-        uses: wearerequired/git-mirror-action@master
-        env:
-          # 注意: source-repo 是指要推送的源，这里留空，默认就是当前仓库
-          # destination-repo 是指目标仓库
-          SSH_PRIVATE_KEY: ${{ secrets.GITEE_TOKEN }} # 这里借用 SSH_PRIVATE_KEY 来传递 TOKEN
-        with:
-          source-repo: 'https://github.com/${{ github.repository }}.git'
-          # 目标仓库地址，使用我们刚刚设置的 Secret
-          destination-repo: 'https://${{ secrets.GITEE_USERNAME }}:${{ secrets.GITEE_TOKEN }}@gitee.com/canaan723/st-tools.git'
-
-      # 步骤3: 额外强制推送到 Gitee 的 master 分支
-      - name: Force push to Gitee master
+      - name: Push to Gitee main branch
         run: |
-          git push --force "https://${{ secrets.GITEE_USERNAME }}:${{ secrets.GITEE_TOKEN }}@gitee.com/canaan723/st-tools.git" main:master
+          git push --force "https://canaan723:${{ secrets.GITEE_TOKEN }}@gitee.com/canaan723/st-tools.git" main:main
