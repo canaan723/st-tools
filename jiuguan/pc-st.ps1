@@ -1,6 +1,6 @@
 ﻿[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-# SillyTavern 助手 v1.3
+# SillyTavern 助手 v1.4
 # 原始作者: Qingjue | 小红书号: 826702880
 
 # --- 核心配置 ---
@@ -194,7 +194,7 @@ Check-ForUpdatesOnStart
 while ($true) {
     Clear-Host; Write-Host @"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v1.3      ║
+    ║      SillyTavern 助手 v1.4      ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 "@ -ForegroundColor Cyan
