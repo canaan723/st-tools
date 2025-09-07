@@ -15,7 +15,7 @@ NC='\033[0m'
 # --- 核心配置 ---
 ST_DIR="$HOME/SillyTavern"
 MIRROR_LIST=(
-    "https://github.com/SillyTavern/SillyTavern.git"
+ #   "https://github.com/SillyTavern/SillyTavern.git"
     "https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
     "https://git.723123.xyz/gh/SillyTavern/SillyTavern.git"
     "https://xget.xi-xu.me/gh/SillyTavern/SillyTavern.git"
