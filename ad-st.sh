@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v1.5
+# SillyTavern 助手 v1.6
 # 作者: Qingjue | 小红书号: 826702880
 
 # --- 脚本环境与色彩定义 ---
@@ -27,7 +27,7 @@ REPO_BRANCH="release"                                                       # �
 BACKUP_ROOT_DIR="$ST_DIR/_我的备份"                                           # 备份文件的存放目录
 BACKUP_LIMIT=10                                                             # 最多保留的备份文件数量
 SCRIPT_SELF_PATH=$(readlink -f "$0")                                        # 脚本自身路径
-SCRIPT_URL="https://gitee.com/canaan723/st-assistant/raw/master/ad-st.sh"   # 脚本更新源地址
+SCRIPT_URL="https://gitee.com/canaan723/st-tools/raw/main/ad-st.sh"   # 脚本更新源地址
 CONFIG_FILE="$HOME/.st_assistant.conf"                                      # 保存用户备份偏好的配置文件
 UPDATE_FLAG_FILE="/data/data/com.termux/files/usr/tmp/.st_assistant_update_flag" # 脚本更新标记文件
 
@@ -512,7 +512,7 @@ while true; do
     clear
     echo -e "${CYAN}${BOLD}"; cat << "EOF"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v1.5      ║
+    ║      SillyTavern 助手 v1.6      ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
