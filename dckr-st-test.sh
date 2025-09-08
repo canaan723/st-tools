@@ -623,6 +623,10 @@ fn_optimize_docker
     SERVER_IP=$(fn_get_public_ip)
 
     fn_print_step "[ 2/5 ] 选择运行模式与路径"
+
+    # 定义统一的默认路径
+    local default_path="$USER_HOME/sillytavern"
+
     echo "选择运行模式："
     echo -e "  [1] ${CYAN}单用户模式${NC} (弹窗认证，适合个人使用)"
     echo -e "  [2] ${CYAN}多用户模式${NC} (独立登录页，适合多人或单人使用)"
@@ -630,26 +634,25 @@ fn_optimize_docker
     read -p "请输入选项数字 [默认为 1]: " run_mode < /dev/tty
     run_mode=${run_mode:-1}
 
-    local default_path
+    # 根据模式执行特定操作，但不改变路径逻辑
     case "$run_mode" in
         1)
             read -p "请输入自定义用户名: " single_user < /dev/tty
             read -p "请输入自定义密码: " single_pass < /dev/tty
             if [ -z "$single_user" ] || [ -z "$single_pass" ]; then fn_print_error "用户名和密码不能为空！"; fi
-            default_path="$USER_HOME/sillytavern"
             ;;
         2)
-            default_path="$USER_HOME/sillytavern"
+            # 多用户模式无需额外输入
             ;;
         3)
             log_warn "已进入维护者模式，此模式需要手动准备特殊文件。"
-            default_path="$USER_HOME/sillytavern-maintainer"
             ;;
         *)
             fn_print_error "无效输入，脚本已终止."
             ;;
     esac
 
+    # 统一的路径设置提示
     read -rp "请输入安装路径 [默认: ${default_path}]: " custom_path < /dev/tty
     INSTALL_DIR="${custom_path:-$default_path}"
     log_info "安装路径最终设置为: ${INSTALL_DIR}"
