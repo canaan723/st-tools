@@ -52,24 +52,10 @@ fn_optimize_docker() {
         return
     fi
 
-    if ! command -v jq &> /dev/null; then
-        log_info "优化需要 jq 工具，正在尝试安装..."
-        if [ "$IS_DEBIAN_LIKE" = true ]; then
-            apt-get update && apt-get install -y jq
-        else
-            if command -v yum &> /dev/null; then yum install -y epel-release && yum install -y jq; elif command -v dnf &> /dev/null; then dnf install -y epel-release && dnf install -y jq; fi
-        fi
-        if ! command -v jq &> /dev/null; then log_error "jq 安装失败，请手动安装后重试。"; fi
-        log_success "jq 安装成功！"
-    fi
-
     local DAEMON_JSON="/etc/docker/daemon.json"
-    local final_config
-    final_config=$(cat "$DAEMON_JSON" 2>/dev/null || echo "{}")
-
-    # --- 步骤1: 镜像测速与配置 (全新逻辑) ---
-    log_info "正在检测 Docker 镜像源可用性 (将测试所有源以找出最优解)..."
-    # 使用了更完整的镜像列表
+    
+    # --- 步骤1: 镜像测速与配置 ---
+    log_info "正在检测 Docker 镜像源可用性..."
     local mirrors=(
         "docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live" 
         "https://dockerproxy.1panel.live" "https://hub.rat.dev" "https://docker.m.ixdev.cn" 
@@ -78,7 +64,7 @@ fn_optimize_docker() {
         "https://docker-0.unsee.tech" "https://666860.xyz"
     )
     docker rmi hello-world > /dev/null 2>&1 || true
-    local results=""; local official_hub_time=9999
+    local results=""; local official_hub_ok=false
     for mirror in "${mirrors[@]}"; do
         local pull_target="hello-world"; local display_name="$mirror"; local timeout_duration=10
         if [[ "$mirror" == "docker.io" ]]; then timeout_duration=15; display_name="Official Docker Hub"; else pull_target="${mirror#https://}/library/hello-world"; fi
@@ -87,40 +73,40 @@ fn_optimize_docker() {
         if (timeout -k 15 "$timeout_duration" docker pull "$pull_target" >/dev/null) 2>/dev/null; then
             local end_time; end_time=$(date +%s.%N); local duration; duration=$(echo "$end_time - $start_time" | bc)
             printf " ${GREEN}%.2f 秒${NC}\n" "$duration"
-            results+="${duration}|${mirror}|${display_name}\n"
+            if [[ "$mirror" != "docker.io" ]]; then results+="${duration}|${mirror}|${display_name}\n"; fi
             docker rmi "$pull_target" > /dev/null 2>&1 || true
-            if [[ "$mirror" == "docker.io" ]]; then official_hub_time=$duration; fi
+            if [[ "$mirror" == "docker.io" ]]; then official_hub_ok=true; break; fi
         else
             echo -e " ${RED}超时或失败${NC}"
         fi
     done
 
-    local mirrors_json="[]"
-    # 决策逻辑：只有当官方源非常慢(>10秒)或超时时，才启用备用镜像
-    if (($(echo "$official_hub_time > 10" | bc -l))); then
-        log_warn "官方 Docker Hub 连接缓慢或超时，将自动配置最快的备用镜像。"
-        local sorted_mirrors; sorted_mirrors=$(echo -e "$results" | grep -v '|docker.io|' | LC_ALL=C sort -n)
-        if [ -n "$sorted_mirrors" ]; then
-            # 这里您可以将 head -n 4 改为 3 或其他数字
-            local best_mirrors; best_mirrors=($(echo "$sorted_mirrors" | head -n 5 | cut -d'|' -f2))
+    # --- 步骤2: 构建JSON配置字符串 (纯Shell) ---
+    local log_config_part='"log-driver": "json-file", "log-opts": {"max-size": "50m", "max-file": "3"}'
+    local mirrors_config_part=""
+
+    if [ "$official_hub_ok" = true ]; then
+        log_success "官方 Docker Hub 可用，将直接使用官方源，不配置镜像加速。"
+    else
+        log_warn "官方 Docker Hub 连接失败，将自动从可用备用镜像中配置最快的源。"
+        if [ -n "$results" ]; then
+            local best_mirrors; best_mirrors=($(echo -e "$results" | LC_ALL=C sort -n | head -n 4 | cut -d'|' -f2))
             log_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
-            mirrors_json=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//' | awk '{print "["$0"]"}')
+            local mirrors_json_array; mirrors_json_array=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
+            mirrors_config_part="\"registry-mirrors\": [${mirrors_json_array}]"
         else
             log_warn "所有备用镜像均测试失败！将不配置镜像加速。"
         fi
-    else
-        log_success "官方 Docker Hub 速度良好 ( ${official_hub_time}s )，无需配置镜像加速。"
     fi
-    final_config=$(echo "$final_config" | jq --argjson mirrors "$mirrors_json" '."registry-mirrors" = $mirrors')
 
-    # --- 步骤2: 日志配置 ---
-    log_info "正在添加日志大小限制配置..."
-    final_config=$(echo "$final_config" | jq '. + {"log-driver": "json-file", "log-opts": {"max-size": "50m", "max-file": "3"}}')
-    log_success "日志配置已添加。"
+    local final_json_content="$log_config_part"
+    if [ -n "$mirrors_config_part" ]; then
+        final_json_content="$final_json_content, $mirrors_config_part"
+    fi
 
     # --- 步骤3: 应用所有配置 ---
     log_action "正在应用所有优化配置..."
-    echo "$final_config" | sudo tee "$DAEMON_JSON" > /dev/null
+    echo "{ ${final_json_content} }" | sudo tee "$DAEMON_JSON" > /dev/null
     if sudo systemctl restart docker; then
         log_success "Docker 服务已重启，优化配置已生效！"
     else
@@ -607,11 +593,14 @@ install_sillytavern() {
             echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"
             echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"
         elif [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
-            echo -e "\n  ${YELLOW}登录页面:${NC} ${GREEN}http://${SERVER_IP}:8000/login${NC}"
+            echo -e "\n  ${CYAN}登录页面:${NC} ${GREEN}http://${SERVER_IP}:8000/login${NC}"
+            echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}您在上一交互步骤中创建的账号${NC}"
+            echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}您在上一交互步骤中设置的密码${NC}"
         fi
         
         echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
     }
+
 
     tput reset
     echo -e "${CYAN}SillyTavern Docker 自动化安装流程${NC}"
@@ -847,7 +836,7 @@ main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.5${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.6${NC}       ${CYAN}║${NC}"
         echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
         echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 
