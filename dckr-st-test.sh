@@ -589,16 +589,18 @@ install_sillytavern() {
         echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
         echo -e "║                   ${BOLD}部署成功！尽情享受吧！${NC}                   ║"
         echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
-        echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC}"
+        
         if [[ "$run_mode" == "1" ]]; then
+            echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC}"
             echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"
             echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"
-        elif [[ "$run_mode" == "2" ]]; then
-            echo -e "  ${YELLOW}登录页面:${NC} ${GREEN}http://${SERVER_IP}:8000/login${NC}"
+        elif [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
+            echo -e "\n  ${YELLOW}登录页面:${NC} ${GREEN}http://${SERVER_IP}:8000/login${NC}"
         fi
+        
         echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
     }
-    
+
     tput reset
     echo -e "${CYAN}SillyTavern Docker 自动化安装流程${NC}"
 
@@ -833,7 +835,7 @@ main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.2${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.3${NC}       ${CYAN}║${NC}"
         echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
         echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 
