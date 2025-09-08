@@ -837,7 +837,7 @@ main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.1${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.11${NC}       ${CYAN}║${NC}"
         echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
         echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 
@@ -876,8 +876,13 @@ main_menu() {
         echo -e "${BLUE}===========================================================================${NC}"
         echo -e " ${YELLOW}[q] 退出脚本${NC}\n"
 
-        local valid_options="q,3"
-        if [ "$IS_DEBIAN_LIKE" = true ]; then valid_options+=",1,2,4"; fi
+        local options_str="3" # 核心选项总是3
+        if [ "$IS_DEBIAN_LIKE" = true ]; then
+            # 如果是Debian，构建一个有序的列表
+            options_str="1,2,3,4"
+        fi
+        # 无论如何，最后都加上 q
+        local valid_options="${options_str},q"
         read -rp "请输入选项 [${valid_options}]: " choice < /dev/tty
 
         case "$choice" in
