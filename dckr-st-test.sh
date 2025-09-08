@@ -3,6 +3,14 @@
 # SillyTavern 助手 v1.2
 # 作者: Qingjue | 小红书号: 826702880
 
+fn_ssh_rollback() {
+    echo -e "\033[33m[警告] 检测到新SSH端口连接失败，正在执行回滚操作...\033[0m"
+    mv /etc/ssh/sshd_config.bak /etc/ssh/sshd_config
+    systemctl restart sshd
+    echo -e "\033[32m[成功] SSH配置已恢复到修改前状态。端口恢复正常。\033[0m"
+    echo -e "\033[34m[提示] 脚本将退出。请检查云服务商的防火墙/NAT映射设置后重试。\033[0m"
+}
+
 set -e
 set -o pipefail
 
@@ -225,13 +233,28 @@ run_initialization() {
     log_action "正在重启SSH服务以应用新端口 ${NEW_SSH_PORT}..."
     systemctl restart sshd
     log_info "SSH服务已重启。现在必须验证新端口的连通性。"
-    echo "-----------------------------------------------------------------------"
-    log_warn "操作1: 打开一个新终端窗口。"
-    log_warn "操作2: 尝试使用新端口 ${GREEN}${NEW_SSH_PORT}${RED} 连接服务器。"
-    log_warn "操作3: ${GREEN}连接成功后${RED}，回到本窗口按 Enter 键继续。"
-    log_warn "操作4: ${RED}连接失败时${RED}，回到本窗口按 ${YELLOW}Ctrl+C${RED} 中止脚本 (22端口仍可用)。"
-    echo "-----------------------------------------------------------------------"
-    read -rp "请进行验证操作..." < /dev/tty
+
+    echo -e "\033[0;34m----------------------------------------------------------------\033[0m"
+    echo -e "\033[1;33m[重要] 请立即打开一个新的终端窗口，使用新端口 ${NEW_SSH_PORT} 尝试连接服务器。\033[0m"
+    echo -e "\033[1;33m       例如: ssh root@你的服务器IP -p ${NEW_SSH_PORT}\033[0m"
+    echo -e "\033[0;34m----------------------------------------------------------------\033[0m"
+
+    while true; do
+        read -p "新端口是否连接成功？ [Y]es, 我已成功连接 / [N]o, 连接失败请帮我恢复: " choice < /dev/tty
+        case $choice in
+            [Yy]* )
+                echo -e "\033[0;32m[成功] 确认新端口可用。SSH端口已成功更换为 ${NEW_SSH_PORT}！\033[0m"
+                break
+                ;;
+            [Nn]* )
+                fn_ssh_rollback  # 调用回滚函数
+                exit 1           # 安全退出脚本
+                ;;
+            * )
+                echo -e "\033[0;31m无效输入，请输入 Y 或 N。\033[0m"
+                ;;
+        esac
+    done
 
     log_step "步骤 6" "升级系统软件包"
     log_info "目的: 应用最新的安全补丁和软件更新。"
