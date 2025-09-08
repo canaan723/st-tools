@@ -927,7 +927,15 @@ main_menu() {
 
         case "$choice" in
             1) 
-                if [ "$IS_DEBIAN_LIKE" = true ]; then check_root; run_initialization; else log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"; sleep 2; fi
+                if [ "$IS_DEBIAN_LIKE" = true ]; then 
+                    check_root
+                    install_1panel
+                    while read -r -t 0.1; do :; done
+                    read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
+                else 
+                    log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"
+                    sleep 2
+                fi
                 ;;
             2) 
                 if [ "$IS_DEBIAN_LIKE" = true ]; then check_root; install_1panel; read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty; else log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"; sleep 2; fi
