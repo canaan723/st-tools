@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# SillyTavern 助手 v1.3
+# SillyTavern 助手 v1.4
 # 作者: Qingjue | 小红书号: 826702880
 
 fn_ssh_rollback() {
@@ -877,7 +877,7 @@ main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.3${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.4${NC}       ${CYAN}║${NC}"
         echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
         echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 
@@ -916,17 +916,25 @@ main_menu() {
         echo -e "${BLUE}===========================================================================${NC}"
         echo -e " ${YELLOW}[q] 退出脚本${NC}\n"
 
-        local options_str="3" # 核心选项总是3
+        local options_str="3"
         if [ "$IS_DEBIAN_LIKE" = true ]; then
-            # 如果是Debian，构建一个有序的列表
             options_str="1,2,3,4"
         fi
-        # 无论如何，最后都加上 q
         local valid_options="${options_str},q"
         read -rp "请输入选项 [${valid_options}]: " choice < /dev/tty
 
         case "$choice" in
             1) 
+                if [ "$IS_DEBIAN_LIKE" = true ]; then 
+                    check_root
+                    run_initialization
+                    read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
+                else 
+                    log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"
+                    sleep 2
+                fi
+                ;;
+            2) 
                 if [ "$IS_DEBIAN_LIKE" = true ]; then 
                     check_root
                     install_1panel
@@ -937,14 +945,22 @@ main_menu() {
                     sleep 2
                 fi
                 ;;
-            2) 
-                if [ "$IS_DEBIAN_LIKE" = true ]; then check_root; install_1panel; read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty; else log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"; sleep 2; fi
-                ;;
             3) 
-                check_root; install_sillytavern; read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
+                check_root
+                install_sillytavern
+                while read -r -t 0.1; do :; done
+                read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
                 ;;
             4)
-                if [ "$IS_DEBIAN_LIKE" = true ]; then run_system_cleanup; read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty; else log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"; sleep 2; fi
+                if [ "$IS_DEBIAN_LIKE" = true ]; then 
+                    run_system_cleanup
+                    # 【优化】为保持一致性，这里也加上清理输入的逻辑
+                    while read -r -t 0.1; do :; done
+                    read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
+                else 
+                    log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"
+                    sleep 2
+                fi
                 ;;
             q|Q) 
                 echo -e "\n感谢使用，再见！"; exit 0 
