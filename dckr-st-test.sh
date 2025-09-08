@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# SillyTavern 助手 v1.0
+# SillyTavern 助手 v1.12
 # 作者: Qingjue | 小红书号: 826702880
 
 set -e
@@ -18,6 +18,7 @@ readonly NC='\033[0m'
 IS_DEBIAN_LIKE=false
 DETECTED_OS="未知"
 if [ -f /etc/os-release ]; then
+    # shellcheck source=/dev/null
     . /etc/os-release
     DETECTED_OS="$PRETTY_NAME"
     if [[ "$ID" == "ubuntu" || "$ID" == "debian" ]]; then
@@ -343,6 +344,42 @@ install_sillytavern() {
     fn_print_info() { echo -e "  $1"; }
     fn_print_error() { echo -e "\n${RED}✗ 错误: $1${NC}\n" >&2; exit 1; }
 
+    # ==============================================================================
+    # --- 新增的函数：fn_check_existing_container ---
+    # ==============================================================================
+    fn_check_existing_container() {
+        # 使用 docker ps -a 来检查所有容器（包括已停止的），-q 只输出ID，-f 按名称过滤
+        # 使用 ^...$ 进行精确匹配，防止匹配到 sillytavern-db 等其他容器
+        # grep -q . 是一个技巧，用于检查前面命令的输出是否为空
+        if docker ps -a -q -f "name=^${CONTAINER_NAME}$" | grep -q .; then
+            log_warn "检测到服务器上已存在一个名为 '${CONTAINER_NAME}' 的 Docker 容器。"
+            log_info "这可能来自之前的安装。若要继续，必须先处理现有容器。"
+            echo -e "请选择操作："
+            echo -e "  [1] ${YELLOW}停止并移除现有容器，然后继续全新安装 (此操作不删除数据文件)${NC}"
+            echo -e "  [2] ${RED}退出脚本，由我手动处理${NC}"
+            
+            local choice=""
+            # 循环直到用户输入有效选项 1 或 2
+            while [[ "$choice" != "1" && "$choice" != "2" ]]; do
+                read -p "请输入选项 [1 或 2]: " choice < /dev/tty
+            done
+            
+            case "$choice" in
+                1)
+                    log_action "正在停止并移除现有容器 '${CONTAINER_NAME}'..."
+                    docker stop "${CONTAINER_NAME}" > /dev/null 2>&1 || true
+                    docker rm "${CONTAINER_NAME}" > /dev/null 2>&1 || true
+                    log_success "现有容器已成功移除。"
+                    ;;
+                2)
+                    log_info "脚本已退出。请手动执行 'docker ps -a' 查看容器状态。"
+                    exit 0
+                    ;;
+            esac
+        fi
+    }
+    # ==============================================================================
+
     fn_report_dependencies() {
         fn_print_info "--- 环境诊断摘要 ---"
         printf "${BOLD}%-18s %-20s %-20s${NC}\n" "工具" "检测到的版本" "状态"
@@ -438,8 +475,6 @@ install_sillytavern() {
         fi
         log_success "所有依赖项检查通过！"
     }
-
-
 
     fn_apply_config_changes() {
         sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # 允许外部访问/" "$CONFIG_FILE"
@@ -617,15 +652,17 @@ install_sillytavern() {
     COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
     fn_check_dependencies
 
-# 调用新的统一优化函数
-fn_optimize_docker
+    # ==============================================================================
+    # --- 调用新增的函数 ---
+    # ==============================================================================
+    fn_check_existing_container
+    # ==============================================================================
+
+    fn_optimize_docker
     
     SERVER_IP=$(fn_get_public_ip)
 
     fn_print_step "[ 2/5 ] 选择运行模式与路径"
-
-    # 定义统一的默认路径
-    local default_path="$USER_HOME/sillytavern"
 
     echo "选择运行模式："
     echo -e "  [1] ${CYAN}单用户模式${NC} (弹窗认证，适合个人使用)"
@@ -634,7 +671,6 @@ fn_optimize_docker
     read -p "请输入选项数字 [默认为 1]: " run_mode < /dev/tty
     run_mode=${run_mode:-1}
 
-    # 根据模式执行特定操作，但不改变路径逻辑
     case "$run_mode" in
         1)
             read -p "请输入自定义用户名: " single_user < /dev/tty
@@ -652,18 +688,14 @@ fn_optimize_docker
             ;;
     esac
 
-# 定义默认的上级目录
-local default_parent_path="$USER_HOME"
-read -rp "SillyTavern 将被安装在 <上级目录>/sillytavern 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
-local parent_path="${custom_parent_path:-$default_parent_path}"
-INSTALL_DIR="${parent_path}/sillytavern"
-log_info "安装路径最终设置为: ${INSTALL_DIR}"
+    local default_parent_path="$USER_HOME"
+    read -rp "SillyTavern 将被安装在 <上级目录>/sillytavern 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
+    local parent_path="${custom_parent_path:-$default_parent_path}"
+    INSTALL_DIR="${parent_path}/sillytavern"
+    log_info "安装路径最终设置为: ${INSTALL_DIR}"
 
-
-# 更新配置文件路径变量
-CONFIG_FILE="$INSTALL_DIR/config.yaml"
-COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
-
+    CONFIG_FILE="$INSTALL_DIR/config.yaml"
+    COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 
     fn_print_step "[ 3/5 ] 创建项目文件"
     if [ -d "$INSTALL_DIR" ]; then
@@ -682,7 +714,6 @@ COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
         fn_create_project_structure
     fi
 
-    
     cd "$INSTALL_DIR"
     fn_print_info "工作目录已切换至: $(pwd)"
 
@@ -837,7 +868,7 @@ main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.11${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.12${NC}       ${CYAN}║${NC}"
         echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
         echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 
