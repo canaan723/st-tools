@@ -67,11 +67,18 @@ fn_optimize_docker() {
     local final_config
     final_config=$(cat "$DAEMON_JSON" 2>/dev/null || echo "{}")
 
-    # --- 步骤1: 镜像测速与配置 ---
-    log_info "正在检测 Docker 镜像源可用性..."
-    local mirrors=( "docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live" "https://dockerproxy.1panel.live" "https://hub.rat.dev" )
+    # --- 步骤1: 镜像测速与配置 (全新逻辑) ---
+    log_info "正在检测 Docker 镜像源可用性 (将测试所有源以找出最优解)..."
+    # 使用了更完整的镜像列表
+    local mirrors=(
+        "docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live" 
+        "https://dockerproxy.1panel.live" "https://hub.rat.dev" "https://docker.m.ixdev.cn" 
+        "https://hub2.nat.tf" "https://docker.1panel.dev" "https://docker.amingg.com" "https://docker.xuanyuan.me" 
+        "https://dytt.online" "https://lispy.org" "https://docker.xiaogenban1993.com" 
+        "https://docker-0.unsee.tech" "https://666860.xyz"
+    )
     docker rmi hello-world > /dev/null 2>&1 || true
-    local results=""; local official_hub_ok=false
+    local results=""; local official_hub_time=9999
     for mirror in "${mirrors[@]}"; do
         local pull_target="hello-world"; local display_name="$mirror"; local timeout_duration=10
         if [[ "$mirror" == "docker.io" ]]; then timeout_duration=15; display_name="Official Docker Hub"; else pull_target="${mirror#https://}/library/hello-world"; fi
@@ -79,18 +86,22 @@ fn_optimize_docker() {
         local start_time; start_time=$(date +%s.%N)
         if (timeout -k 15 "$timeout_duration" docker pull "$pull_target" >/dev/null) 2>/dev/null; then
             local end_time; end_time=$(date +%s.%N); local duration; duration=$(echo "$end_time - $start_time" | bc)
-            printf " ${GREEN}%.2f 秒${NC}\n" "$duration"; results+="${duration}|${mirror}|${display_name}\n"; docker rmi "$pull_target" > /dev/null 2>&1 || true
-            if [[ "$mirror" == "docker.io" ]]; then official_hub_ok=true; break; fi
+            printf " ${GREEN}%.2f 秒${NC}\n" "$duration"
+            results+="${duration}|${mirror}|${display_name}\n"
+            docker rmi "$pull_target" > /dev/null 2>&1 || true
+            if [[ "$mirror" == "docker.io" ]]; then official_hub_time=$duration; fi
         else
-            echo -e " ${RED}超时或失败${NC}"; results+="9999|${mirror}|${display_name}\n"
+            echo -e " ${RED}超时或失败${NC}"
         fi
     done
 
     local mirrors_json="[]"
-    if [ "$official_hub_ok" = false ]; then
-        log_warn "官方 Docker Hub 连接超时，将自动配置最快的备用镜像。"
-        local sorted_mirrors; sorted_mirrors=$(echo -e "$results" | grep -v '^9999' | grep -v '|docker.io|' | LC_ALL=C sort -n)
+    # 决策逻辑：只有当官方源非常慢(>10秒)或超时时，才启用备用镜像
+    if (($(echo "$official_hub_time > 10" | bc -l))); then
+        log_warn "官方 Docker Hub 连接缓慢或超时，将自动配置最快的备用镜像。"
+        local sorted_mirrors; sorted_mirrors=$(echo -e "$results" | grep -v '|docker.io|' | LC_ALL=C sort -n)
         if [ -n "$sorted_mirrors" ]; then
+            # 这里您可以将 head -n 4 改为 3 或其他数字
             local best_mirrors; best_mirrors=($(echo "$sorted_mirrors" | head -n 5 | cut -d'|' -f2))
             log_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
             mirrors_json=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//' | awk '{print "["$0"]"}')
@@ -98,7 +109,7 @@ fn_optimize_docker() {
             log_warn "所有备用镜像均测试失败！将不配置镜像加速。"
         fi
     else
-        log_success "官方 Docker Hub 可用，将不配置镜像加速。"
+        log_success "官方 Docker Hub 速度良好 ( ${official_hub_time}s )，无需配置镜像加速。"
     fi
     final_config=$(echo "$final_config" | jq --argjson mirrors "$mirrors_json" '."registry-mirrors" = $mirrors')
 
@@ -116,6 +127,7 @@ fn_optimize_docker() {
         log_error "Docker 服务重启失败！请检查 ${DAEMON_JSON} 格式。"
     fi
 }
+
 
 run_system_cleanup() {
     check_root
@@ -835,7 +847,7 @@ main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.4${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.5${NC}       ${CYAN}║${NC}"
         echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
         echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 
