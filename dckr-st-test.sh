@@ -43,6 +43,7 @@ check_root() {
     fi
 }
 
+
 create_dynamic_swap() {
     if [ -f /swapfile ]; then
         log_info "Swap 文件 /swapfile 已存在，跳过创建。"
@@ -59,14 +60,14 @@ create_dynamic_swap() {
     # 根据内存大小决定Swap大小
     if [ "$mem_total_mb" -lt 2048 ]; then # 小于 2GB 内存
         swap_size_mb=$((mem_total_mb * 2))
-        swap_size_display="$(($swap_size_mb / 1024))G"
     elif [ "$mem_total_mb" -lt 8192 ]; then # 2GB - 8GB 内存
         swap_size_mb=$mem_total_mb
-        swap_size_display="$(($swap_size_mb / 1024))G"
     else # 大于 8GB 内存
         swap_size_mb=4096 # 设置一个 4GB 的上限
-        swap_size_display="4G"
     fi
+
+    # 使用 bc 进行浮点运算，精确计算显示值，并处理开头为"."的情况 (如 .8 -> 0.8)
+    swap_size_display=$(echo "scale=1; $swap_size_mb / 1024" | bc | sed 's/^\./0./')G
 
     log_action "检测到物理内存为 ${mem_total_mb}MB，将创建 ${swap_size_display} 的 Swap 文件..."
     fallocate -l "${swap_size_mb}M" /swapfile
@@ -76,6 +77,7 @@ create_dynamic_swap() {
     echo '/swapfile none swap sw 0 0' >> /etc/fstab
     log_success "Swap 文件创建、启用并已设置为开机自启。"
 }
+
 
 run_initialization() {
     tput reset
