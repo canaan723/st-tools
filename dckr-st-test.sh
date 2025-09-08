@@ -43,6 +43,87 @@ check_root() {
     fi
 }
 
+configure_docker_logs() {
+    check_root
+    log_action "开始配置 Docker 全局日志..."
+
+    if ! command -v jq &> /dev/null; then
+        log_info "配置需要 jq 工具，正在尝试安装..."
+        if [ "$IS_DEBIAN_LIKE" = true ]; then
+            apt-get update && apt-get install -y jq
+        else
+            # 尝试为其他系统安装，如CentOS
+            if command -v yum &> /dev/null; then
+                yum install -y epel-release && yum install -y jq
+            elif command -v dnf &> /dev/null; then
+                dnf install -y epel-release && dnf install -y jq
+            fi
+        fi
+
+        if ! command -v jq &> /dev/null; then
+            log_error "jq 安装失败。请手动安装 jq 后再试 (例如: sudo apt install jq)。"
+        fi
+        log_success "jq 安装成功！"
+    fi
+
+    local DAEMON_JSON="/etc/docker/daemon.json"
+    local current_json
+    current_json=$(cat "$DAEMON_JSON" 2>/dev/null || echo "{}")
+
+    # 定义日志配置
+    local log_config='{"log-driver": "json-file", "log-opts": {"max-size": "50m", "max-file": "3"}}'
+
+    # 使用 jq 智能合并 JSON
+    local new_json
+    new_json=$(echo "$current_json" | jq ". + $log_config")
+
+    log_info "将向 ${DAEMON_JSON} 写入以下配置:"
+    echo "$new_json" | jq . # 美化输出给用户看
+
+    read -rp "确认要应用此配置吗? [Y/n] " confirm < /dev/tty
+    if [[ ! "${confirm:-y}" =~ ^[Yy]$ ]]; then
+        log_info "操作已取消。"
+        return
+    fi
+
+    echo "$new_json" | tee "$DAEMON_JSON" > /dev/null
+    log_action "正在重启 Docker 服务以应用配置..."
+    if systemctl restart docker; then
+        log_success "Docker 服务已重启，日志配置已生效！"
+        log_warn "此配置仅对【新创建】的容器生效。"
+    else
+        log_error "Docker 服务重启失败！请检查配置文件 ${DAEMON_JSON} 格式是否正确。"
+    fi
+}
+
+run_system_cleanup() {
+    check_root
+    log_action "即将执行系统安全清理..."
+    echo -e "此操作将执行以下命令："
+    echo -e "  - ${CYAN}apt-get clean -y${NC} (清理apt缓存)"
+    echo -e "  - ${CYAN}journalctl --vacuum-size=100M${NC} (压缩日志到100M)"
+    echo -e "  - ${CYAN}docker system prune -f${NC} (清理无用的Docker镜像和容器)"
+    read -rp "确认要继续吗? [Y/n] " confirm < /dev/tty
+    if [[ ! "${confirm:-y}" =~ ^[Yy]$ ]]; then
+        log_info "操作已取消。"
+        return
+    fi
+
+    log_info "正在清理 apt 缓存..."
+    apt-get clean -y
+    log_success "apt 缓存清理完成。"
+
+    log_info "正在压缩 journald 日志..."
+    journalctl --vacuum-size=100M
+    log_success "journald 日志压缩完成。"
+
+    log_info "正在清理 Docker 系统..."
+    docker system prune -f
+    log_success "Docker 系统清理完成。"
+
+    log_info "系统安全清理已全部完成！"
+}
+
 
 create_dynamic_swap() {
     if [ -f /swapfile ]; then
@@ -359,15 +440,41 @@ install_sillytavern() {
     fn_get_cleaned_version_num() { echo "$1" | grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1; }
 
     fn_check_dependencies() {
-        fn_print_info "--- 依赖环境诊断开始 ---"
+        fn_print_info "--- 依赖环境诊断开始 (将自动安装缺失的基础工具) ---"
+        local missing_pkgs=()
+        for pkg in "bc" "curl" "tar"; do
+            if ! command -v "$pkg" &> /dev/null; then
+                missing_pkgs+=("$pkg")
+            fi
+        done
+
+        if [ ${#missing_pkgs[@]} -gt 0 ]; then
+            log_action "检测到缺失的基础工具: ${missing_pkgs[*]}，正在尝试自动安装..."
+            if [ "$IS_DEBIAN_LIKE" = true ]; then
+                apt-get update && apt-get install -y "${missing_pkgs[@]}"
+            else
+                if command -v yum &> /dev/null; then
+                    yum install -y "${missing_pkgs[@]}"
+                elif command -v dnf &> /dev/null; then
+                    dnf install -y "${missing_pkgs[@]}"
+                else
+                    log_warn "无法确定包管理器，请手动安装: ${missing_pkgs[*]}"
+                fi
+            fi
+        fi
+
+        # 重新检查并报告
+        local all_deps_ok=true
         for pkg in "bc" "curl" "tar"; do
             if command -v "$pkg" &> /dev/null; then
                 declare "${pkg^^}_VER"="$(fn_get_cleaned_version_num "$($pkg --version 2>/dev/null || echo 'N/A')")"
                 declare "${pkg^^}_STATUS"="OK"
             else
                 declare "${pkg^^}_STATUS"="Not Found"
+                all_deps_ok=false
             fi
         done
+
         if ! command -v docker &> /dev/null; then
             DOCKER_STATUS="Not Found"
         else
@@ -386,7 +493,13 @@ install_sillytavern() {
             DOCKER_COMPOSE_CMD=""
             COMPOSE_STATUS="Not Found"
         fi
+        
         fn_report_dependencies
+
+        if [ "$all_deps_ok" = false ]; then
+            fn_print_error "部分基础依赖自动安装失败，请手动安装后重试。"
+        fi
+
         if [[ "$DOCKER_STATUS" == "Not Found" || "$COMPOSE_STATUS" == "Not Found" ]]; then
             fn_print_error "未检测到 Docker 或 Docker-Compose。请返回主菜单执行【步骤2】安装。"
         fi
@@ -394,7 +507,9 @@ install_sillytavern() {
         if ! groups "$current_user" | grep -q '\bdocker\b' && [ "$(id -u)" -ne 0 ]; then
             fn_print_error "当前用户不在 docker 用户组。请执行【步骤2】或手动添加后，【重新登录SSH】再试。"
         fi
+        log_success "所有依赖项检查通过！"
     }
+
 
     fn_apply_config_changes() {
         sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # 允许外部访问/" "$CONFIG_FILE"
@@ -592,25 +707,79 @@ install_sillytavern() {
     echo "选择运行模式："
     echo -e "  [1] ${CYAN}单用户模式${NC} (弹窗认证，适合个人使用)"
     echo -e "  [2] ${CYAN}多用户模式${NC} (独立登录页，适合多人或单人使用)"
+    echo -e "  [3] ${YELLOW}开发者模式${NC} (自定义路径和挂载，勿选)"
     read -p "请输入选项数字 [默认为 1]: " run_mode < /dev/tty
     run_mode=${run_mode:-1}
+
     if [[ "$run_mode" == "1" ]]; then
         read -p "请输入自定义用户名: " single_user < /dev/tty
         read -p "请输入自定义密码: " single_pass < /dev/tty
         if [ -z "$single_user" ] || [ -z "$single_pass" ]; then fn_print_error "用户名和密码不能为空！"; fi
-    elif [[ "$run_mode" != "2" ]]; then
+        INSTALL_DIR="$USER_HOME/sillytavern"
+    elif [[ "$run_mode" == "2" ]]; then
+        INSTALL_DIR="$USER_HOME/sillytavern"
+    elif [[ "$run_mode" == "3" ]]; then
+        log_warn "已进入开发者模式。"
+        read -rp "请输入自定义安装路径 [默认: ${USER_HOME}/sillytavern-dev]: " custom_path < /dev/tty
+        if [ -z "$custom_path" ]; then
+            INSTALL_DIR="$USER_HOME/sillytavern-dev"
+        else
+            INSTALL_DIR="$custom_path"
+        fi
+        log_info "开发者模式安装路径设置为: $INSTALL_DIR"
+    else
         fn_print_error "无效输入，脚本已终止。"
     fi
+
+# 更新配置文件路径变量
+CONFIG_FILE="$INSTALL_DIR/config.yaml"
+COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
+
 
     fn_print_step "[ 3/5 ] 创建项目文件"
     if [ -d "$INSTALL_DIR" ]; then
         fn_confirm_and_delete_dir "$INSTALL_DIR" "$CONTAINER_NAME"
     fi
-    fn_create_project_structure
+
+    if [[ "$run_mode" == "3" ]]; then
+        fn_print_info "正在创建开发者模式项目目录结构..."
+        mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"
+        mkdir -p "$INSTALL_DIR/custom/images"
+        touch "$INSTALL_DIR/custom/login.html"
+        fn_print_info "正在设置文件所有权..."
+        chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
+        log_success "开发者项目目录创建并授权成功！"
+    else
+        fn_create_project_structure
+    fi
+
     
     cd "$INSTALL_DIR"
     fn_print_info "工作目录已切换至: $(pwd)"
 
+    if [[ "$run_mode" == "3" ]]; then
+    cat <<EOF > "$COMPOSE_FILE"
+services:
+  sillytavern:
+    container_name: ${CONTAINER_NAME}
+    hostname: ${CONTAINER_NAME}
+    image: ${IMAGE_NAME}
+    environment:
+      - NODE_ENV=production
+      - FORCE_COLOR=1
+    ports:
+      - "8000:8000"
+    volumes:
+      - "./:/home/node/app/config:Z"
+      - "./data:/home/node/app/data:Z"
+      - "./plugins:/home/node/app/plugins:Z"
+      - "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party:Z"
+      # --- 以下为自定义版特有挂载 ---
+      - "./custom/login.html:/home/node/app/public/login.html:Z"
+      - "./custom/images:/home/node/app/public/images:Z"
+    restart: unless-stopped
+EOF
+    else
     cat <<EOF > "$COMPOSE_FILE"
 services:
   sillytavern:
@@ -631,7 +800,14 @@ services:
       - "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party:Z"
     restart: unless-stopped
 EOF
+    fi
     log_success "docker-compose.yml 文件创建成功！"
+
+    if [[ "$run_mode" == "3" ]]; then
+        log_warn "开发者模式：请现在将您的自定义文件 (如 login.html) 放入 '$INSTALL_DIR/custom' 目录。"
+        read -rp "文件放置完毕后，按 Enter 键继续..." < /dev/tty
+    fi
+
 
     fn_print_step "[ 4/5 ] 初始化与配置"
     fn_print_info "即将拉取 SillyTavern 镜像，下载期间将持续显示预估时间。"
@@ -731,11 +907,10 @@ main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.0${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.1${NC}       ${CYAN}║${NC}"
         echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
         echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 
-        # 为非 Debian/Ubuntu 用户显示醒目的提示框
         if [ "$IS_DEBIAN_LIKE" = false ]; then
             echo -e "\n${YELLOW}╔═════════════════════════════════════════════════════════════════════════════╗${NC}"
             echo -e "${YELLOW}║                        【 系统兼容性提示 】                            ║${NC}"
@@ -743,8 +918,8 @@ main_menu() {
             echo -e "${YELLOW}║${NC} 检测到您的系统为: ${CYAN}${DETECTED_OS}${NC}"
             echo -e "${YELLOW}║${NC} 本脚本专为 Debian/Ubuntu 优化，因此部分功能在您的系统上不可用。         ${YELLOW}║${NC}"
             echo -e "${YELLOW}║─────────────────────────────────────────────────────────────────────────────║${NC}"
-            echo -e "${YELLOW}║ ${RED}不可用功能:${NC} [1] 服务器初始化, [2] 安装 1Panel                      ${YELLOW}║${NC}"
-            echo -e "${YELLOW}║ ${GREEN}可 用 功 能:${NC} [3] 部署 SillyTavern                                 ${YELLOW}║${NC}"
+            echo -e "${YELLOW}║ ${RED}不可用功能:${NC} [1], [2], [5]                                          ${YELLOW}║${NC}"
+            echo -e "${YELLOW}║ ${GREEN}可 用 功 能:${NC} [3] 部署SillyTavern, [4] Docker日志配置               ${YELLOW}║${NC}"
             echo -e "${YELLOW}║─────────────────────────────────────────────────────────────────────────────║${NC}"
             echo -e "${YELLOW}║ ${BOLD}请注意：要使用可用功能，您必须先手动安装好 Docker 和 Docker-Compose。${NC}   ${YELLOW}║${NC}"
             echo -e "${YELLOW}╚═════════════════════════════════════════════════════════════════════════════╝${NC}"
@@ -756,22 +931,25 @@ main_menu() {
 
         echo -e "\n${BLUE}================================== 菜 单 ==================================${NC}"
         
-        # 动态显示菜单项 1 和 2
         if [ "$IS_DEBIAN_LIKE" = true ]; then
             echo -e " ${GREEN}[1] 服务器初始化 (安全加固、系统优化)${NC}"
-            echo -e "     (全新服务器首次使用必须执行，执行后会自动重启)"
-            echo -e "---------------------------------------------------------------------------"
             echo -e " ${GREEN}[2] 安装 1Panel 面板 (会自动安装Docker)${NC}"
-            echo -e "     (应在步骤1完成后执行)"
-            echo -e "---------------------------------------------------------------------------"
         fi
         
         echo -e " ${GREEN}[3] 部署 SillyTavern (基于Docker)${NC}"
-        echo -e "     (请确保 Docker 环境已就绪)"
+        echo -e "---------------------------------------------------------------------------"
+        echo -e " ${CYAN}[4] Docker 优化 (配置日志大小限制)${NC}"
+
+        if [ "$IS_DEBIAN_LIKE" = true ]; then
+            echo -e " ${CYAN}[5] 系统安全清理 (清理缓存和无用镜像)${NC}"
+        fi
+
         echo -e "${BLUE}===========================================================================${NC}"
         echo -e " ${YELLOW}[q] 退出脚本${NC}\n"
 
-        read -rp "请输入选项 [q, 3 $([ "$IS_DEBIAN_LIKE" = true ] && echo ', 1, 2')]: " choice < /dev/tty
+        local valid_options="q,3,4"
+        if [ "$IS_DEBIAN_LIKE" = true ]; then valid_options+=",1,2,5"; fi
+        read -rp "请输入选项 [${valid_options}]: " choice < /dev/tty
 
         case "$choice" in
             1) 
@@ -783,6 +961,12 @@ main_menu() {
             3) 
                 check_root; install_sillytavern; read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
                 ;;
+            4)
+                configure_docker_logs; read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
+                ;;
+            5)
+                if [ "$IS_DEBIAN_LIKE" = true ]; then run_system_cleanup; read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty; else log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"; sleep 2; fi
+                ;;
             q|Q) 
                 echo -e "\n感谢使用，再见！"; exit 0 
                 ;;
@@ -792,6 +976,7 @@ main_menu() {
         esac
     done
 }
+
 
 
 main_menu
