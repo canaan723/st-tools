@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 
-# SillyTavern 助手 v1.2
+# SillyTavern 助手 v1.3
 # 作者: Qingjue | 小红书号: 826702880
+
+fn_ssh_rollback() {
+    echo -e "\033[33m[警告] 检测到新SSH端口连接失败，正在执行回滚操作...\033[0m"
+    mv /etc/ssh/sshd_config.bak /etc/ssh/sshd_config
+    systemctl restart sshd
+    echo -e "\033[32m[成功] SSH配置已恢复到修改前状态。端口恢复正常。\033[0m"
+    echo -e "\033[34m[提示] 脚本将退出。请检查云服务商的防火墙/NAT映射设置后重试。\033[0m"
+}
 
 set -e
 set -o pipefail
@@ -173,7 +181,6 @@ create_dynamic_swap() {
         swap_size_mb=4096 # 设置一个 4GB 的上限
     fi
 
-    # 使用 bc 进行浮点运算，精确计算显示值，并处理开头为"."的情况 (如 .8 -> 0.8)
     swap_size_display=$(echo "scale=1; $swap_size_mb / 1024" | bc | sed 's/^\./0./')G
 
     log_action "检测到物理内存为 ${mem_total_mb}MB，将创建 ${swap_size_display} 的 Swap 文件..."
@@ -225,13 +232,27 @@ run_initialization() {
     log_action "正在重启SSH服务以应用新端口 ${NEW_SSH_PORT}..."
     systemctl restart sshd
     log_info "SSH服务已重启。现在必须验证新端口的连通性。"
-    echo "-----------------------------------------------------------------------"
-    log_warn "操作1: 打开一个新终端窗口。"
-    log_warn "操作2: 尝试使用新端口 ${GREEN}${NEW_SSH_PORT}${RED} 连接服务器。"
-    log_warn "操作3: ${GREEN}连接成功后${RED}，回到本窗口按 Enter 键继续。"
-    log_warn "操作4: ${RED}连接失败时${RED}，回到本窗口按 ${YELLOW}Ctrl+C${RED} 中止脚本 (22端口仍可用)。"
-    echo "-----------------------------------------------------------------------"
-    read -rp "请进行验证操作..." < /dev/tty
+
+    echo -e "\033[0;34m----------------------------------------------------------------\033[0m"
+    echo -e "\033[1;33m[重要] 请立即打开一个新的终端窗口，使用新端口 ${NEW_SSH_PORT} 尝试连接服务器。\033[0m"
+    echo -e "\033[0;34m----------------------------------------------------------------\033[0m"
+
+while true; do
+    read -p "新端口是否连接成功？ [直接回车]=成功并继续 / [输入N再回车]=失败并恢复: " choice < /dev/tty
+    case $choice in
+        "" | [Yy]* )
+            echo -e "\033[0;32m[成功] 确认新端口可用。SSH端口已成功更换为 ${NEW_SSH_PORT}！\033[0m"
+            break
+            ;;
+        [Nn]* )
+            fn_ssh_rollback
+            exit 1
+            ;;
+        * )
+            echo -e "\033[0;31m无效输入。请直接按【回车键】确认成功，或输入【N】并回车进行恢复。\033[0m"
+            ;;
+    esac
+done
 
     log_step "步骤 6" "升级系统软件包"
     log_info "目的: 应用最新的安全补丁和软件更新。"
@@ -856,7 +877,7 @@ main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.2${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.3${NC}       ${CYAN}║${NC}"
         echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
         echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 
@@ -895,27 +916,51 @@ main_menu() {
         echo -e "${BLUE}===========================================================================${NC}"
         echo -e " ${YELLOW}[q] 退出脚本${NC}\n"
 
-        local options_str="3" # 核心选项总是3
+        local options_str="3"
         if [ "$IS_DEBIAN_LIKE" = true ]; then
-            # 如果是Debian，构建一个有序的列表
             options_str="1,2,3,4"
         fi
-        # 无论如何，最后都加上 q
         local valid_options="${options_str},q"
         read -rp "请输入选项 [${valid_options}]: " choice < /dev/tty
 
         case "$choice" in
             1) 
-                if [ "$IS_DEBIAN_LIKE" = true ]; then check_root; run_initialization; else log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"; sleep 2; fi
+                if [ "$IS_DEBIAN_LIKE" = true ]; then 
+                    check_root
+                    run_initialization
+                    read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
+                else 
+                    log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"
+                    sleep 2
+                fi
                 ;;
             2) 
-                if [ "$IS_DEBIAN_LIKE" = true ]; then check_root; install_1panel; read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty; else log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"; sleep 2; fi
+                if [ "$IS_DEBIAN_LIKE" = true ]; then 
+                    check_root
+                    install_1panel
+                    while read -r -t 0.1; do :; done
+                    read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
+                else 
+                    log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"
+                    sleep 2
+                fi
                 ;;
             3) 
-                check_root; install_sillytavern; read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
+                check_root
+                install_sillytavern
+                while read -r -t 0.1; do :; done
+                read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
                 ;;
             4)
-                if [ "$IS_DEBIAN_LIKE" = true ]; then run_system_cleanup; read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty; else log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"; sleep 2; fi
+                if [ "$IS_DEBIAN_LIKE" = true ]; then 
+                    run_system_cleanup
+                    # 【优化】为保持一致性，这里也加上清理输入的逻辑
+                    while read -r -t 0.1; do :; done
+                    read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
+                else 
+                    log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"
+                    sleep 2
+                fi
                 ;;
             q|Q) 
                 echo -e "\n感谢使用，再见！"; exit 0 
