@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# SillyTavern 助手 v1.2
+# SillyTavern 助手 v1.3
 # 作者: Qingjue | 小红书号: 826702880
 
 fn_ssh_rollback() {
@@ -181,7 +181,6 @@ create_dynamic_swap() {
         swap_size_mb=4096 # 设置一个 4GB 的上限
     fi
 
-    # 使用 bc 进行浮点运算，精确计算显示值，并处理开头为"."的情况 (如 .8 -> 0.8)
     swap_size_display=$(echo "scale=1; $swap_size_mb / 1024" | bc | sed 's/^\./0./')G
 
     log_action "检测到物理内存为 ${mem_total_mb}MB，将创建 ${swap_size_display} 的 Swap 文件..."
@@ -236,25 +235,24 @@ run_initialization() {
 
     echo -e "\033[0;34m----------------------------------------------------------------\033[0m"
     echo -e "\033[1;33m[重要] 请立即打开一个新的终端窗口，使用新端口 ${NEW_SSH_PORT} 尝试连接服务器。\033[0m"
-    echo -e "\033[1;33m       例如: ssh root@你的服务器IP -p ${NEW_SSH_PORT}\033[0m"
     echo -e "\033[0;34m----------------------------------------------------------------\033[0m"
 
-    while true; do
-        read -p "新端口是否连接成功？ [Y]es, 我已成功连接 / [N]o, 连接失败请帮我恢复: " choice < /dev/tty
-        case $choice in
-            [Yy]* )
-                echo -e "\033[0;32m[成功] 确认新端口可用。SSH端口已成功更换为 ${NEW_SSH_PORT}！\033[0m"
-                break
-                ;;
-            [Nn]* )
-                fn_ssh_rollback  # 调用回滚函数
-                exit 1           # 安全退出脚本
-                ;;
-            * )
-                echo -e "\033[0;31m无效输入，请输入 Y 或 N。\033[0m"
-                ;;
-        esac
-    done
+while true; do
+    read -p "新端口是否连接成功？ [直接回车]=成功并继续 / [输入N再回车]=失败并恢复: " choice < /dev/tty
+    case $choice in
+        "" | [Yy]* )
+            echo -e "\033[0;32m[成功] 确认新端口可用。SSH端口已成功更换为 ${NEW_SSH_PORT}！\033[0m"
+            break
+            ;;
+        [Nn]* )
+            fn_ssh_rollback
+            exit 1
+            ;;
+        * )
+            echo -e "\033[0;31m无效输入。请直接按【回车键】确认成功，或输入【N】并回车进行恢复。\033[0m"
+            ;;
+    esac
+done
 
     log_step "步骤 6" "升级系统软件包"
     log_info "目的: 应用最新的安全补丁和软件更新。"
@@ -879,7 +877,7 @@ main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.2${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.3${NC}       ${CYAN}║${NC}"
         echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
         echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 
