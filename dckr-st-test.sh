@@ -18,7 +18,6 @@ readonly NC='\033[0m'
 IS_DEBIAN_LIKE=false
 DETECTED_OS="未知"
 if [ -f /etc/os-release ]; then
-    # shellcheck source=/dev/null
     . /etc/os-release
     DETECTED_OS="$PRETTY_NAME"
     if [[ "$ID" == "ubuntu" || "$ID" == "debian" ]]; then
@@ -81,7 +80,7 @@ fn_optimize_docker() {
         fi
     done
 
-    # --- 步骤2: 构建JSON配置字符串 (纯Shell) ---
+    # --- 步骤2: 构建JSON配置字符串 ---
     local log_config_part='"log-driver": "json-file", "log-opts": {"max-size": "50m", "max-file": "3"}'
     local mirrors_config_part=""
 
@@ -653,20 +652,11 @@ fn_optimize_docker
             ;;
     esac
 
-# ... case "$run_mode" in ... esac ...
-
 # 定义默认的上级目录
 local default_parent_path="$USER_HOME"
-
-# 修改提示语，让用户明白只输入上级目录
-read -rp "请输入安装的上级目录 [默认: ${default_parent_path}，最终路径将是 <上级目录>/sillytavern]: " custom_parent_path < /dev/tty
-
-# 如果用户直接回车，则使用默认上级目录；否则使用用户输入的
+read -rp "SillyTavern 将被安装在 <上级目录>/sillytavern 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
 local parent_path="${custom_parent_path:-$default_parent_path}"
-
-# 最终安装路径 = 上级目录 + /sillytavern
 INSTALL_DIR="${parent_path}/sillytavern"
-
 log_info "安装路径最终设置为: ${INSTALL_DIR}"
 
 
@@ -703,6 +693,8 @@ services:
     container_name: ${CONTAINER_NAME}
     hostname: ${CONTAINER_NAME}
     image: ${IMAGE_NAME}
+    security_opt:
+      - apparmor:unconfined
     environment:
       - NODE_ENV=production
       - FORCE_COLOR=1
@@ -845,7 +837,7 @@ main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.7${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.1${NC}       ${CYAN}║${NC}"
         echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
         echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 
