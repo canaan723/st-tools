@@ -91,7 +91,7 @@ fn_optimize_docker() {
         log_warn "官方 Docker Hub 连接超时，将自动配置最快的备用镜像。"
         local sorted_mirrors; sorted_mirrors=$(echo -e "$results" | grep -v '^9999' | grep -v '|docker.io|' | LC_ALL=C sort -n)
         if [ -n "$sorted_mirrors" ]; then
-            local best_mirrors; best_mirrors=($(echo "$sorted_mirrors" | head -n 3 | cut -d'|' -f2))
+            local best_mirrors; best_mirrors=($(echo "$sorted_mirrors" | head -n 5 | cut -d'|' -f2))
             log_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
             mirrors_json=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//' | awk '{print "["$0"]"}')
         else
@@ -835,7 +835,7 @@ main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.3${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.4${NC}       ${CYAN}║${NC}"
         echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
         echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 
