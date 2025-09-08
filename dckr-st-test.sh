@@ -90,7 +90,7 @@ fn_optimize_docker() {
     else
         log_warn "官方 Docker Hub 连接失败，将自动从可用备用镜像中配置最快的源。"
         if [ -n "$results" ]; then
-            local best_mirrors; best_mirrors=($(echo -e "$results" | LC_ALL=C sort -n | head -n 4 | cut -d'|' -f2))
+            local best_mirrors; best_mirrors=($(echo -e "$results" | grep '.' | LC_ALL=C sort -n | head -n 5 | cut -d'|' -f2))
             log_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
             local mirrors_json_array; mirrors_json_array=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
             mirrors_config_part="\"registry-mirrors\": [${mirrors_json_array}]"
@@ -587,15 +587,13 @@ install_sillytavern() {
         echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
         echo -e "║                   ${BOLD}部署成功！尽情享受吧！${NC}                   ║"
         echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
+        echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC}"
         
         if [[ "$run_mode" == "1" ]]; then
-            echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC}"
             echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"
             echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"
         elif [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
-            echo -e "\n  ${CYAN}登录页面:${NC} ${GREEN}http://${SERVER_IP}:8000/login${NC}"
-            echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}您在上一交互步骤中创建的账号${NC}"
-            echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}您在上一交互步骤中设置的密码${NC}"
+            echo -e "  ${YELLOW}登录页面:${NC} ${GREEN}http://${SERVER_IP}:8000/login${NC}"
         fi
         
         echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
@@ -655,10 +653,21 @@ fn_optimize_docker
             ;;
     esac
 
-    # 统一的路径设置提示
-    read -rp "请输入安装路径 [默认: ${default_path}]: " custom_path < /dev/tty
-    INSTALL_DIR="${custom_path:-$default_path}"
-    log_info "安装路径最终设置为: ${INSTALL_DIR}"
+# ... case "$run_mode" in ... esac ...
+
+# 定义默认的上级目录
+local default_parent_path="$USER_HOME"
+
+# 修改提示语，让用户明白只输入上级目录
+read -rp "请输入安装的上级目录 [默认: ${default_parent_path}，最终路径将是 <上级目录>/sillytavern]: " custom_parent_path < /dev/tty
+
+# 如果用户直接回车，则使用默认上级目录；否则使用用户输入的
+local parent_path="${custom_parent_path:-$default_parent_path}"
+
+# 最终安装路径 = 上级目录 + /sillytavern
+INSTALL_DIR="${parent_path}/sillytavern"
+
+log_info "安装路径最终设置为: ${INSTALL_DIR}"
 
 
 # 更新配置文件路径变量
@@ -836,7 +845,7 @@ main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.6${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.7${NC}       ${CYAN}║${NC}"
         echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
         echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 
