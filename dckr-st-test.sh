@@ -43,18 +43,17 @@ check_root() {
     fi
 }
 
-fn_configure_docker_logs() {
-    log_action "是否需要配置 Docker 全局日志限制？"
-    log_info "这将限制每个容器的日志大小为 50MB，防止日志文件无限增长。"
-    log_warn "此配置对所有新创建的容器生效。"
-    read -rp "推荐配置，是否继续？[Y/n]: " confirm_log < /dev/tty
-    if [[ ! "${confirm_log:-y}" =~ ^[Yy]$ ]]; then
-        log_info "已跳过 Docker 日志配置。"
+fn_optimize_docker() {
+    log_action "是否需要进行 Docker 优化（配置日志限制与镜像加速）？"
+    log_info "此操作将：1. 限制日志大小防止磁盘占满。 2. 测试并配置最快的镜像源。"
+    read -rp "强烈推荐执行，是否继续？[Y/n]: " confirm_optimize < /dev/tty
+    if [[ ! "${confirm_optimize:-y}" =~ ^[Yy]$ ]]; then
+        log_info "已跳过 Docker 优化。"
         return
     fi
 
     if ! command -v jq &> /dev/null; then
-        log_info "配置需要 jq 工具，正在尝试安装..."
+        log_info "优化需要 jq 工具，正在尝试安装..."
         if [ "$IS_DEBIAN_LIKE" = true ]; then
             apt-get update && apt-get install -y jq
         else
@@ -65,16 +64,54 @@ fn_configure_docker_logs() {
     fi
 
     local DAEMON_JSON="/etc/docker/daemon.json"
-    local current_json
-    current_json=$(cat "$DAEMON_JSON" 2>/dev/null || echo "{}")
-    local log_config='{"log-driver": "json-file", "log-opts": {"max-size": "50m", "max-file": "3"}}'
-    local new_json
-    new_json=$(echo "$current_json" | jq ". + $log_config")
+    local final_config
+    final_config=$(cat "$DAEMON_JSON" 2>/dev/null || echo "{}")
 
-    echo "$new_json" | tee "$DAEMON_JSON" > /dev/null
-    log_action "正在重启 Docker 服务以应用配置..."
-    if systemctl restart docker; then
-        log_success "Docker 服务已重启，日志配置已生效！"
+    # --- 步骤1: 镜像测速与配置 ---
+    log_info "正在检测 Docker 镜像源可用性..."
+    local mirrors=( "docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live" "https://dockerproxy.1panel.live" "https://hub.rat.dev" )
+    docker rmi hello-world > /dev/null 2>&1 || true
+    local results=""; local official_hub_ok=false
+    for mirror in "${mirrors[@]}"; do
+        local pull_target="hello-world"; local display_name="$mirror"; local timeout_duration=10
+        if [[ "$mirror" == "docker.io" ]]; then timeout_duration=15; display_name="Official Docker Hub"; else pull_target="${mirror#https://}/library/hello-world"; fi
+        echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..."
+        local start_time; start_time=$(date +%s.%N)
+        if (timeout -k 15 "$timeout_duration" docker pull "$pull_target" >/dev/null) 2>/dev/null; then
+            local end_time; end_time=$(date +%s.%N); local duration; duration=$(echo "$end_time - $start_time" | bc)
+            printf " ${GREEN}%.2f 秒${NC}\n" "$duration"; results+="${duration}|${mirror}|${display_name}\n"; docker rmi "$pull_target" > /dev/null 2>&1 || true
+            if [[ "$mirror" == "docker.io" ]]; then official_hub_ok=true; break; fi
+        else
+            echo -e " ${RED}超时或失败${NC}"; results+="9999|${mirror}|${display_name}\n"
+        fi
+    done
+
+    local mirrors_json="[]"
+    if [ "$official_hub_ok" = false ]; then
+        log_warn "官方 Docker Hub 连接超时，将自动配置最快的备用镜像。"
+        local sorted_mirrors; sorted_mirrors=$(echo -e "$results" | grep -v '^9999' | grep -v '|docker.io|' | LC_ALL=C sort -n)
+        if [ -n "$sorted_mirrors" ]; then
+            local best_mirrors; best_mirrors=($(echo "$sorted_mirrors" | head -n 3 | cut -d'|' -f2))
+            log_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
+            mirrors_json=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//' | awk '{print "["$0"]"}')
+        else
+            log_warn "所有备用镜像均测试失败！将不配置镜像加速。"
+        fi
+    else
+        log_success "官方 Docker Hub 可用，将不配置镜像加速。"
+    fi
+    final_config=$(echo "$final_config" | jq --argjson mirrors "$mirrors_json" '."registry-mirrors" = $mirrors')
+
+    # --- 步骤2: 日志配置 ---
+    log_info "正在添加日志大小限制配置..."
+    final_config=$(echo "$final_config" | jq '. + {"log-driver": "json-file", "log-opts": {"max-size": "50m", "max-file": "3"}}')
+    log_success "日志配置已添加。"
+
+    # --- 步骤3: 应用所有配置 ---
+    log_action "正在应用所有优化配置..."
+    echo "$final_config" | sudo tee "$DAEMON_JSON" > /dev/null
+    if sudo systemctl restart docker; then
+        log_success "Docker 服务已重启，优化配置已生效！"
     else
         log_error "Docker 服务重启失败！请检查 ${DAEMON_JSON} 格式。"
     fi
@@ -308,107 +345,6 @@ install_sillytavern() {
     fn_print_step() { echo -e "\n${CYAN}═══ $1 ═══${NC}"; }
     fn_print_info() { echo -e "  $1"; }
     fn_print_error() { echo -e "\n${RED}✗ 错误: $1${NC}\n" >&2; exit 1; }
-
-    fn_apply_docker_config() {
-        local config_content="$1"
-        if [[ -z "$config_content" ]]; then
-            fn_print_info "正在清除 Docker 镜像配置..."
-            if [ ! -f "/etc/docker/daemon.json" ]; then log_success "无需操作，配置已是默认。"; return; fi
-            sudo rm -f /etc/docker/daemon.json
-        else
-            fn_print_info "正在写入新的 Docker 镜像配置..."
-            echo -e "$config_content" | sudo tee /etc/docker/daemon.json > /dev/null
-        fi
-        fn_print_info "正在重启 Docker 服务以应用配置..."
-        if sudo systemctl restart docker; then
-            log_success "Docker 服务已重启，新配置生效！"
-        else
-            log_warn "Docker 服务重启失败！配置可能存在问题。"
-            fn_print_info "正在尝试自动回滚到默认配置..."
-            sudo rm -f /etc/docker/daemon.json
-            if sudo systemctl restart docker; then 
-                log_success "自动回滚成功！Docker 已恢复并使用官方源。"
-            else
-                fn_print_error "自动回滚失败！请手动执行 'sudo systemctl status docker.service' 和 'sudo journalctl -xeu docker.service' 进行排查。"
-            fi
-        fi
-    }
-
-    fn_speed_test_and_configure_mirrors() {
-        fn_print_info "正在检测 Docker 镜像源可用性..."
-        local mirrors=(
-            "docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live" 
-            "https://dockerproxy.1panel.live" "https://hub.rat.dev" "https://docker.m.ixdev.cn" 
-            "https://hub2.nat.tf" "https://docker.1panel.dev" "https://docker.amingg.com" "https://docker.xuanyuan.me" 
-            "https://dytt.online" "https://lispy.org" "https://docker.xiaogenban1993.com" 
-            "https://docker-0.unsee.tech" "https://666860.xyz"
-        )
-        docker rmi hello-world > /dev/null 2>&1 || true
-        local results=""
-        local official_hub_ok=false
-        for mirror in "${mirrors[@]}"; do
-            local pull_target="hello-world"
-            local display_name="$mirror"
-            local timeout_duration=10
-            if [[ "$mirror" == "docker.io" ]]; then
-                timeout_duration=15
-                display_name="Official Docker Hub"
-            else
-                pull_target="${mirror#https://}/library/hello-world"
-            fi
-            echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..."
-            local start_time=$(date +%s.%N)
-            if (timeout -k 15 "$timeout_duration" docker pull "$pull_target" >/dev/null) 2>/dev/null; then
-                local end_time=$(date +%s.%N)
-                local duration
-                duration=$(echo "$end_time - $start_time" | bc)
-                printf " ${GREEN}%.2f 秒${NC}\n" "$duration"
-                results+="${duration}|${mirror}|${display_name}\n"
-                docker rmi "$pull_target" > /dev/null 2>&1 || true
-                if [[ "$mirror" == "docker.io" ]]; then official_hub_ok=true; break; fi
-            else
-                echo -e " ${RED}超时或失败${NC}"
-                results+="9999|${mirror}|${display_name}\n"
-            fi
-        done
-        if [ "$official_hub_ok" = true ]; then
-            if ! grep -q "registry-mirrors" /etc/docker/daemon.json 2>/dev/null; then
-                log_success "官方 Docker Hub 可访问，且未配置任何镜像，无需操作。"
-            else
-                log_success "官方 Docker Hub 可访问。"
-                read -r -p "$(echo -e "${YELLOW}是否清除本地镜像配置并使用官方源? [Y/n]: ${NC}")" confirm_clear < /dev/tty
-                confirm_clear=${confirm_clear:-y}
-                if [[ "$confirm_clear" =~ ^[Yy]$ ]]; then
-                    fn_apply_docker_config ""
-                else
-                    fn_print_info "选择保留当前镜像配置，操作跳过。"
-                fi
-            fi
-        else
-            log_warn "官方 Docker Hub 连接超时。"
-            local sorted_mirrors
-            sorted_mirrors=$(echo -e "$results" | grep -v '^9999' | grep -v '|docker.io|' | LC_ALL=C sort -n)
-            if [ -z "$sorted_mirrors" ]; then
-                fn_print_error "所有备用镜像均测试失败！请检查网络连接。"
-            else
-                fn_print_info "以下是可用的备用镜像及其速度："
-                echo "$sorted_mirrors" | grep . | awk -F'|' '{ printf "  - %-30s %.2f 秒\n", $3, $1 }'
-                read -r -p "$(echo -e "${YELLOW}是否配置最快的可用镜像? [Y/n]: ${NC}")" confirm_config < /dev/tty
-                confirm_config=${confirm_config:-y}
-                if [[ "$confirm_config" =~ ^[Yy]$ ]]; then
-                    local best_mirrors
-                    best_mirrors=($(echo "$sorted_mirrors" | head -n 5 | cut -d'|' -f2))
-                    log_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
-                    local mirrors_json
-                    mirrors_json=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
-                    local config_content="{\n  \"registry-mirrors\": [${mirrors_json}]\n}"
-                    fn_apply_docker_config "$config_content"
-                else
-                    fn_print_info "选择不配置镜像，操作跳过。"
-                fi
-            fi
-        fi
-    }
 
     fn_report_dependencies() {
         fn_print_info "--- 环境诊断摘要 ---"
@@ -679,72 +615,44 @@ install_sillytavern() {
     CONFIG_FILE="$INSTALL_DIR/config.yaml"
     COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
     fn_check_dependencies
-    fn_configure_docker_logs
-    
-    fn_print_info "正在检查 Docker 服务状态..."
-    if ! docker info > /dev/null 2>&1; then
-        log_warn "无法连接到 Docker 服务，它可能未启动。"
-        read -rp "是否尝试启动 Docker 服务? [Y/n]: " confirm_start < /dev/tty
-        if [[ "${confirm_start:-y}" =~ ^[Yy]$ ]]; then
-            log_action "正在尝试启动 Docker 服务..."
-            if sudo systemctl start docker; then
-                log_success "Docker 服务启动成功！"
-                sleep 2 # 等待服务完全就绪
-            else
-                fn_print_error "尝试启动 Docker 服务失败。请使用 'sudo systemctl status docker' 检查。"
-            fi
-        else
-            fn_print_error "用户选择不启动，脚本无法继续。"
-        fi
-    fi
-    # 再次进行最终检查
-    if ! docker info > /dev/null 2>&1; then
-        fn_print_error "无法连接到 Docker 服务。请确保 Docker 正在运行 (可使用 'sudo systemctl status docker' 命令检查)。"
-    fi
-    log_success "Docker 服务连接正常。"
 
-
-    echo
-    log_action "是否需要进行 Docker 镜像速度测试并自动配置加速源？"
-    fn_print_info "如果自己配置过镜像加速，可以输入 n 跳过。"
-    read -r -p "请输入 [Y/n] (默认: Y, 直接回车即可开始测试): " confirm_test < /dev/tty
-    confirm_test=${confirm_test:-y}
-
-    if [[ "$confirm_test" =~ ^[Yy]$ ]]; then
-        fn_speed_test_and_configure_mirrors
-    else
-        log_info "已跳过 Docker 镜像测速。"
-    fi
+# 调用新的统一优化函数
+fn_optimize_docker
     
     SERVER_IP=$(fn_get_public_ip)
 
-    fn_print_step "[ 2/5 ] 选择运行模式"
+    fn_print_step "[ 2/5 ] 选择运行模式与路径"
     echo "选择运行模式："
     echo -e "  [1] ${CYAN}单用户模式${NC} (弹窗认证，适合个人使用)"
     echo -e "  [2] ${CYAN}多用户模式${NC} (独立登录页，适合多人或单人使用)"
-    echo -e "  [3] ${YELLOW}开发者模式${NC} (自定义路径和挂载，勿选)"
+    echo -e "  [3] ${RED}维护者模式${NC} (作者专用，普通用户请勿选择！)"
     read -p "请输入选项数字 [默认为 1]: " run_mode < /dev/tty
     run_mode=${run_mode:-1}
 
-    if [[ "$run_mode" == "1" ]]; then
-        read -p "请输入自定义用户名: " single_user < /dev/tty
-        read -p "请输入自定义密码: " single_pass < /dev/tty
-        if [ -z "$single_user" ] || [ -z "$single_pass" ]; then fn_print_error "用户名和密码不能为空！"; fi
-        INSTALL_DIR="$USER_HOME/sillytavern"
-    elif [[ "$run_mode" == "2" ]]; then
-        INSTALL_DIR="$USER_HOME/sillytavern"
-    elif [[ "$run_mode" == "3" ]]; then
-        log_warn "已进入开发者模式。"
-        read -rp "请输入自定义安装路径 [默认: ${USER_HOME}/sillytavern-dev]: " custom_path < /dev/tty
-        if [ -z "$custom_path" ]; then
-            INSTALL_DIR="$USER_HOME/sillytavern-dev"
-        else
-            INSTALL_DIR="$custom_path"
-        fi
-        log_info "开发者模式安装路径设置为: $INSTALL_DIR"
-    else
-        fn_print_error "无效输入，脚本已终止。"
-    fi
+    local default_path
+    case "$run_mode" in
+        1)
+            read -p "请输入自定义用户名: " single_user < /dev/tty
+            read -p "请输入自定义密码: " single_pass < /dev/tty
+            if [ -z "$single_user" ] || [ -z "$single_pass" ]; then fn_print_error "用户名和密码不能为空！"; fi
+            default_path="$USER_HOME/sillytavern"
+            ;;
+        2)
+            default_path="$USER_HOME/sillytavern"
+            ;;
+        3)
+            log_warn "已进入维护者模式，此模式需要手动准备特殊文件。"
+            default_path="$USER_HOME/sillytavern-maintainer"
+            ;;
+        *)
+            fn_print_error "无效输入，脚本已终止."
+            ;;
+    esac
+
+    read -rp "请输入安装路径 [默认: ${default_path}]: " custom_path < /dev/tty
+    INSTALL_DIR="${custom_path:-$default_path}"
+    log_info "安装路径最终设置为: ${INSTALL_DIR}"
+
 
 # 更新配置文件路径变量
 CONFIG_FILE="$INSTALL_DIR/config.yaml"
@@ -819,10 +727,9 @@ EOF
     log_success "docker-compose.yml 文件创建成功！"
 
     if [[ "$run_mode" == "3" ]]; then
-        log_warn "开发者模式：请现在将您的自定义文件 (如 login.html) 放入 '$INSTALL_DIR/custom' 目录。"
+        log_warn "维护者模式：请现在将您的自定义文件 (如 login.html) 放入 '$INSTALL_DIR/custom' 目录。"
         read -rp "文件放置完毕后，按 Enter 键继续..." < /dev/tty
     fi
-
 
     fn_print_step "[ 4/5 ] 初始化与配置"
     fn_print_info "即将拉取 SillyTavern 镜像，下载期间将持续显示预估时间。"
