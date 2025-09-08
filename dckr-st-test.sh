@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# SillyTavern 助手 v1.12
+# SillyTavern 助手 v1.2
 # 作者: Qingjue | 小红书号: 826702880
 
 set -e
@@ -344,13 +344,7 @@ install_sillytavern() {
     fn_print_info() { echo -e "  $1"; }
     fn_print_error() { echo -e "\n${RED}✗ 错误: $1${NC}\n" >&2; exit 1; }
 
-    # ==============================================================================
-    # --- 新增的函数：fn_check_existing_container ---
-    # ==============================================================================
     fn_check_existing_container() {
-        # 使用 docker ps -a 来检查所有容器（包括已停止的），-q 只输出ID，-f 按名称过滤
-        # 使用 ^...$ 进行精确匹配，防止匹配到 sillytavern-db 等其他容器
-        # grep -q . 是一个技巧，用于检查前面命令的输出是否为空
         if docker ps -a -q -f "name=^${CONTAINER_NAME}$" | grep -q .; then
             log_warn "检测到服务器上已存在一个名为 '${CONTAINER_NAME}' 的 Docker 容器。"
             log_info "这可能来自之前的安装。若要继续，必须先处理现有容器。"
@@ -359,7 +353,6 @@ install_sillytavern() {
             echo -e "  [2] ${RED}退出脚本，由我手动处理${NC}"
             
             local choice=""
-            # 循环直到用户输入有效选项 1 或 2
             while [[ "$choice" != "1" && "$choice" != "2" ]]; do
                 read -p "请输入选项 [1 或 2]: " choice < /dev/tty
             done
@@ -652,11 +645,7 @@ install_sillytavern() {
     COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
     fn_check_dependencies
 
-    # ==============================================================================
-    # --- 调用新增的函数 ---
-    # ==============================================================================
     fn_check_existing_container
-    # ==============================================================================
 
     fn_optimize_docker
     
@@ -678,7 +667,6 @@ install_sillytavern() {
             if [ -z "$single_user" ] || [ -z "$single_pass" ]; then fn_print_error "用户名和密码不能为空！"; fi
             ;;
         2)
-            # 多用户模式无需额外输入
             ;;
         3)
             log_warn "已进入维护者模式，此模式需要手动准备特殊文件。"
@@ -689,7 +677,7 @@ install_sillytavern() {
     esac
 
     local default_parent_path="$USER_HOME"
-    read -rp "SillyTavern 将被安装在 <上级目录>/sillytavern 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
+    read -rp "安装路径: SillyTavern 将被安装在 <上级目录>/sillytavern 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
     local parent_path="${custom_parent_path:-$default_parent_path}"
     INSTALL_DIR="${parent_path}/sillytavern"
     log_info "安装路径最终设置为: ${INSTALL_DIR}"
@@ -868,7 +856,7 @@ main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.12${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.2${NC}       ${CYAN}║${NC}"
         echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
         echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 
