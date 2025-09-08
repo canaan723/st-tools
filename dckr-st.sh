@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# SillyTavern 助手 v1.0
+# SillyTavern 助手 v1.2
 # 作者: Qingjue | 小红书号: 826702880
 
 set -e
@@ -13,6 +13,20 @@ readonly BLUE='\033[0;34m'
 readonly CYAN='\033[1;36m'
 readonly BOLD='\033[1m'
 readonly NC='\033[0m'
+
+# --- 全局操作系统检测 ---
+IS_DEBIAN_LIKE=false
+DETECTED_OS="未知"
+if [ -f /etc/os-release ]; then
+    # shellcheck source=/dev/null
+    . /etc/os-release
+    DETECTED_OS="$PRETTY_NAME"
+    if [[ "$ID" == "ubuntu" || "$ID" == "debian" ]]; then
+        IS_DEBIAN_LIKE=true
+    fi
+fi
+# --- ------------------ ---
+
 
 log_info() { echo -e "${GREEN}[INFO] $1${NC}"; }
 log_warn() { echo -e "${YELLOW}[WARN] $1${NC}"; }
@@ -29,6 +43,149 @@ check_root() {
     fi
 }
 
+fn_optimize_docker() {
+    log_action "是否需要进行 Docker 优化（配置日志限制与镜像加速）？"
+    log_info "此操作将：1. 限制日志大小防止磁盘占满。 2. 测试并配置最快的镜像源。"
+    read -rp "强烈推荐执行，是否继续？[Y/n]: " confirm_optimize < /dev/tty
+    if [[ ! "${confirm_optimize:-y}" =~ ^[Yy]$ ]]; then
+        log_info "已跳过 Docker 优化。"
+        return
+    fi
+
+    local DAEMON_JSON="/etc/docker/daemon.json"
+    
+    # --- 步骤1: 镜像测速与配置 ---
+    log_info "正在检测 Docker 镜像源可用性..."
+    local mirrors=(
+        "docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live" 
+        "https://dockerproxy.1panel.live" "https://hub.rat.dev" "https://docker.m.ixdev.cn" 
+        "https://hub2.nat.tf" "https://docker.1panel.dev" "https://docker.amingg.com" "https://docker.xuanyuan.me" 
+        "https://dytt.online" "https://lispy.org" "https://docker.xiaogenban1993.com" 
+        "https://docker-0.unsee.tech" "https://666860.xyz"
+    )
+    docker rmi hello-world > /dev/null 2>&1 || true
+    local results=""; local official_hub_ok=false
+    for mirror in "${mirrors[@]}"; do
+        local pull_target="hello-world"; local display_name="$mirror"; local timeout_duration=10
+        if [[ "$mirror" == "docker.io" ]]; then timeout_duration=15; display_name="Official Docker Hub"; else pull_target="${mirror#https://}/library/hello-world"; fi
+        echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..."
+        local start_time; start_time=$(date +%s.%N)
+        if (timeout -k 15 "$timeout_duration" docker pull "$pull_target" >/dev/null) 2>/dev/null; then
+            local end_time; end_time=$(date +%s.%N); local duration; duration=$(echo "$end_time - $start_time" | bc)
+            printf " ${GREEN}%.2f 秒${NC}\n" "$duration"
+            if [[ "$mirror" != "docker.io" ]]; then results+="${duration}|${mirror}|${display_name}\n"; fi
+            docker rmi "$pull_target" > /dev/null 2>&1 || true
+            if [[ "$mirror" == "docker.io" ]]; then official_hub_ok=true; break; fi
+        else
+            echo -e " ${RED}超时或失败${NC}"
+        fi
+    done
+
+    # --- 步骤2: 构建JSON配置字符串 ---
+    local log_config_part='"log-driver": "json-file", "log-opts": {"max-size": "50m", "max-file": "3"}'
+    local mirrors_config_part=""
+
+    if [ "$official_hub_ok" = true ]; then
+        log_success "官方 Docker Hub 可用，将直接使用官方源，不配置镜像加速。"
+    else
+        log_warn "官方 Docker Hub 连接失败，将自动从可用备用镜像中配置最快的源。"
+        if [ -n "$results" ]; then
+            local best_mirrors; best_mirrors=($(echo -e "$results" | grep '.' | LC_ALL=C sort -n | head -n 5 | cut -d'|' -f2))
+            log_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
+            local mirrors_json_array; mirrors_json_array=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
+            mirrors_config_part="\"registry-mirrors\": [${mirrors_json_array}]"
+        else
+            log_warn "所有备用镜像均测试失败！将不配置镜像加速。"
+        fi
+    fi
+
+    local final_json_content="$log_config_part"
+    if [ -n "$mirrors_config_part" ]; then
+        final_json_content="$final_json_content, $mirrors_config_part"
+    fi
+
+    # --- 步骤3: 应用所有配置 ---
+    log_action "正在应用所有优化配置..."
+    echo "{ ${final_json_content} }" | sudo tee "$DAEMON_JSON" > /dev/null
+    if sudo systemctl restart docker; then
+        log_success "Docker 服务已重启，优化配置已生效！"
+    else
+        log_error "Docker 服务重启失败！请检查 ${DAEMON_JSON} 格式。"
+    fi
+}
+
+
+run_system_cleanup() {
+    check_root
+    log_action "即将执行系统安全清理..."
+    echo -e "此操作将执行以下命令："
+    echo -e "  - ${CYAN}apt-get clean -y${NC} (清理apt缓存)"
+    echo -e "  - ${CYAN}journalctl --vacuum-size=100M${NC} (压缩日志到100M)"
+    if command -v docker &> /dev/null; then
+        echo -e "  - ${CYAN}docker system prune -f${NC} (清理无用的Docker镜像和容器)"
+    fi
+    read -rp "确认要继续吗? [Y/n] " confirm < /dev/tty
+    if [[ ! "${confirm:-y}" =~ ^[Yy]$ ]]; then
+        log_info "操作已取消。"
+        return
+    fi
+
+    log_info "正在清理 apt 缓存..."
+    apt-get clean -y
+    log_success "apt 缓存清理完成。"
+
+    log_info "正在压缩 journald 日志..."
+    journalctl --vacuum-size=100M
+    log_success "journald 日志压缩完成。"
+
+    # 再次检查 Docker 是否存在
+    if command -v docker &> /dev/null; then
+        log_info "正在清理 Docker 系统..."
+        docker system prune -f
+        log_success "Docker 系统清理完成。"
+    else
+        log_warn "未检测到 Docker，已跳过 Docker 系统清理步骤。"
+    fi
+
+    log_info "系统安全清理已全部完成！"
+}
+
+
+create_dynamic_swap() {
+    if [ -f /swapfile ]; then
+        log_info "Swap 文件 /swapfile 已存在，跳过创建。"
+        return 0
+    fi
+
+    # 获取物理内存大小 (MB)
+    local mem_total_mb
+    mem_total_mb=$(free -m | awk '/^Mem:/{print $2}')
+
+    local swap_size_mb
+    local swap_size_display
+
+    # 根据内存大小决定Swap大小
+    if [ "$mem_total_mb" -lt 2048 ]; then # 小于 2GB 内存
+        swap_size_mb=$((mem_total_mb * 2))
+    elif [ "$mem_total_mb" -lt 8192 ]; then # 2GB - 8GB 内存
+        swap_size_mb=$mem_total_mb
+    else # 大于 8GB 内存
+        swap_size_mb=4096 # 设置一个 4GB 的上限
+    fi
+
+    # 使用 bc 进行浮点运算，精确计算显示值，并处理开头为"."的情况 (如 .8 -> 0.8)
+    swap_size_display=$(echo "scale=1; $swap_size_mb / 1024" | bc | sed 's/^\./0./')G
+
+    log_action "检测到物理内存为 ${mem_total_mb}MB，将创建 ${swap_size_display} 的 Swap 文件..."
+    fallocate -l "${swap_size_mb}M" /swapfile
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+    echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    log_success "Swap 文件创建、启用并已设置为开机自启。"
+}
+
+
 run_initialization() {
     tput reset
     echo -e "${CYAN}即将执行【服务器初始化】流程...${NC}"
@@ -39,7 +196,7 @@ run_initialization() {
     echo -e "  - ${YELLOW}22${NC}: 当前SSH连接使用的端口。"
     echo -e "  - ${YELLOW}一个新的高位端口${NC}: 范围 ${GREEN}49152-65535${NC}，将用作新SSH端口。"
     log_warn "若新SSH端口未在安全组放行，脚本执行后将导致SSH无法连接。"
-    read -rp "确认已完成上述配置后，按 Enter 键继续。"
+    read -rp "确认已完成上述配置后，按 Enter 键继续。" < /dev/tty
 
     log_step "步骤 2" "设置系统时区"
     log_action "正在设置时区为 Asia/Shanghai..."
@@ -48,7 +205,7 @@ run_initialization() {
 
     log_step "步骤 3" "修改SSH服务端口"
     log_info "目的: 更改默认22端口，降低被自动化攻击的风险。"
-    read -rp "请输入新的SSH端口号 (范围 49152 - 65535): " NEW_SSH_PORT
+    read -rp "请输入新的SSH端口号 (范围 49152 - 65535): " NEW_SSH_PORT < /dev/tty
     if ! [[ "$NEW_SSH_PORT" =~ ^[0-9]+$ ]] || [ "$NEW_SSH_PORT" -lt 49152 ] || [ "$NEW_SSH_PORT" -gt 65535 ]; then
         log_error "输入无效。端口号必须是 49152-65535 之间的数字。"
     fi
@@ -74,7 +231,7 @@ run_initialization() {
     log_warn "操作3: ${GREEN}连接成功后${RED}，回到本窗口按 Enter 键继续。"
     log_warn "操作4: ${RED}连接失败时${RED}，回到本窗口按 ${YELLOW}Ctrl+C${RED} 中止脚本 (22端口仍可用)。"
     echo "-----------------------------------------------------------------------"
-    read -rp "请进行验证操作..."
+    read -rp "请进行验证操作..." < /dev/tty
 
     log_step "步骤 6" "升级系统软件包"
     log_info "目的: 应用最新的安全补丁和软件更新。"
@@ -96,24 +253,13 @@ vm.swappiness=10
 EOF
     log_success "内核参数配置完成。"
 
-    local SWAP_SIZE="2G"
-    if [ -f /swapfile ]; then
-        log_info "Swap 文件 /swapfile 已存在，跳过创建。"
-    else
-        log_action "正在创建 ${SWAP_SIZE} 的 Swap 文件..."
-        fallocate -l "${SWAP_SIZE}" /swapfile
-        chmod 600 /swapfile
-        mkswap /swapfile
-        swapon /swapfile
-        echo '/swapfile none swap sw 0 0' >> /etc/fstab
-        log_success "Swap 文件创建、启用并已设置为开机自启。"
-    fi
+    create_dynamic_swap
 
     log_step "步骤 8" "应用配置并准备重启"
     log_action "正在应用内核参数..."
     sysctl -p
     log_info "所有配置已写入。服务器需要重启以使所有更改完全生效。"
-    read -n 1 -r -p "是否立即重启服务器? [Y/n] " REPLY
+    read -n 1 -r -p "是否立即重启服务器? [Y/n] " REPLY < /dev/tty
     echo
 
     log_step "步骤 9" "重启后操作指南"
@@ -144,7 +290,7 @@ install_1panel() {
 
     log_step "步骤 1/3" "运行 1Panel 官方安装脚本"
     log_warn "即将进入 1Panel 交互式安装界面，需根据其提示操作。"
-    read -rp "按 Enter 键开始..."
+    read -rp "按 Enter 键开始..." < /dev/tty
     bash -c "$(curl -sSL https://resource.fit2cloud.com/1panel/package/v2/quick_start.sh)"
     
     log_step "步骤 2/3" "检查并确保 Docker 已安装"
@@ -198,106 +344,34 @@ install_sillytavern() {
     fn_print_info() { echo -e "  $1"; }
     fn_print_error() { echo -e "\n${RED}✗ 错误: $1${NC}\n" >&2; exit 1; }
 
-    fn_apply_docker_config() {
-        local config_content="$1"
-        if [[ -z "$config_content" ]]; then
-            fn_print_info "正在清除 Docker 镜像配置..."
-            if [ ! -f "/etc/docker/daemon.json" ]; then log_success "无需操作，配置已是默认。"; return; fi
-            sudo rm -f /etc/docker/daemon.json
-        else
-            fn_print_info "正在写入新的 Docker 镜像配置..."
-            echo -e "$config_content" | sudo tee /etc/docker/daemon.json > /dev/null
-        fi
-        fn_print_info "正在重启 Docker 服务以应用配置..."
-        if sudo systemctl restart docker; then
-            log_success "Docker 服务已重启，新配置生效！"
-        else
-            log_warn "Docker 服务重启失败！配置可能存在问题。"
-            fn_print_info "正在尝试自动回滚到默认配置..."
-            sudo rm -f /etc/docker/daemon.json
-            if sudo systemctl restart docker; then 
-                log_success "自动回滚成功！Docker 已恢复并使用官方源。"
-            else
-                fn_print_error "自动回滚失败！请手动执行 'sudo systemctl status docker.service' 和 'sudo journalctl -xeu docker.service' 进行排查。"
-            fi
-        fi
-    }
-
-    fn_speed_test_and_configure_mirrors() {
-        fn_print_info "正在检测 Docker 镜像源可用性..."
-        local mirrors=(
-            "docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live" 
-            "https://dockerproxy.1panel.live" "https://hub.rat.dev" "https://docker.m.ixdev.cn" 
-            "https://hub2.nat.tf" "https://docker.1panel.dev" "https://docker.amingg.com" "https://docker.xuanyuan.me" 
-            "https://dytt.online" "https://lispy.org" "https://docker.xiaogenban1993.com" 
-            "https://docker-0.unsee.tech" "https://666860.xyz"
-        )
-        docker rmi hello-world > /dev/null 2>&1 || true
-        local results=""
-        local official_hub_ok=false
-        for mirror in "${mirrors[@]}"; do
-            local pull_target="hello-world"
-            local display_name="$mirror"
-            local timeout_duration=10
-            if [[ "$mirror" == "docker.io" ]]; then
-                timeout_duration=15
-                display_name="Official Docker Hub"
-            else
-                pull_target="${mirror#https://}/library/hello-world"
-            fi
-            echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..."
-            local start_time=$(date +%s.%N)
-            if (timeout -k 15 "$timeout_duration" docker pull "$pull_target" >/dev/null) 2>/dev/null; then
-                local end_time=$(date +%s.%N)
-                local duration
-                duration=$(echo "$end_time - $start_time" | bc)
-                printf " ${GREEN}%.2f 秒${NC}\n" "$duration"
-                results+="${duration}|${mirror}|${display_name}\n"
-                docker rmi "$pull_target" > /dev/null 2>&1 || true
-                if [[ "$mirror" == "docker.io" ]]; then official_hub_ok=true; break; fi
-            else
-                echo -e " ${RED}超时或失败${NC}"
-                results+="9999|${mirror}|${display_name}\n"
-            fi
-        done
-        if [ "$official_hub_ok" = true ]; then
-            if ! grep -q "registry-mirrors" /etc/docker/daemon.json 2>/dev/null; then
-                log_success "官方 Docker Hub 可访问，且未配置任何镜像，无需操作。"
-            else
-                log_success "官方 Docker Hub 可访问。"
-                read -r -p "$(echo -e "${YELLOW}是否清除本地镜像配置并使用官方源? [Y/n]: ${NC}")" confirm_clear < /dev/tty
-                confirm_clear=${confirm_clear:-y}
-                if [[ "$confirm_clear" =~ ^[Yy]$ ]]; then
-                    fn_apply_docker_config ""
-                else
-                    fn_print_info "选择保留当前镜像配置，操作跳过。"
-                fi
-            fi
-        else
-            log_warn "官方 Docker Hub 连接超时。"
-            local sorted_mirrors
-            sorted_mirrors=$(echo -e "$results" | grep -v '^9999' | grep -v '|docker.io|' | LC_ALL=C sort -n)
-            if [ -z "$sorted_mirrors" ]; then
-                fn_print_error "所有备用镜像均测试失败！请检查网络连接。"
-            else
-                fn_print_info "以下是可用的备用镜像及其速度："
-                echo "$sorted_mirrors" | grep . | awk -F'|' '{ printf "  - %-30s %.2f 秒\n", $3, $1 }'
-                read -r -p "$(echo -e "${YELLOW}是否配置最快的可用镜像? [Y/n]: ${NC}")" confirm_config < /dev/tty
-                confirm_config=${confirm_config:-y}
-                if [[ "$confirm_config" =~ ^[Yy]$ ]]; then
-                    local best_mirrors
-                    best_mirrors=($(echo "$sorted_mirrors" | head -n 5 | cut -d'|' -f2))
-                    log_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
-                    local mirrors_json
-                    mirrors_json=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
-                    local config_content="{\n  \"registry-mirrors\": [${mirrors_json}]\n}"
-                    fn_apply_docker_config "$config_content"
-                else
-                    fn_print_info "选择不配置镜像，操作跳过。"
-                fi
-            fi
+    fn_check_existing_container() {
+        if docker ps -a -q -f "name=^${CONTAINER_NAME}$" | grep -q .; then
+            log_warn "检测到服务器上已存在一个名为 '${CONTAINER_NAME}' 的 Docker 容器。"
+            log_info "这可能来自之前的安装。若要继续，必须先处理现有容器。"
+            echo -e "请选择操作："
+            echo -e "  [1] ${YELLOW}停止并移除现有容器，然后继续全新安装 (此操作不删除数据文件)${NC}"
+            echo -e "  [2] ${RED}退出脚本，由我手动处理${NC}"
+            
+            local choice=""
+            while [[ "$choice" != "1" && "$choice" != "2" ]]; do
+                read -p "请输入选项 [1 或 2]: " choice < /dev/tty
+            done
+            
+            case "$choice" in
+                1)
+                    log_action "正在停止并移除现有容器 '${CONTAINER_NAME}'..."
+                    docker stop "${CONTAINER_NAME}" > /dev/null 2>&1 || true
+                    docker rm "${CONTAINER_NAME}" > /dev/null 2>&1 || true
+                    log_success "现有容器已成功移除。"
+                    ;;
+                2)
+                    log_info "脚本已退出。请手动执行 'docker ps -a' 查看容器状态。"
+                    exit 0
+                    ;;
+            esac
         fi
     }
+    # ==============================================================================
 
     fn_report_dependencies() {
         fn_print_info "--- 环境诊断摘要 ---"
@@ -320,41 +394,79 @@ install_sillytavern() {
     fn_get_cleaned_version_num() { echo "$1" | grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1; }
 
     fn_check_dependencies() {
-        fn_print_info "--- 依赖环境诊断开始 ---"
+        fn_print_info "--- 依赖环境诊断开始 (将自动安装缺失的基础工具) ---"
+        local missing_pkgs=()
         for pkg in "bc" "curl" "tar"; do
-            if command -v "$pkg" &> /dev/null; then
-                declare "${pkg^^}_VER"="$(fn_get_cleaned_version_num "$($pkg --version 2>/dev/null || echo 'N/A')")"
-                declare "${pkg^^}_STATUS"="OK"
-            else
-                declare "${pkg^^}_STATUS"="Not Found"
+            if ! command -v "$pkg" &> /dev/null; then
+                missing_pkgs+=("$pkg")
             fi
         done
-        if ! command -v docker &> /dev/null; then
-            DOCKER_STATUS="Not Found"
-        else
-            DOCKER_VER=$(fn_get_cleaned_version_num "$(docker --version)")
-            DOCKER_STATUS="OK"
+
+        if [ ${#missing_pkgs[@]} -gt 0 ]; then
+            log_action "检测到缺失的基础工具: ${missing_pkgs[*]}，正在尝试自动安装..."
+            if [ "$IS_DEBIAN_LIKE" = true ]; then
+                apt-get update && apt-get install -y "${missing_pkgs[@]}"
+            else
+                if command -v yum &> /dev/null; then yum install -y "${missing_pkgs[@]}"; elif command -v dnf &> /dev/null; then dnf install -y "${missing_pkgs[@]}"; else log_warn "无法确定包管理器，请手动安装: ${missing_pkgs[*]}"; fi
+            fi
         fi
-        if command -v docker-compose &> /dev/null; then
-            DOCKER_COMPOSE_CMD="docker-compose"
-            COMPOSE_VER="v$(fn_get_cleaned_version_num "$($DOCKER_COMPOSE_CMD version)")"
-            COMPOSE_STATUS="OK (v1)"
-        elif docker compose version &> /dev/null; then
-            DOCKER_COMPOSE_CMD="docker compose"
-            COMPOSE_VER=$(docker compose version | grep -oE 'v[0-9]+(\.[0-9]+)+' | head -n 1)
-            COMPOSE_STATUS="OK (v2)"
-        else
-            DOCKER_COMPOSE_CMD=""
-            COMPOSE_STATUS="Not Found"
-        fi
+
+        # --- 重新检查并报告 ---
+        local all_deps_ok=true
+        for pkg in "bc" "curl" "tar"; do
+            if command -v "$pkg" &> /dev/null; then
+                declare "${pkg^^}_VER"="$(fn_get_cleaned_version_num "$($pkg --version 2>/dev/null || echo 'N/A')")"; declare "${pkg^^}_STATUS"="OK"
+            else
+                declare "${pkg^^}_STATUS"="Not Found"; all_deps_ok=false
+            fi
+        done
+        if [ "$all_deps_ok" = false ]; then fn_print_error "部分基础依赖自动安装失败，请手动安装后重试。"; fi
+
+        # --- Docker 和 Compose 检查与交互式安装 ---
+        local docker_check_needed=true
+        while $docker_check_needed; do
+            if ! command -v docker &> /dev/null; then
+                DOCKER_STATUS="Not Found"
+            else
+                DOCKER_VER=$(fn_get_cleaned_version_num "$(docker --version)"); DOCKER_STATUS="OK"
+            fi
+            if command -v docker-compose &> /dev/null; then
+                DOCKER_COMPOSE_CMD="docker-compose"; COMPOSE_VER="v$(fn_get_cleaned_version_num "$($DOCKER_COMPOSE_CMD version)")"; COMPOSE_STATUS="OK (v1)"
+            elif docker compose version &> /dev/null; then
+                DOCKER_COMPOSE_CMD="docker compose"; COMPOSE_VER=$(docker compose version | grep -oE 'v[0-9]+(\.[0-9]+)+' | head -n 1); COMPOSE_STATUS="OK (v2)"
+            else
+                DOCKER_COMPOSE_CMD=""; COMPOSE_STATUS="Not Found"
+            fi
+
+            if [[ "$DOCKER_STATUS" == "Not Found" || "$COMPOSE_STATUS" == "Not Found" ]]; then
+                if [ "$IS_DEBIAN_LIKE" = true ]; then
+                    log_warn "未检测到 Docker 或 Docker-Compose。"
+                    read -rp "是否立即尝试自动安装 Docker? [Y/n]: " confirm_install_docker < /dev/tty
+                    if [[ "${confirm_install_docker:-y}" =~ ^[Yy]$ ]]; then
+                        log_action "正在使用官方推荐脚本安装 Docker..."
+                        bash <(curl -sSL https://linuxmirrors.cn/docker.sh)
+                        # 安装后再次循环检查
+                        continue
+                    else
+                        fn_print_error "用户选择不安装 Docker，脚本无法继续。"
+                    fi
+                else
+                    # 非 Debian 系统直接报错
+                    fn_print_error "未检测到 Docker 或 Docker-Compose。请在您的系统 (${DETECTED_OS}) 上手动安装它们后重试。"
+                fi
+            else
+                # Docker 和 Compose 都已存在，检查通过，结束循环
+                docker_check_needed=false
+            fi
+        done
+
         fn_report_dependencies
-        if [[ "$DOCKER_STATUS" == "Not Found" || "$COMPOSE_STATUS" == "Not Found" ]]; then
-            fn_print_error "未检测到 Docker 或 Docker-Compose。请返回主菜单执行【步骤2】安装。"
-        fi
+
         local current_user="${SUDO_USER:-$(whoami)}"
         if ! groups "$current_user" | grep -q '\bdocker\b' && [ "$(id -u)" -ne 0 ]; then
             fn_print_error "当前用户不在 docker 用户组。请执行【步骤2】或手动添加后，【重新登录SSH】再试。"
         fi
+        log_success "所有依赖项检查通过！"
     }
 
     fn_apply_config_changes() {
@@ -369,11 +481,12 @@ install_sillytavern() {
             sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 启用基础认证/" "$CONFIG_FILE"
             sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$single_user\"/}" "$CONFIG_FILE"
             sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$single_pass\"/}" "$CONFIG_FILE"
-        elif [[ "$run_mode" == "2" ]]; then
+        elif [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
             sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 临时开启基础认证以设置管理员/" "$CONFIG_FILE"
             sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # 启用多用户模式/" "$CONFIG_FILE"
         fi
     }
+
 
     fn_get_public_ip() {
         local ip
@@ -502,15 +615,18 @@ install_sillytavern() {
         echo -e "║                   ${BOLD}部署成功！尽情享受吧！${NC}                   ║"
         echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
         echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC}"
+        
         if [[ "$run_mode" == "1" ]]; then
             echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"
             echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"
-        elif [[ "$run_mode" == "2" ]]; then
+        elif [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
             echo -e "  ${YELLOW}登录页面:${NC} ${GREEN}http://${SERVER_IP}:8000/login${NC}"
         fi
+        
         echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
     }
-    
+
+
     tput reset
     echo -e "${CYAN}SillyTavern Docker 自动化安装流程${NC}"
 
@@ -528,50 +644,92 @@ install_sillytavern() {
     CONFIG_FILE="$INSTALL_DIR/config.yaml"
     COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
     fn_check_dependencies
-    
-    fn_print_info "正在检查 Docker 服务状态..."
-    if ! docker info > /dev/null 2>&1; then
-        fn_print_error "无法连接到 Docker 服务。请确保 Docker 正在运行 (可使用 'sudo systemctl status docker' 命令检查)。"
-    fi
-    log_success "Docker 服务连接正常。"
 
-    echo
-    log_action "是否需要进行 Docker 镜像速度测试并自动配置加速源？"
-    fn_print_info "如果自己配置过镜像加速，可以输入 n 跳过。"
-    read -r -p "请输入 [Y/n] (默认: Y, 直接回车即可开始测试): " confirm_test < /dev/tty
-    confirm_test=${confirm_test:-y}
+    fn_check_existing_container
 
-    if [[ "$confirm_test" =~ ^[Yy]$ ]]; then
-        fn_speed_test_and_configure_mirrors
-    else
-        log_info "已跳过 Docker 镜像测速。"
-    fi
+    fn_optimize_docker
     
     SERVER_IP=$(fn_get_public_ip)
 
-    fn_print_step "[ 2/5 ] 选择运行模式"
+    fn_print_step "[ 2/5 ] 选择运行模式与路径"
+
     echo "选择运行模式："
     echo -e "  [1] ${CYAN}单用户模式${NC} (弹窗认证，适合个人使用)"
     echo -e "  [2] ${CYAN}多用户模式${NC} (独立登录页，适合多人或单人使用)"
+    echo -e "  [3] ${RED}维护者模式${NC} (作者专用，普通用户请勿选择！)"
     read -p "请输入选项数字 [默认为 1]: " run_mode < /dev/tty
     run_mode=${run_mode:-1}
-    if [[ "$run_mode" == "1" ]]; then
-        read -p "请输入自定义用户名: " single_user < /dev/tty
-        read -p "请输入自定义密码: " single_pass < /dev/tty
-        if [ -z "$single_user" ] || [ -z "$single_pass" ]; then fn_print_error "用户名和密码不能为空！"; fi
-    elif [[ "$run_mode" != "2" ]]; then
-        fn_print_error "无效输入，脚本已终止。"
-    fi
+
+    case "$run_mode" in
+        1)
+            read -p "请输入自定义用户名: " single_user < /dev/tty
+            read -p "请输入自定义密码: " single_pass < /dev/tty
+            if [ -z "$single_user" ] || [ -z "$single_pass" ]; then fn_print_error "用户名和密码不能为空！"; fi
+            ;;
+        2)
+            ;;
+        3)
+            log_warn "已进入维护者模式，此模式需要手动准备特殊文件。"
+            ;;
+        *)
+            fn_print_error "无效输入，脚本已终止."
+            ;;
+    esac
+
+    local default_parent_path="$USER_HOME"
+    read -rp "安装路径: SillyTavern 将被安装在 <上级目录>/sillytavern 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
+    local parent_path="${custom_parent_path:-$default_parent_path}"
+    INSTALL_DIR="${parent_path}/sillytavern"
+    log_info "安装路径最终设置为: ${INSTALL_DIR}"
+
+    CONFIG_FILE="$INSTALL_DIR/config.yaml"
+    COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 
     fn_print_step "[ 3/5 ] 创建项目文件"
     if [ -d "$INSTALL_DIR" ]; then
         fn_confirm_and_delete_dir "$INSTALL_DIR" "$CONTAINER_NAME"
     fi
-    fn_create_project_structure
-    
+
+    if [[ "$run_mode" == "3" ]]; then
+        fn_print_info "正在创建开发者模式项目目录结构..."
+        mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"
+        mkdir -p "$INSTALL_DIR/custom/images"
+        touch "$INSTALL_DIR/custom/login.html"
+        fn_print_info "正在设置文件所有权..."
+        chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
+        log_success "开发者项目目录创建并授权成功！"
+    else
+        fn_create_project_structure
+    fi
+
     cd "$INSTALL_DIR"
     fn_print_info "工作目录已切换至: $(pwd)"
 
+    if [[ "$run_mode" == "3" ]]; then
+    cat <<EOF > "$COMPOSE_FILE"
+services:
+  sillytavern:
+    container_name: ${CONTAINER_NAME}
+    hostname: ${CONTAINER_NAME}
+    image: ${IMAGE_NAME}
+    security_opt:
+      - apparmor:unconfined
+    environment:
+      - NODE_ENV=production
+      - FORCE_COLOR=1
+    ports:
+      - "8000:8000"
+    volumes:
+      - "./:/home/node/app/config:Z"
+      - "./data:/home/node/app/data:Z"
+      - "./plugins:/home/node/app/plugins:Z"
+      - "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party:Z"
+      # --- 以下为自定义版特有挂载 ---
+      - "./custom/login.html:/home/node/app/public/login.html:Z"
+      - "./custom/images:/home/node/app/public/images:Z"
+    restart: unless-stopped
+EOF
+    else
     cat <<EOF > "$COMPOSE_FILE"
 services:
   sillytavern:
@@ -592,7 +750,13 @@ services:
       - "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party:Z"
     restart: unless-stopped
 EOF
+    fi
     log_success "docker-compose.yml 文件创建成功！"
+
+    if [[ "$run_mode" == "3" ]]; then
+        log_warn "维护者模式：请现在将您的自定义文件 (如 login.html) 放入 '$INSTALL_DIR/custom' 目录。"
+        read -rp "文件放置完毕后，按 Enter 键继续..." < /dev/tty
+    fi
 
     fn_print_step "[ 4/5 ] 初始化与配置"
     fn_print_info "即将拉取 SillyTavern 镜像，下载期间将持续显示预估时间。"
@@ -692,34 +856,73 @@ main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.0${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.2${NC}       ${CYAN}║${NC}"
         echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
         echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
-        echo -e "\n${BOLD}使用说明:${NC}"
-        echo -e "  • ${YELLOW}全新服务器${NC}: 请按 ${GREEN}1 -> 2 -> 3${NC} 的顺序分步执行。"
-        echo -e "  • ${YELLOW}已有Docker环境${NC}: 可直接从【步骤3】开始。"
-        echo -e "  • ${RED}注意${NC}: 步骤1执行后服务器将重启，需重新登录并运行本脚本以继续。"
-        
+
+        if [ "$IS_DEBIAN_LIKE" = false ]; then
+            echo -e "\n${YELLOW}╔═════════════════════════════════════════════════════════════════════════════╗${NC}"
+            echo -e "${YELLOW}║                        【 系统兼容性提示 】                            ║${NC}"
+            echo -e "${YELLOW}╠═════════════════════════════════════════════════════════════════════════════╣${NC}"
+            echo -e "${YELLOW}║${NC} 检测到您的系统为: ${CYAN}${DETECTED_OS}${NC}"
+            echo -e "${YELLOW}║${NC} 本脚本专为 Debian/Ubuntu 优化，因此部分功能在您的系统上不可用。         ${YELLOW}║${NC}"
+            echo -e "${YELLOW}║─────────────────────────────────────────────────────────────────────────────║${NC}"
+            echo -e "${YELLOW}║ ${RED}不可用功能:${NC} [1] 服务器初始化, [2] 安装1Panel, [4] 系统清理        ${YELLOW}║${NC}"
+            echo -e "${YELLOW}║ ${GREEN}可 用 功 能:${NC} [3] 部署 SillyTavern (内置Docker优化)               ${YELLOW}║${NC}"
+            echo -e "${YELLOW}║─────────────────────────────────────────────────────────────────────────────║${NC}"
+            echo -e "${YELLOW}║ ${BOLD}请注意：要使用可用功能，您必须先手动安装好 Docker 和 Docker-Compose。${NC}   ${YELLOW}║${NC}"
+            echo -e "${YELLOW}╚═════════════════════════════════════════════════════════════════════════════╝${NC}"
+        else
+            echo -e "\n${BOLD}使用说明 (Debian/Ubuntu):${NC}"
+            echo -e "  • ${YELLOW}全新服务器${NC}: 请按 ${GREEN}1 -> 2 -> 3${NC} 的顺序分步执行。"
+            echo -e "  • ${YELLOW}已有Docker环境${NC}: 可直接从【步骤3】开始。"
+        fi
+
         echo -e "\n${BLUE}================================== 菜 单 ==================================${NC}"
-        echo -e " ${GREEN}[1] 服务器初始化 (安全加固、系统优化)${NC}"
-        echo -e "     (全新服务器首次使用必须执行，执行后会自动重启)"
-        echo -e "---------------------------------------------------------------------------"
-        echo -e " ${GREEN}[2] 安装 1Panel 面板 (会自动安装Docker)${NC}"
-        echo -e "     (应在步骤1完成后执行)"
-        echo -e "---------------------------------------------------------------------------"
+        
+        if [ "$IS_DEBIAN_LIKE" = true ]; then
+            echo -e " ${GREEN}[1] 服务器初始化 (安全加固、系统优化)${NC}"
+            echo -e " ${GREEN}[2] 安装 1Panel 面板 (会自动安装Docker)${NC}"
+        fi
+        
         echo -e " ${GREEN}[3] 部署 SillyTavern (基于Docker)${NC}"
-        echo -e "     (应在步骤2完成或已有Docker环境后执行)"
+        echo -e "---------------------------------------------------------------------------"
+
+        if [ "$IS_DEBIAN_LIKE" = true ]; then
+            echo -e " ${CYAN}[4] 系统安全清理 (清理缓存和无用镜像)${NC}"
+        fi
+
         echo -e "${BLUE}===========================================================================${NC}"
         echo -e " ${YELLOW}[q] 退出脚本${NC}\n"
 
-        read -rp "请输入选项 [1, 2, 3, q]: " choice
+        local options_str="3" # 核心选项总是3
+        if [ "$IS_DEBIAN_LIKE" = true ]; then
+            # 如果是Debian，构建一个有序的列表
+            options_str="1,2,3,4"
+        fi
+        # 无论如何，最后都加上 q
+        local valid_options="${options_str},q"
+        read -rp "请输入选项 [${valid_options}]: " choice < /dev/tty
 
         case "$choice" in
-            1) check_root; run_initialization ;;
-            2) check_root; install_1panel; read -rp $'\n操作完成，按 Enter 键返回主菜单...' ;;
-            3) check_root; install_sillytavern; read -rp $'\n操作完成，按 Enter 键返回主菜单...' ;;
-            q|Q) echo -e "\n感谢使用，再见！"; exit 0 ;;
-            *) echo -e "\n${RED}无效输入，请重新选择。${NC}"; sleep 2 ;;
+            1) 
+                if [ "$IS_DEBIAN_LIKE" = true ]; then check_root; run_initialization; else log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"; sleep 2; fi
+                ;;
+            2) 
+                if [ "$IS_DEBIAN_LIKE" = true ]; then check_root; install_1panel; read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty; else log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"; sleep 2; fi
+                ;;
+            3) 
+                check_root; install_sillytavern; read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
+                ;;
+            4)
+                if [ "$IS_DEBIAN_LIKE" = true ]; then run_system_cleanup; read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty; else log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"; sleep 2; fi
+                ;;
+            q|Q) 
+                echo -e "\n感谢使用，再见！"; exit 0 
+                ;;
+            *) 
+                echo -e "\n${RED}无效输入，请重新选择。${NC}"; sleep 2 
+                ;;
         esac
     done
 }
