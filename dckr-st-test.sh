@@ -43,8 +43,6 @@ check_root() {
     fi
 }
 
-fn_configure_docker_logs() {5    log_action "是否需要配置 Docker 全局日志限制？"6    log_info "这将限制每个容器的日志大小为 50MB，防止日志文件无限增长。"7    log_warn "此配置对所有新创建的容器生效。"8    read -rp "推荐配置，是否继续？[Y/n]: " confirm_log < /dev/tty9    if [[ ! "${confirm_log:-y}" =~ ^[Yy]$ ]]; then10        log_info "已跳过 Docker 日志配置。"11        return12    fi
-
 fn_configure_docker_logs() {
     log_action "是否需要配置 Docker 全局日志限制？"
     log_info "这将限制每个容器的日志大小为 50MB，防止日志文件无限增长。"
