@@ -43,56 +43,42 @@ check_root() {
     fi
 }
 
-configure_docker_logs() {
-    check_root
-    log_action "开始配置 Docker 全局日志..."
+fn_configure_docker_logs() {5    log_action "是否需要配置 Docker 全局日志限制？"6    log_info "这将限制每个容器的日志大小为 50MB，防止日志文件无限增长。"7    log_warn "此配置对所有新创建的容器生效。"8    read -rp "推荐配置，是否继续？[Y/n]: " confirm_log < /dev/tty9    if [[ ! "${confirm_log:-y}" =~ ^[Yy]$ ]]; then10        log_info "已跳过 Docker 日志配置。"11        return12    fi
+
+fn_configure_docker_logs() {
+    log_action "是否需要配置 Docker 全局日志限制？"
+    log_info "这将限制每个容器的日志大小为 50MB，防止日志文件无限增长。"
+    log_warn "此配置对所有新创建的容器生效。"
+    read -rp "推荐配置，是否继续？[Y/n]: " confirm_log < /dev/tty
+    if [[ ! "${confirm_log:-y}" =~ ^[Yy]$ ]]; then
+        log_info "已跳过 Docker 日志配置。"
+        return
+    fi
 
     if ! command -v jq &> /dev/null; then
         log_info "配置需要 jq 工具，正在尝试安装..."
         if [ "$IS_DEBIAN_LIKE" = true ]; then
             apt-get update && apt-get install -y jq
         else
-            # 尝试为其他系统安装，如CentOS
-            if command -v yum &> /dev/null; then
-                yum install -y epel-release && yum install -y jq
-            elif command -v dnf &> /dev/null; then
-                dnf install -y epel-release && dnf install -y jq
-            fi
+            if command -v yum &> /dev/null; then yum install -y epel-release && yum install -y jq; elif command -v dnf &> /dev/null; then dnf install -y epel-release && dnf install -y jq; fi
         fi
-
-        if ! command -v jq &> /dev/null; then
-            log_error "jq 安装失败。请手动安装 jq 后再试 (例如: sudo apt install jq)。"
-        fi
+        if ! command -v jq &> /dev/null; then log_error "jq 安装失败，请手动安装后重试。"; fi
         log_success "jq 安装成功！"
     fi
 
     local DAEMON_JSON="/etc/docker/daemon.json"
     local current_json
     current_json=$(cat "$DAEMON_JSON" 2>/dev/null || echo "{}")
-
-    # 定义日志配置
     local log_config='{"log-driver": "json-file", "log-opts": {"max-size": "50m", "max-file": "3"}}'
-
-    # 使用 jq 智能合并 JSON
     local new_json
     new_json=$(echo "$current_json" | jq ". + $log_config")
-
-    log_info "将向 ${DAEMON_JSON} 写入以下配置:"
-    echo "$new_json" | jq . # 美化输出给用户看
-
-    read -rp "确认要应用此配置吗? [Y/n] " confirm < /dev/tty
-    if [[ ! "${confirm:-y}" =~ ^[Yy]$ ]]; then
-        log_info "操作已取消。"
-        return
-    fi
 
     echo "$new_json" | tee "$DAEMON_JSON" > /dev/null
     log_action "正在重启 Docker 服务以应用配置..."
     if systemctl restart docker; then
         log_success "Docker 服务已重启，日志配置已生效！"
-        log_warn "此配置仅对【新创建】的容器生效。"
     else
-        log_error "Docker 服务重启失败！请检查配置文件 ${DAEMON_JSON} 格式是否正确。"
+        log_error "Docker 服务重启失败！请检查 ${DAEMON_JSON} 格式。"
     fi
 }
 
@@ -102,7 +88,9 @@ run_system_cleanup() {
     echo -e "此操作将执行以下命令："
     echo -e "  - ${CYAN}apt-get clean -y${NC} (清理apt缓存)"
     echo -e "  - ${CYAN}journalctl --vacuum-size=100M${NC} (压缩日志到100M)"
-    echo -e "  - ${CYAN}docker system prune -f${NC} (清理无用的Docker镜像和容器)"
+    if command -v docker &> /dev/null; then
+        echo -e "  - ${CYAN}docker system prune -f${NC} (清理无用的Docker镜像和容器)"
+    fi
     read -rp "确认要继续吗? [Y/n] " confirm < /dev/tty
     if [[ ! "${confirm:-y}" =~ ^[Yy]$ ]]; then
         log_info "操作已取消。"
@@ -117,9 +105,14 @@ run_system_cleanup() {
     journalctl --vacuum-size=100M
     log_success "journald 日志压缩完成。"
 
-    log_info "正在清理 Docker 系统..."
-    docker system prune -f
-    log_success "Docker 系统清理完成。"
+    # 再次检查 Docker 是否存在
+    if command -v docker &> /dev/null; then
+        log_info "正在清理 Docker 系统..."
+        docker system prune -f
+        log_success "Docker 系统清理完成。"
+    else
+        log_warn "未检测到 Docker，已跳过 Docker 系统清理步骤。"
+    fi
 
     log_info "系统安全清理已全部完成！"
 }
@@ -682,6 +675,7 @@ install_sillytavern() {
     CONFIG_FILE="$INSTALL_DIR/config.yaml"
     COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
     fn_check_dependencies
+    fn_configure_docker_logs
     
     fn_print_info "正在检查 Docker 服务状态..."
     if ! docker info > /dev/null 2>&1; then
@@ -907,7 +901,7 @@ main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.1${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.2${NC}       ${CYAN}║${NC}"
         echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
         echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 
@@ -918,8 +912,8 @@ main_menu() {
             echo -e "${YELLOW}║${NC} 检测到您的系统为: ${CYAN}${DETECTED_OS}${NC}"
             echo -e "${YELLOW}║${NC} 本脚本专为 Debian/Ubuntu 优化，因此部分功能在您的系统上不可用。         ${YELLOW}║${NC}"
             echo -e "${YELLOW}║─────────────────────────────────────────────────────────────────────────────║${NC}"
-            echo -e "${YELLOW}║ ${RED}不可用功能:${NC} [1], [2], [5]                                          ${YELLOW}║${NC}"
-            echo -e "${YELLOW}║ ${GREEN}可 用 功 能:${NC} [3] 部署SillyTavern, [4] Docker日志配置               ${YELLOW}║${NC}"
+            echo -e "${YELLOW}║ ${RED}不可用功能:${NC} [1] 服务器初始化, [2] 安装1Panel, [4] 系统清理        ${YELLOW}║${NC}"
+            echo -e "${YELLOW}║ ${GREEN}可 用 功 能:${NC} [3] 部署 SillyTavern (内置Docker优化)               ${YELLOW}║${NC}"
             echo -e "${YELLOW}║─────────────────────────────────────────────────────────────────────────────║${NC}"
             echo -e "${YELLOW}║ ${BOLD}请注意：要使用可用功能，您必须先手动安装好 Docker 和 Docker-Compose。${NC}   ${YELLOW}║${NC}"
             echo -e "${YELLOW}╚═════════════════════════════════════════════════════════════════════════════╝${NC}"
@@ -938,17 +932,16 @@ main_menu() {
         
         echo -e " ${GREEN}[3] 部署 SillyTavern (基于Docker)${NC}"
         echo -e "---------------------------------------------------------------------------"
-        echo -e " ${CYAN}[4] Docker 优化 (配置日志大小限制)${NC}"
 
         if [ "$IS_DEBIAN_LIKE" = true ]; then
-            echo -e " ${CYAN}[5] 系统安全清理 (清理缓存和无用镜像)${NC}"
+            echo -e " ${CYAN}[4] 系统安全清理 (清理缓存和无用镜像)${NC}"
         fi
 
         echo -e "${BLUE}===========================================================================${NC}"
         echo -e " ${YELLOW}[q] 退出脚本${NC}\n"
 
-        local valid_options="q,3,4"
-        if [ "$IS_DEBIAN_LIKE" = true ]; then valid_options+=",1,2,5"; fi
+        local valid_options="q,3"
+        if [ "$IS_DEBIAN_LIKE" = true ]; then valid_options+=",1,2,4"; fi
         read -rp "请输入选项 [${valid_options}]: " choice < /dev/tty
 
         case "$choice" in
@@ -962,9 +955,6 @@ main_menu() {
                 check_root; install_sillytavern; read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
                 ;;
             4)
-                configure_docker_logs; read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
-                ;;
-            5)
                 if [ "$IS_DEBIAN_LIKE" = true ]; then run_system_cleanup; read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty; else log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"; sleep 2; fi
                 ;;
             q|Q) 
@@ -976,7 +966,5 @@ main_menu() {
         esac
     done
 }
-
-
 
 main_menu
