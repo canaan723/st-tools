@@ -444,62 +444,68 @@ install_sillytavern() {
             if [ "$IS_DEBIAN_LIKE" = true ]; then
                 apt-get update && apt-get install -y "${missing_pkgs[@]}"
             else
-                if command -v yum &> /dev/null; then
-                    yum install -y "${missing_pkgs[@]}"
-                elif command -v dnf &> /dev/null; then
-                    dnf install -y "${missing_pkgs[@]}"
-                else
-                    log_warn "无法确定包管理器，请手动安装: ${missing_pkgs[*]}"
-                fi
+                if command -v yum &> /dev/null; then yum install -y "${missing_pkgs[@]}"; elif command -v dnf &> /dev/null; then dnf install -y "${missing_pkgs[@]}"; else log_warn "无法确定包管理器，请手动安装: ${missing_pkgs[*]}"; fi
             fi
         fi
 
-        # 重新检查并报告
+        # --- 重新检查并报告 ---
         local all_deps_ok=true
         for pkg in "bc" "curl" "tar"; do
             if command -v "$pkg" &> /dev/null; then
-                declare "${pkg^^}_VER"="$(fn_get_cleaned_version_num "$($pkg --version 2>/dev/null || echo 'N/A')")"
-                declare "${pkg^^}_STATUS"="OK"
+                declare "${pkg^^}_VER"="$(fn_get_cleaned_version_num "$($pkg --version 2>/dev/null || echo 'N/A')")"; declare "${pkg^^}_STATUS"="OK"
             else
-                declare "${pkg^^}_STATUS"="Not Found"
-                all_deps_ok=false
+                declare "${pkg^^}_STATUS"="Not Found"; all_deps_ok=false
+            fi
+        done
+        if [ "$all_deps_ok" = false ]; then fn_print_error "部分基础依赖自动安装失败，请手动安装后重试。"; fi
+
+        # --- Docker 和 Compose 检查与交互式安装 ---
+        local docker_check_needed=true
+        while $docker_check_needed; do
+            if ! command -v docker &> /dev/null; then
+                DOCKER_STATUS="Not Found"
+            else
+                DOCKER_VER=$(fn_get_cleaned_version_num "$(docker --version)"); DOCKER_STATUS="OK"
+            fi
+            if command -v docker-compose &> /dev/null; then
+                DOCKER_COMPOSE_CMD="docker-compose"; COMPOSE_VER="v$(fn_get_cleaned_version_num "$($DOCKER_COMPOSE_CMD version)")"; COMPOSE_STATUS="OK (v1)"
+            elif docker compose version &> /dev/null; then
+                DOCKER_COMPOSE_CMD="docker compose"; COMPOSE_VER=$(docker compose version | grep -oE 'v[0-9]+(\.[0-9]+)+' | head -n 1); COMPOSE_STATUS="OK (v2)"
+            else
+                DOCKER_COMPOSE_CMD=""; COMPOSE_STATUS="Not Found"
+            fi
+
+            if [[ "$DOCKER_STATUS" == "Not Found" || "$COMPOSE_STATUS" == "Not Found" ]]; then
+                if [ "$IS_DEBIAN_LIKE" = true ]; then
+                    log_warn "未检测到 Docker 或 Docker-Compose。"
+                    read -rp "是否立即尝试自动安装 Docker? [Y/n]: " confirm_install_docker < /dev/tty
+                    if [[ "${confirm_install_docker:-y}" =~ ^[Yy]$ ]]; then
+                        log_action "正在使用官方推荐脚本安装 Docker..."
+                        bash <(curl -sSL https://linuxmirrors.cn/docker.sh)
+                        # 安装后再次循环检查
+                        continue
+                    else
+                        fn_print_error "用户选择不安装 Docker，脚本无法继续。"
+                    fi
+                else
+                    # 非 Debian 系统直接报错
+                    fn_print_error "未检测到 Docker 或 Docker-Compose。请在您的系统 (${DETECTED_OS}) 上手动安装它们后重试。"
+                fi
+            else
+                # Docker 和 Compose 都已存在，检查通过，结束循环
+                docker_check_needed=false
             fi
         done
 
-        if ! command -v docker &> /dev/null; then
-            DOCKER_STATUS="Not Found"
-        else
-            DOCKER_VER=$(fn_get_cleaned_version_num "$(docker --version)")
-            DOCKER_STATUS="OK"
-        fi
-        if command -v docker-compose &> /dev/null; then
-            DOCKER_COMPOSE_CMD="docker-compose"
-            COMPOSE_VER="v$(fn_get_cleaned_version_num "$($DOCKER_COMPOSE_CMD version)")"
-            COMPOSE_STATUS="OK (v1)"
-        elif docker compose version &> /dev/null; then
-            DOCKER_COMPOSE_CMD="docker compose"
-            COMPOSE_VER=$(docker compose version | grep -oE 'v[0-9]+(\.[0-9]+)+' | head -n 1)
-            COMPOSE_STATUS="OK (v2)"
-        else
-            DOCKER_COMPOSE_CMD=""
-            COMPOSE_STATUS="Not Found"
-        fi
-        
         fn_report_dependencies
 
-        if [ "$all_deps_ok" = false ]; then
-            fn_print_error "部分基础依赖自动安装失败，请手动安装后重试。"
-        fi
-
-        if [[ "$DOCKER_STATUS" == "Not Found" || "$COMPOSE_STATUS" == "Not Found" ]]; then
-            fn_print_error "未检测到 Docker 或 Docker-Compose。请返回主菜单执行【步骤2】安装。"
-        fi
         local current_user="${SUDO_USER:-$(whoami)}"
         if ! groups "$current_user" | grep -q '\bdocker\b' && [ "$(id -u)" -ne 0 ]; then
             fn_print_error "当前用户不在 docker 用户组。请执行【步骤2】或手动添加后，【重新登录SSH】再试。"
         fi
         log_success "所有依赖项检查通过！"
     }
+
 
 
     fn_apply_config_changes() {
@@ -677,9 +683,26 @@ install_sillytavern() {
     
     fn_print_info "正在检查 Docker 服务状态..."
     if ! docker info > /dev/null 2>&1; then
+        log_warn "无法连接到 Docker 服务，它可能未启动。"
+        read -rp "是否尝试启动 Docker 服务? [Y/n]: " confirm_start < /dev/tty
+        if [[ "${confirm_start:-y}" =~ ^[Yy]$ ]]; then
+            log_action "正在尝试启动 Docker 服务..."
+            if sudo systemctl start docker; then
+                log_success "Docker 服务启动成功！"
+                sleep 2 # 等待服务完全就绪
+            else
+                fn_print_error "尝试启动 Docker 服务失败。请使用 'sudo systemctl status docker' 检查。"
+            fi
+        else
+            fn_print_error "用户选择不启动，脚本无法继续。"
+        fi
+    fi
+    # 再次进行最终检查
+    if ! docker info > /dev/null 2>&1; then
         fn_print_error "无法连接到 Docker 服务。请确保 Docker 正在运行 (可使用 'sudo systemctl status docker' 命令检查)。"
     fi
     log_success "Docker 服务连接正常。"
+
 
     echo
     log_action "是否需要进行 Docker 镜像速度测试并自动配置加速源？"
