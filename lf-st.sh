@@ -1,72 +1,63 @@
 #!/bin/bash
 
-# --- 脚本开始 ---
-echo "----------------------------------------------------------------"
-echo "这是一个 leaflow 云酒馆 (SillyTavern) 一键配置脚本"
-echo "请勿用于其他用途。"
+NC='\033[0m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+WHITE='\033[0;97m'
+BOLD='\033[1m'
+
+echo -e "${CYAN}----------------------------------------------------------------${NC}"
+echo -e "${CYAN}${BOLD}    这是一个 leaflow 云酒馆 (SillyTavern) 一键配置脚本${NC}"
+echo -e "${CYAN}                      请勿用于其他用途。${NC}"
 echo
-echo "by Qingjue | XHS:826702880"
-echo "----------------------------------------------------------------"
+echo -e "${BLUE}                    by Qingjue | XHS:826702880${NC}"
+echo -e "${CYAN}----------------------------------------------------------------${NC}"
 echo
 
-# 默认的配置文件路径
 CONFIG_FILE="/mnt/config/config.yaml"
 
-# --- 1. 检查并确认配置文件路径 ---
-# 循环直到找到一个有效的文件路径或用户选择退出
 while [ ! -f "$CONFIG_FILE" ]; do
-    echo "错误：在默认路径 '$CONFIG_FILE' 未找到配置文件。"
+    echo -e "${RED}错误：${NC}在默认路径 '${BOLD}$CONFIG_FILE${NC}' 未找到配置文件。"
     
-    # 询问用户是提供新路径还是退出，回车默认为 'N'
-    read -p "是否要指定一个新的文件路径？ (y/N): " choice
+    read -p "$(echo -e "${YELLOW}是否要指定一个新的文件路径？ (y/N): ${NC}")" choice
     
-    # 如果用户直接回车，choice变量为空，将按 N 处理
     case "$choice" in
         [Yy]* )
-            # 请求用户输入新的路径
-            read -p "请输入正确的配置文件完整路径: " CONFIG_FILE
-            # 如果用户输入了路径但仍然是空的，提示并继续循环
+            read -p "$(echo -e "${YELLOW}请输入正确的配置文件完整路径: ${NC}")" CONFIG_FILE
             if [ -z "$CONFIG_FILE" ]; then
-                echo "输入为空，请重新操作。"
+                echo -e "${RED}输入为空，请重新操作。${NC}"
             fi
             ;;
-        [Nn]* | "" ) # 匹配 'n', 'N', 或空输入 (回车)
-            # 用户选择退出
-            echo "操作已取消，退出脚本。"
+        [Nn]* | "" )
+            echo -e "${RED}操作已取消，退出脚本。${NC}"
             exit 1
             ;;
         * )
-            # 无效输入
-            echo "无效输入，请输入 'y' 或 'n'。"
+            echo -e "${RED}无效输入，请输入 'y' 或 'n'。${NC}"
             ;;
     esac
-    echo # 增加一个空行以改善可读性
+    echo
 done
 
-echo "成功定位配置文件: $CONFIG_FILE"
-echo "----------------------------------------------------------------"
+echo -e "${GREEN}成功定位配置文件: ${BOLD}$CONFIG_FILE${NC}"
+echo -e "${CYAN}----------------------------------------------------------------${NC}"
 
+echo -e "${WHITE}${BOLD}请设定认证信息（用于登录酒馆）：${NC}"
+read -p "$(echo -e "${YELLOW}请输入新的用户名: ${NC}")" NEW_USERNAME
+read -p "$(echo -e "${YELLOW}请输入新的密码: ${NC}")" NEW_PASSWORD
 
-# --- 2. 获取用户输入 ---
-echo "请输入认证信息（注意：密码将明文显示在屏幕上）："
-read -p "请输入新的用户名: " NEW_USERNAME
-read -p "请输入新的密码: " NEW_PASSWORD
-
-# 检查用户名和密码是否为空
 if [ -z "$NEW_USERNAME" ] || [ -z "$NEW_PASSWORD" ]; then
-    echo "错误：用户名和密码均不能为空。操作已终止。"
+    echo -e "${RED}错误：用户名和密码均不能为空。操作已终止。${NC}"
     exit 1
 fi
 
-echo "----------------------------------------------------------------"
-echo "信息确认完毕，准备执行修改..."
-sleep 1 # 短暂暂停，让用户看到信息
+echo -e "${CYAN}----------------------------------------------------------------${NC}"
+echo -e "${BLUE}信息确认完毕，准备执行修改...${NC}"
+sleep 1
 
-
-# --- 3. 使用 sed 执行修改 ---
-# 使用 '#' 作为 sed 的分隔符，以避免密码中的 '/' 字符导致命令出错
-# -i 表示直接修改文件 (in-place)
-# -e 表示执行一个表达式，可以连接多个 -e
 sed -i \
     -e 's#^\(listen:\s*\)false#\1true#' \
     -e 's#^\(whitelistMode:\s*\)true#\1false#' \
@@ -78,32 +69,33 @@ sed -i \
     -e 's#^\(\s*lazyLoadCharacters:\s*\)false#\1true#' \
     "$CONFIG_FILE"
 
-# 检查 sed 命令是否成功执行
 if [ $? -ne 0 ]; then
-    echo "严重错误：在修改文件 '$CONFIG_FILE' 时发生未知错误。"
-    echo "文件可能未被修改或已损坏，请手动检查。"
+    echo -e "${RED}${BOLD}严重错误：${NC}${RED}在修改文件 '$CONFIG_FILE' 时发生未知错误。${NC}"
+    echo -e "${RED}文件可能未被修改或已损坏，请手动检查。${NC}"
     exit 1
 fi
 
+echo -e "${GREEN}${BOLD}成功！${NC}${GREEN}配置文件 '$CONFIG_FILE' 修改完成。${NC}"
+echo -e "${CYAN}----------------------------------------------------------------${NC}"
+echo -e "${WHITE}${BOLD}已更新的配置详情：${NC}"
+echo
 
-# --- 4. 显示结果 ---
-echo "成功！配置文件 '$CONFIG_FILE' 修改完成。"
-echo "----------------------------------------------------------------"
-echo "已更新的配置详情："
+printf "  - ${GREEN}%-28s${NC} %s\n" "listen: true" "(【基础】允许外部网络访问酒馆)"
+printf "  - ${GREEN}%-28s${NC} %s\n" "whitelistMode: false" "(【基础】关闭IP白名单，允许任意IP访问)"
+printf "  - ${GREEN}%-28s${NC} %s\n" "basicAuthMode: true" "(【基础】启用基础登录认证)"
+printf "  - ${GREEN}%-28s${NC} %s\n" "sessionTimeout: 86400" "(【安全】24小时无操作后需重新登录)"
+printf "  - ${GREEN}%-28s${NC} %s\n" "numberOfBackups: 5" "(【性能】单个聊天记录的备份保留数量)"
+printf "  - ${GREEN}%-28s${NC} %s\n" "lazyLoadCharacters: true" "(【性能】启用角色卡懒加载，加快启动)"
 echo
-echo "  - listen: true                (作用：允许外部网络访问酒馆)"
-echo "  - whitelistMode: false         (作用：关闭IP白名单，允许任意IP访问)"
-echo "  - basicAuthMode: true           (作用：启用基础登录认证，使用用户名和密码登录)"
-echo "  - sessionTimeout: 86400       (作用：会话超时，24小时无操作后需重新登录)"
-echo "  - numberOfBackups: 5           (作用：单个角色聊天记录的备份文件保留数量)"
-echo "  - lazyLoadCharacters: true    (作用：启用角色卡懒加载，加快启动速度)"
+echo -e "${CYAN}----------------------------------------------------------------${NC}"
+echo -e "${BOLD}${YELLOW}重要：请记录登录凭证！${NC}"
 echo
-echo "----------------------------------------------------------------"
-echo "重要：请务必记录登录凭证！"
+echo -e "  ${WHITE}用户名: ${BOLD}${CYAN}$NEW_USERNAME${NC}"
+echo -e "  ${WHITE}密  码: ${BOLD}${CYAN}$NEW_PASSWORD${NC}"
 echo
-echo "  用户名: $NEW_USERNAME"
-echo "  密  码: $NEW_PASSWORD"
-echo
-echo "----------------------------------------------------------------"
+echo -e "${CYAN}----------------------------------------------------------------${NC}"
+echo -e "${BLUE}提示：如需更改用户名或密码，再次运行此脚本即可。${NC}"
+echo -e "${BLUE}祝您使用愉快！${NC}"
+echo -e "${CYAN}----------------------------------------------------------------${NC}"
 
 exit 0
