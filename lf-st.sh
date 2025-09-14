@@ -10,10 +10,10 @@ BOLD='\033[1m'
 
 # --- 脚本开始 ---
 tput reset
-echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${CYAN}╔════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║     ${BOLD}leaflow 云酒馆 (SillyTavern) 一键配置脚本${NC}      ${CYAN}║${NC}"
-echo -e "${CYAN}║               by Qingjue | XHS:826702880               ${CYAN}║${NC}"
-echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
+echo -e "${CYAN}║               by Qingjue | XHS:826702880           ${CYAN}║${NC}"
+echo -e "${CYAN}╚════════════════════════════════════════════════════╝${NC}"
 echo
 
 CONFIG_FILE="/mnt/config/config.yaml"
