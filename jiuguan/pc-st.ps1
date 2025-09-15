@@ -516,7 +516,7 @@ function Run-BackupInteractive {
     
     try {
         Write-Warning "正在收集文件并准备打包..."
-        $excludeDirs = @(".git", "_cache", "backups")
+        $excludeDirs = @("_cache", "backups")
         $excludeFiles = @("*.log")
         
         foreach ($item in $pathsToBackup) {

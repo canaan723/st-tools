@@ -253,7 +253,7 @@ fn_create_data_zip_backup() {
         return 1
     fi
 
-    local exclude_params=(-x "*/.git/*" -x "*/_cache/*" -x "*.log" -x "*/backups/*")
+    local exclude_params=(-x "*/_cache/*" -x "*.log" -x "*/backups/*")
     if zip -rq "$backup_zip_path" "${paths_to_backup[@]}" "${exclude_params[@]}"; then
         fn_print_success "核心数据备份成功: ${backup_name}"
         cd "$HOME"
@@ -603,7 +603,7 @@ run_backup_interactive() {
         echo "  - $item"
     done
 
-    local exclude_params=(-x "*/.git/*" -x "*/_cache/*" -x "*.log" -x "*/backups/*")
+    local exclude_params=(-x "*/_cache/*" -x "*.log" -x "*/backups/*")
     zip -rq "$backup_zip_path" "${paths_to_backup[@]}" "${exclude_params[@]}"
     if [ $? -ne 0 ]; then
         fn_print_warning "备份失败！"
