@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v1.8
+# SillyTavern 助手 v1.80
 # 作者: Qingjue | 小红书号: 826702880
 
 # =========================================================================
