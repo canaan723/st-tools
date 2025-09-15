@@ -831,7 +831,7 @@ while true; do
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
-    local update_notice=""
+    update_notice=""
     if [ -f "$UPDATE_FLAG_FILE" ]; then
         update_notice=" ${YELLOW}[!] 有更新${NC}"
     fi
