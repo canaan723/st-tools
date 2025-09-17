@@ -272,8 +272,7 @@ fn_main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔════════════════════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║      ${BOLD}leaflow 云酒馆 (SillyTavern) 助手 v1.2${NC}        ${CYAN}║${NC}"
-        echo -e "${CYAN}║               by Qingjue | XHS:826702880           ${CYAN}║${NC}"
+        echo -e "${CYAN}║      ${BOLD}leaflow 云酒馆 (SillyTavern) 助手     ${NC}        ${CYAN}║${NC}"
         echo -e "${CYAN}╚════════════════════════════════════════════════════╝${NC}\n"
         echo -e "${BLUE}============================ 主菜单 ============================${NC}"
         echo -e "  [1] ${CYAN}配置酒馆设置 (修改用户名/密码等)${NC}"
