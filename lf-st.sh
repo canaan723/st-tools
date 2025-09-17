@@ -21,6 +21,37 @@ BACKUP_PATH="$DATA_DIR/$BACKUP_NAME"
 ZIP_FILE_NAME="${TARGET_DIR_NAME}.zip"
 ZIP_FILE_PATH="$DATA_DIR/$ZIP_FILE_NAME"
 
+fn_set_permissions() {
+    echo -e "${BLUE}--- 权限自动检查与设置 ---${NC}"
+    
+    if [ ! -d "$UNIFIED_STORAGE_DIR" ]; then
+        echo -e "${YELLOW}[警告]${NC} 存储目录 '${BOLD}$UNIFIED_STORAGE_DIR${NC}' 不存在。"
+        echo -e "请确认脚本顶部的路径配置是否正确。将跳过权限设置。"
+        read -p "按 Enter 键继续..."
+        return
+    fi
+
+    local current_owner=$(stat -c '%U' "$UNIFIED_STORAGE_DIR")
+    if [ "$current_owner" == "$(whoami)" ]; then
+        echo -e "${GREEN}✓ 权限正确，目录所有者已是当前用户 (${BOLD}$(whoami)${NC})。无需修改。${NC}\n"
+        sleep 1
+        return
+    fi
+
+    echo -e "${YELLOW}[操作]${NC} 检测到目录所有者为 '${BOLD}$current_owner${NC}'，将尝试变更为当前用户 '${BOLD}$(whoami)${NC}'..."
+    echo -e "这需要管理员权限，您可能需要输入密码。"
+    
+    if sudo chown -R "$(whoami):$(id -gn)" "$UNIFIED_STORAGE_DIR"; then
+        echo -e "${GREEN}✓ 权限设置成功！${NC} 您现在可以使用当前用户通过文件管理器操作此目录了。\n"
+    else
+        echo -e "\n${RED}[错误]${NC} 权限设置失败。"
+        echo -e "这可能是因为您输入的密码错误，或者当前用户没有 sudo 权限。"
+        echo -e "${YELLOW}[提示]${NC} 您在后续操作中可能会遇到文件权限问题。"
+        read -p "按 Enter 键继续..."
+    fi
+}
+
+
 # --- 功能一：配置酒馆设置 (config.yaml) ---
 fn_configure_settings() {
     tput reset
@@ -32,7 +63,8 @@ fn_configure_settings() {
     echo -e "${BLUE}--- 步骤 1/4: 定位配置文件 ---${NC}"
     while [ ! -f "$current_config_file" ]; do
         echo -e "${RED}[错误]${NC} 在默认路径 '${BOLD}$current_config_file${NC}' 未找到配置文件。"
-        read -p "$(echo -e "${YELLOW}[操作]${NC} 是否要指定一个新的文件路径？ (y/N): ")" choice
+        echo -e "${YELLOW}[提示]${NC} 请检查脚本顶部的 'UNIFIED_STORAGE_DIR' 变量是否设置正确。"
+        read -p "$(echo -e "${YELLOW}[操作]${NC} 是否要手动指定一个新的文件路径？ (y/N): ")" choice
         case "$choice" in
             [Yy]* ) read -p "$(echo -e "${YELLOW}[输入]${NC} 请输入正确的配置文件完整路径: ")" current_config_file
                     if [ -z "$current_config_file" ]; then echo -e "${RED}[提示]${NC} 输入为空，请重新操作。"; fi;;
@@ -233,10 +265,14 @@ fn_main_menu() {
         exit 1
     fi
 
+    # 在主菜单显示前，首先执行权限设置
+    tput reset
+    fn_set_permissions
+
     while true; do
         tput reset
         echo -e "${CYAN}╔════════════════════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║      ${BOLD}leaflow 云酒馆 (SillyTavern) 助手 v1.0${NC}        ${CYAN}║${NC}"
+        echo -e "${CYAN}║      ${BOLD}leaflow 云酒馆 (SillyTavern) 助手 v1.2${NC}        ${CYAN}║${NC}"
         echo -e "${CYAN}║               by Qingjue | XHS:826702880           ${CYAN}║${NC}"
         echo -e "${CYAN}╚════════════════════════════════════════════════════╝${NC}\n"
         echo -e "${BLUE}============================ 主菜单 ============================${NC}"
