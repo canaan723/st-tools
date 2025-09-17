@@ -10,8 +10,10 @@ CYAN='\033[1;36m'
 BOLD='\033[1m'
 
 # --- 全局配置 ---
-CONFIG_FILE="/mnt/config/config.yaml"
-DATA_DIR="/mnt/data"
+UNIFIED_STORAGE_DIR="/mnt/sillytavern"
+
+CONFIG_FILE="$UNIFIED_STORAGE_DIR/config/config.yaml"
+DATA_DIR="$UNIFIED_STORAGE_DIR/data"
 TARGET_DIR_NAME="default-user"
 TARGET_DIR_PATH="$DATA_DIR/$TARGET_DIR_NAME"
 BACKUP_NAME="${TARGET_DIR_NAME}.bak"
