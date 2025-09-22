@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# SillyTavern 助手 v1.4
+# SillyTavern 助手 v1.5
 # 作者: Qingjue | 小红书号: 826702880
 
 # --- [核心] 确保脚本由 Bash 执行 ---
@@ -500,11 +500,39 @@ install_sillytavern() {
     }
 
 
-    fn_get_public_ip() {
-        local ip
-        ip=$(curl -s --max-time 5 https://api.ipify.org) || ip=$(curl -s --max-time 5 https://ifconfig.me) || ip=$(hostname -I | awk '{print $1}')
-        echo "$ip"
-    }
+fn_get_public_ip() {
+    local ip_services=(
+        "https://ifconfig.me"
+        "https://myip.ipip.net"
+        "https://cip.cc"
+        "https://api.ipify.org"
+    )
+    local ip=""
+
+    log_info "正在尝试自动获取公网IP地址..." >&2
+    
+    for service in "${ip_services[@]}"; do
+        echo -ne "  - 正在尝试: ${YELLOW}${service}${NC}..." >&2
+        ip=$(curl -s -4 --max-time 5 "$service" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1)
+        
+        if [[ -n "$ip" ]]; then
+            echo -e " ${GREEN}成功!${NC}" >&2
+            echo "$ip"
+            return 0
+        else
+            echo -e " ${RED}失败${NC}" >&2
+        fi
+    done
+
+    echo >&2 
+    log_warn "未能自动获取到公网IP地址。" >&2
+    log_info "这不影响部署结果，SillyTavern容器已成功在后台运行。" >&2
+    
+    echo "【请手动替换为你的服务器IP】"
+    return 1
+}
+
+
     
     fn_confirm_and_delete_dir() {
         local dir_to_delete="$1"
@@ -869,7 +897,7 @@ main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.4${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.5${NC}       ${CYAN}║${NC}"
         echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
         echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 
