@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 
-# SillyTavern 助手 v1.3
+# SillyTavern 助手 v1.4
 # 作者: Qingjue | 小红书号: 826702880
+
+# --- [核心] 确保脚本由 Bash 执行 ---
+if [ -z "$BASH_VERSION" ]; then
+    echo "错误: 此脚本需要使用 bash 解释器运行。" >&2
+    echo "请尝试使用: bash $0" >&2
+    exit 1
+fi
+# --- -------------------------- ---
 
 fn_ssh_rollback() {
     echo -e "\033[33m[警告] 检测到新SSH端口连接失败，正在执行回滚操作...\033[0m"
@@ -22,7 +30,6 @@ readonly CYAN='\033[1;36m'
 readonly BOLD='\033[1m'
 readonly NC='\033[0m'
 
-# --- 全局操作系统检测 ---
 IS_DEBIAN_LIKE=false
 DETECTED_OS="未知"
 if [ -f /etc/os-release ]; then
@@ -33,8 +40,6 @@ if [ -f /etc/os-release ]; then
         IS_DEBIAN_LIKE=true
     fi
 fi
-# --- ------------------ ---
-
 
 log_info() { echo -e "${GREEN}[INFO] $1${NC}"; }
 log_warn() { echo -e "${YELLOW}[WARN] $1${NC}"; }
@@ -51,6 +56,34 @@ check_root() {
     fi
 }
 
+fn_check_base_deps() {
+    local missing_pkgs=()
+    local required_pkgs=("bc" "curl" "tar")
+
+    log_info "正在检查基础依赖: ${required_pkgs[*]}..."
+    for pkg in "${required_pkgs[@]}"; do
+        if ! command -v "$pkg" &> /dev/null; then
+            missing_pkgs+=("$pkg")
+        fi
+    done
+
+    if [ ${#missing_pkgs[@]} -gt 0 ]; then
+        log_action "检测到缺失的工具: ${missing_pkgs[*]}，正在尝试自动安装..."
+        if [ "$IS_DEBIAN_LIKE" = true ]; then
+            apt-get update > /dev/null 2>&1
+            if ! apt-get install -y "${missing_pkgs[@]}"; then
+                log_error "部分基础依赖自动安装失败，请手动执行 'apt-get install -y ${missing_pkgs[*]}' 后重试。"
+            fi
+            log_success "所有缺失的基础依赖已安装成功。"
+        else
+            log_error "您的系统 (${DETECTED_OS}) 不支持自动安装。请手动安装缺失的工具: ${missing_pkgs[*]}"
+        fi
+    else
+        log_success "基础依赖完整。"
+    fi
+}
+
+
 fn_optimize_docker() {
     log_action "是否需要进行 Docker 优化（配置日志限制与镜像加速）？"
     log_info "此操作将：1. 限制日志大小防止磁盘占满。 2. 测试并配置最快的镜像源。"
@@ -62,7 +95,6 @@ fn_optimize_docker() {
 
     local DAEMON_JSON="/etc/docker/daemon.json"
     
-    # --- 步骤1: 镜像测速与配置 ---
     log_info "正在检测 Docker 镜像源可用性..."
     local mirrors=(
         "docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live" 
@@ -89,7 +121,6 @@ fn_optimize_docker() {
         fi
     done
 
-    # --- 步骤2: 构建JSON配置字符串 ---
     local log_config_part='"log-driver": "json-file", "log-opts": {"max-size": "50m", "max-file": "3"}'
     local mirrors_config_part=""
 
@@ -112,7 +143,6 @@ fn_optimize_docker() {
         final_json_content="$final_json_content, $mirrors_config_part"
     fi
 
-    # --- 步骤3: 应用所有配置 ---
     log_action "正在应用所有优化配置..."
     echo "{ ${final_json_content} }" | sudo tee "$DAEMON_JSON" > /dev/null
     if sudo systemctl restart docker; then
@@ -124,7 +154,6 @@ fn_optimize_docker() {
 
 
 run_system_cleanup() {
-    check_root
     log_action "即将执行系统安全清理..."
     echo -e "此操作将执行以下命令："
     echo -e "  - ${CYAN}apt-get clean -y${NC} (清理apt缓存)"
@@ -146,7 +175,6 @@ run_system_cleanup() {
     journalctl --vacuum-size=100M
     log_success "journald 日志压缩完成。"
 
-    # 再次检查 Docker 是否存在
     if command -v docker &> /dev/null; then
         log_info "正在清理 Docker 系统..."
         docker system prune -f
@@ -165,20 +193,18 @@ create_dynamic_swap() {
         return 0
     fi
 
-    # 获取物理内存大小 (MB)
     local mem_total_mb
     mem_total_mb=$(free -m | awk '/^Mem:/{print $2}')
 
     local swap_size_mb
     local swap_size_display
 
-    # 根据内存大小决定Swap大小
-    if [ "$mem_total_mb" -lt 2048 ]; then # 小于 2GB 内存
+    if [ "$mem_total_mb" -lt 2048 ]; then
         swap_size_mb=$((mem_total_mb * 2))
-    elif [ "$mem_total_mb" -lt 8192 ]; then # 2GB - 8GB 内存
+    elif [ "$mem_total_mb" -lt 8192 ]; then
         swap_size_mb=$mem_total_mb
-    else # 大于 8GB 内存
-        swap_size_mb=4096 # 设置一个 4GB 的上限
+    else
+        swap_size_mb=4096
     fi
 
     swap_size_display=$(echo "scale=1; $swap_size_mb / 1024" | bc | sed 's/^\./0./')G
@@ -196,6 +222,8 @@ create_dynamic_swap() {
 run_initialization() {
     tput reset
     echo -e "${CYAN}即将执行【服务器初始化】流程...${NC}"
+    
+    fn_check_base_deps
 
     log_step "步骤 1" "配置云服务商安全组"
     log_info "执行前，必须在云服务商控制台完成安全组/防火墙配置。"
@@ -353,9 +381,6 @@ install_1panel() {
 }
 
 install_sillytavern() {
-    local BC_VER="-" BC_STATUS="-"
-    local CURL_VER="-" CURL_STATUS="-"
-    local TAR_VER="-" TAR_STATUS="-"
     local DOCKER_VER="-" DOCKER_STATUS="-"
     local COMPOSE_VER="-" COMPOSE_STATUS="-"
     local CONTAINER_NAME="sillytavern"
@@ -392,10 +417,9 @@ install_sillytavern() {
             esac
         fi
     }
-    # ==============================================================================
 
     fn_report_dependencies() {
-        fn_print_info "--- 环境诊断摘要 ---"
+        fn_print_info "--- Docker 环境诊断摘要 ---"
         printf "${BOLD}%-18s %-20s %-20s${NC}\n" "工具" "检测到的版本" "状态"
         printf "${CYAN}%-18s %-20s %-20s${NC}\n" "------------------" "--------------------" "--------------------"
         print_status_line() { 
@@ -404,9 +428,6 @@ install_sillytavern() {
             if [[ "$status" == "Not Found" ]]; then color="$RED"; fi
             printf "%-18s %-20s ${color}%-20s${NC}\n" "$name" "$version" "$status"
         }
-        print_status_line "bc" "$BC_VER" "$BC_STATUS"
-        print_status_line "curl" "$CURL_VER" "$CURL_STATUS"
-        print_status_line "tar" "$TAR_VER" "$TAR_STATUS"
         print_status_line "Docker" "$DOCKER_VER" "$DOCKER_STATUS"
         print_status_line "Docker Compose" "$COMPOSE_VER" "$COMPOSE_STATUS"
         echo ""
@@ -415,35 +436,8 @@ install_sillytavern() {
     fn_get_cleaned_version_num() { echo "$1" | grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1; }
 
     fn_check_dependencies() {
-        fn_print_info "--- 依赖环境诊断开始 (将自动安装缺失的基础工具) ---"
-        local missing_pkgs=()
-        for pkg in "bc" "curl" "tar"; do
-            if ! command -v "$pkg" &> /dev/null; then
-                missing_pkgs+=("$pkg")
-            fi
-        done
-
-        if [ ${#missing_pkgs[@]} -gt 0 ]; then
-            log_action "检测到缺失的基础工具: ${missing_pkgs[*]}，正在尝试自动安装..."
-            if [ "$IS_DEBIAN_LIKE" = true ]; then
-                apt-get update && apt-get install -y "${missing_pkgs[@]}"
-            else
-                if command -v yum &> /dev/null; then yum install -y "${missing_pkgs[@]}"; elif command -v dnf &> /dev/null; then dnf install -y "${missing_pkgs[@]}"; else log_warn "无法确定包管理器，请手动安装: ${missing_pkgs[*]}"; fi
-            fi
-        fi
-
-        # --- 重新检查并报告 ---
-        local all_deps_ok=true
-        for pkg in "bc" "curl" "tar"; do
-            if command -v "$pkg" &> /dev/null; then
-                declare "${pkg^^}_VER"="$(fn_get_cleaned_version_num "$($pkg --version 2>/dev/null || echo 'N/A')")"; declare "${pkg^^}_STATUS"="OK"
-            else
-                declare "${pkg^^}_STATUS"="Not Found"; all_deps_ok=false
-            fi
-        done
-        if [ "$all_deps_ok" = false ]; then fn_print_error "部分基础依赖自动安装失败，请手动安装后重试。"; fi
-
-        # --- Docker 和 Compose 检查与交互式安装 ---
+        fn_print_info "--- Docker 环境诊断开始 ---"
+        
         local docker_check_needed=true
         while $docker_check_needed; do
             if ! command -v docker &> /dev/null; then
@@ -466,17 +460,14 @@ install_sillytavern() {
                     if [[ "${confirm_install_docker:-y}" =~ ^[Yy]$ ]]; then
                         log_action "正在使用官方推荐脚本安装 Docker..."
                         bash <(curl -sSL https://linuxmirrors.cn/docker.sh)
-                        # 安装后再次循环检查
                         continue
                     else
                         fn_print_error "用户选择不安装 Docker，脚本无法继续。"
                     fi
                 else
-                    # 非 Debian 系统直接报错
                     fn_print_error "未检测到 Docker 或 Docker-Compose。请在您的系统 (${DETECTED_OS}) 上手动安装它们后重试。"
                 fi
             else
-                # Docker 和 Compose 都已存在，检查通过，结束循环
                 docker_check_needed=false
             fi
         done
@@ -487,7 +478,7 @@ install_sillytavern() {
         if ! groups "$current_user" | grep -q '\bdocker\b' && [ "$(id -u)" -ne 0 ]; then
             fn_print_error "当前用户不在 docker 用户组。请执行【步骤2】或手动添加后，【重新登录SSH】再试。"
         fi
-        log_success "所有依赖项检查通过！"
+        log_success "Docker 环境检查通过！"
     }
 
     fn_apply_config_changes() {
@@ -509,11 +500,42 @@ install_sillytavern() {
     }
 
 
-    fn_get_public_ip() {
-        local ip
-        ip=$(curl -s --max-time 5 https://api.ipify.org) || ip=$(curl -s --max-time 5 https://ifconfig.me) || ip=$(hostname -I | awk '{print $1}')
-        echo "$ip"
-    }
+fn_get_public_ip() {
+    # 根据国内和海外服务器的实际测试结果，优化API列表和顺序
+    # 移除已失效的 ip.sb，将最稳定的 ifconfig.me 放在首位
+    local ip_services=(
+        "https://ifconfig.me"
+        "https://myip.ipip.net"
+        "https://cip.cc"
+        "https://api.ipify.org" # 作为最后的备用，对海外服务器可能有效
+    )
+    local ip=""
+
+    log_info "正在尝试从多个源获取公网IP地址..."
+    for service in "${ip_services[@]}"; do
+        echo -ne "  - 正在尝试: ${YELLOW}${service}${NC}..."
+        # 使用 curl -4 强制IPv4, 5秒超时, 并用grep精确提取IP地址
+        # 这个 grep 正则表达式可以完美处理所有返回格式（纯IP或带文字的）
+        ip=$(curl -s -4 --max-time 5 "$service" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1)
+        
+        if [[ -n "$ip" ]]; then
+            echo -e " ${GREEN}成功, 获取到IP: ${ip}${NC}"
+            echo "$ip"
+            return 0 # 成功获取，立即返回
+        else
+            echo -e " ${RED}失败或超时${NC}"
+        fi
+    done
+
+    # 如果循环结束后仍然没有获取到IP，说明所有外部API都失败了
+    # 此时不再尝试不可靠的本地命令，而是直接报错并退出
+    echo # 换行
+    log_error "无法自动获取服务器的公网IP地址！"
+    log_info "可能原因：服务器网络不通或所有IP查询服务均无法访问。"
+    log_action "请登录您的云服务商控制台（如阿里云、腾讯云），在服务器实例详情页面找到您的【公网IP地址】，然后手动访问。"
+    exit 1 # 终止脚本，防止使用错误的IP继续执行
+}
+
     
     fn_confirm_and_delete_dir() {
         local dir_to_delete="$1"
@@ -652,7 +674,8 @@ install_sillytavern() {
     echo -e "${CYAN}SillyTavern Docker 自动化安装流程${NC}"
 
     fn_print_step "[ 1/5 ] 环境检查与准备"
-    if [ "$(id -u)" -ne 0 ]; then fn_print_error "此脚本需要 root 权限运行。请使用 'sudo' 执行。"; fi
+    fn_check_base_deps
+    
     TARGET_USER="${SUDO_USER:-root}"
     if [ "$TARGET_USER" = "root" ]; then
         USER_HOME="/root"
@@ -664,6 +687,7 @@ install_sillytavern() {
     INSTALL_DIR="$USER_HOME/sillytavern"
     CONFIG_FILE="$INSTALL_DIR/config.yaml"
     COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
+    
     fn_check_dependencies
 
     fn_check_existing_container
@@ -745,7 +769,6 @@ services:
       - "./data:/home/node/app/data:Z"
       - "./plugins:/home/node/app/plugins:Z"
       - "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party:Z"
-      # --- 以下为自定义版特有挂载 ---
       - "./custom/login.html:/home/node/app/public/login.html:Z"
       - "./custom/images:/home/node/app/public/images:Z"
     restart: unless-stopped
@@ -877,7 +900,7 @@ main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.3${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.4${NC}       ${CYAN}║${NC}"
         echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
         echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 
@@ -953,8 +976,8 @@ main_menu() {
                 ;;
             4)
                 if [ "$IS_DEBIAN_LIKE" = true ]; then 
+                    check_root
                     run_system_cleanup
-                    # 【优化】为保持一致性，这里也加上清理输入的逻辑
                     while read -r -t 0.1; do :; done
                     read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
                 else 
