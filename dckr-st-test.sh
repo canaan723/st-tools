@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# SillyTavern 助手 v1.4
+# SillyTavern 助手 v1.5
 # 作者: Qingjue | 小红书号: 826702880
 
 # --- [核心] 确保脚本由 Bash 执行 ---
@@ -501,40 +501,37 @@ install_sillytavern() {
 
 
 fn_get_public_ip() {
-    # 根据国内和海外服务器的实际测试结果，优化API列表和顺序
-    # 移除已失效的 ip.sb，将最稳定的 ifconfig.me 放在首位
     local ip_services=(
         "https://ifconfig.me"
         "https://myip.ipip.net"
         "https://cip.cc"
-        "https://api.ipify.org" # 作为最后的备用，对海外服务器可能有效
+        "https://api.ipify.org"
     )
     local ip=""
 
-    log_info "正在尝试从多个源获取公网IP地址..."
+    log_info "正在尝试自动获取公网IP地址..." >&2
+    
     for service in "${ip_services[@]}"; do
-        echo -ne "  - 正在尝试: ${YELLOW}${service}${NC}..."
-        # 使用 curl -4 强制IPv4, 5秒超时, 并用grep精确提取IP地址
-        # 这个 grep 正则表达式可以完美处理所有返回格式（纯IP或带文字的）
+        echo -ne "  - 正在尝试: ${YELLOW}${service}${NC}..." >&2
         ip=$(curl -s -4 --max-time 5 "$service" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1)
         
         if [[ -n "$ip" ]]; then
-            echo -e " ${GREEN}成功, 获取到IP: ${ip}${NC}"
+            echo -e " ${GREEN}成功!${NC}" >&2
             echo "$ip"
-            return 0 # 成功获取，立即返回
+            return 0
         else
-            echo -e " ${RED}失败或超时${NC}"
+            echo -e " ${RED}失败${NC}" >&2
         fi
     done
 
-    # 如果循环结束后仍然没有获取到IP，说明所有外部API都失败了
-    # 此时不再尝试不可靠的本地命令，而是直接报错并退出
-    echo # 换行
-    log_error "无法自动获取服务器的公网IP地址！"
-    log_info "可能原因：服务器网络不通或所有IP查询服务均无法访问。"
-    log_action "请登录您的云服务商控制台（如阿里云、腾讯云），在服务器实例详情页面找到您的【公网IP地址】，然后手动访问。"
-    exit 1 # 终止脚本，防止使用错误的IP继续执行
+    echo >&2 
+    log_warn "未能自动获取到公网IP地址。" >&2
+    log_info "这不影响部署结果，SillyTavern容器已成功在后台运行。" >&2
+    
+    echo "【请手动替换为你的服务器IP】"
+    return 1
 }
+
 
     
     fn_confirm_and_delete_dir() {
@@ -900,7 +897,7 @@ main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.4${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.5${NC}       ${CYAN}║${NC}"
         echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
         echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 
