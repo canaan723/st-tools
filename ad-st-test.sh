@@ -1,15 +1,13 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v1.9.9 (社区修正版)
+# SillyTavern 助手 v2.0.0 (社区修正版)
 # 作者: Qingjue | 小红书号: 826702880
-# 1. 修复云同步逻辑，使其能智能解析并利用完整的镜像列表。
-# 2. 恢复“官方优先，镜像并行”的高效测试策略。
-# 3. 修复“数据一致”的致命逻辑错误。
-# 4. 增加 commit 和 push 步骤的严格错误检查，杜绝“假成功”。
+# 重大逻辑重构：
+# 1. 废弃“竞速模式”测试，所有网络测试函数现在都会完整测试所有线路，并返回一个按优先级排序的成功列表。
+# 2. 所有依赖网络操作的功能（安装、更新、同步）均已实现循环重试逻辑，会在操作失败时自动切换到下一个可用线路。
+# 3. 修复并行测试输出混乱的问题，并明确显示最终选择。
+# 4. 统一所有网络测试逻辑，使其行为完全由 PULL_MIRROR_LIST 控制。
 # 5. 在同步菜单首次使用时，自动检测并引导用户一次性配置全局Git身份，实现一劳永逸。
-# 6. 修复同步菜单循环逻辑，避免重复进行Git身份检查。
-# 7. 【新增】修复并行测试输出混乱的问题，并明确显示最终选择。
-# 8. 【新增】统一所有网络测试逻辑，使其行为完全由 PULL_MIRROR_LIST 控制。
 
 # =========================================================================
 #   脚本环境与色彩定义
@@ -37,7 +35,7 @@ CACHED_MIRRORS=()
 
 # 用于下载(pull/clone)的镜像列表
 PULL_MIRROR_LIST=(
-    # "https://github.com/SillyTavern/SillyTavern.git"
+    "https://github.com/SillyTavern/SillyTavern.git"
     "https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
     "https://git.723123.xyz/gh/SillyTavern/SillyTavern.git"
     "https://xget.xi-xu.me/gh/SillyTavern/SillyTavern.git"
@@ -62,6 +60,7 @@ fn_print_error_exit() { echo -e "\n${RED}✗ ${BOLD}$1${NC}\n${RED}流程已终�
 fn_press_any_key() { echo -e "\n${CYAN}请按任意键返回...${NC}"; read -n 1 -s; }
 fn_check_command() { command -v "$1" >/dev/null 2>&1; }
 
+# 【已重构】测试所有线路，返回按速度排序的成功列表
 fn_find_fastest_mirror() {
     if [ ${#CACHED_MIRRORS[@]} -gt 0 ]; then
         fn_print_success "已使用缓存的测速结果。" >&2
@@ -71,40 +70,29 @@ fn_find_fastest_mirror() {
 
     fn_print_warning "开始测试 Git 镜像连通性与速度 (用于下载)..." >&2
     local github_url="https://github.com/SillyTavern/SillyTavern.git"
-    local temp_sorted_list=()
-
+    local sorted_successful_mirrors=()
+    
+    local all_mirrors_to_test=()
+    # 优先添加官方地址
     if [[ " ${PULL_MIRROR_LIST[*]} " =~ " ${github_url} " ]]; then
-        echo -e "  - 优先测试: GitHub 官方源..." >&2
-        if timeout 10s git ls-remote "$github_url" HEAD >/dev/null 2>&1; then
-            fn_print_success "GitHub 官方源直连可用，将优先使用！" >&2
-            temp_sorted_list=("$github_url")
-        else
-            fn_print_error "GitHub 官方源连接超时，将测试其他镜像..." >&2
-        fi
+        all_mirrors_to_test+=("$github_url")
     fi
-
-    if [ ${#temp_sorted_list[@]} -gt 0 ]; then
-        CACHED_MIRRORS=("${temp_sorted_list[@]}")
-        printf '%s\n' "${CACHED_MIRRORS[@]}"
-        return 0
-    fi
-
-    local other_mirrors=()
+    # 添加其他镜像
     for mirror in "${PULL_MIRROR_LIST[@]}"; do
-        [[ "$mirror" != "$github_url" ]] && other_mirrors+=("$mirror")
+        [[ "$mirror" != "$github_url" ]] && all_mirrors_to_test+=("$mirror")
     done
 
-    if [ ${#other_mirrors[@]} -eq 0 ]; then
-        fn_print_error "没有其他可用的镜像进行测试。" >&2
+    if [ ${#all_mirrors_to_test[@]} -eq 0 ]; then
+        fn_print_error "没有配置任何可用的镜像进行测试。" >&2
         return 1
     fi
 
-    echo -e "${YELLOW}已启动并行测试，等待所有镜像响应...${NC}" >&2
+    echo -e "${YELLOW}已启动并行测试，将完整测试所有线路...${NC}" >&2
     local results_file
     results_file=$(mktemp)
     local pids=()
 
-    for mirror_url in "${other_mirrors[@]}"; do
+    for mirror_url in "${all_mirrors_to_test[@]}"; do
         (
             local mirror_host
             mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
@@ -115,6 +103,7 @@ fn_find_fastest_mirror() {
                 end_time=$(date +%s.%N)
                 local elapsed_time
                 elapsed_time=$(echo "$end_time - $start_time" | bc)
+                # 将结果写入临时文件，格式：耗时 URL
                 echo "$elapsed_time $mirror_url" >>"$results_file"
                 echo -e "  - 测试: ${CYAN}${mirror_host}${NC} - 耗时 ${GREEN}${elapsed_time}s${NC} ${GREEN}[成功]${NC}" >&2
             else
@@ -132,16 +121,17 @@ fn_find_fastest_mirror() {
         return 1
     fi
 
-    local fastest_line
-    fastest_line=$(sort -n "$results_file" | head -n 1)
-    fn_print_success "已选定最快镜像: $(echo "$fastest_line" | awk '{print $2}' | sed -e 's|https://||' -e 's|/.*$||') (耗时 $(echo "$fastest_line" | awk '{print $1}')s)" >&2
-    mapfile -t temp_sorted_list < <(sort -n "$results_file" | awk '{print $2}')
+    # 从结果文件中排序并提取URL列表
+    mapfile -t sorted_successful_mirrors < <(sort -n "$results_file" | awk '{print $2}')
     rm -f "$results_file"
 
-    if [ ${#temp_sorted_list[@]} -gt 0 ]; then
-        CACHED_MIRRORS=("${temp_sorted_list[@]}")
+    if [ ${#sorted_successful_mirrors[@]} -gt 0 ]; then
+        fn_print_success "测试完成，找到 ${#sorted_successful_mirrors[@]} 个可用线路。" >&2
+        CACHED_MIRRORS=("${sorted_successful_mirrors[@]}")
         printf '%s\n' "${CACHED_MIRRORS[@]}"
     else
+        # 理论上不会到这里，因为上面已经检查过文件是否为空
+        fn_print_error "未能找到任何可用的下载线路。" >&2
         return 1
     fi
 }
@@ -326,7 +316,7 @@ sync_test_one_mirror_push() {
     return $exit_code
 }
 
-# 【已重写】统一网络测试逻辑，并修复并行输出
+# 【已重构】测试所有线路，返回按优先级排序的成功列表
 sync_find_pushable_mirror() {
     # shellcheck source=/dev/null
     source "$SYNC_CONFIG_FILE"
@@ -340,62 +330,49 @@ sync_find_pushable_mirror() {
     local repo_path
     repo_path=$(echo "$REPO_URL" | sed 's|https://github.com/||')
     local github_public_url="https://github.com/SillyTavern/SillyTavern.git"
-    local successful_url=""
+    local successful_urls=()
 
-    # 1. 优先测试官方地址 (如果用户在列表中配置了)
+    local all_mirrors_to_test=()
+    # 优先添加官方地址
     if [[ " ${PULL_MIRROR_LIST[*]} " =~ " ${github_public_url} " ]]; then
-        local official_url="https://${REPO_TOKEN}@github.com/${repo_path}"
-        echo -e "  - 优先测试: 官方 GitHub ..." >&2
-        if sync_test_one_mirror_push "$official_url"; then
-            fn_print_success "官方线路连接成功！" >&2
-            successful_url="$official_url"
-        else
-            fn_print_error "官方线路连接失败，将测试其他镜像..." >&2
-        fi
+        all_mirrors_to_test+=("https://github.com/${repo_path}")
     fi
-
-    # 2. 如果官方测试成功，直接返回
-    if [ -n "$successful_url" ]; then
-        echo "$successful_url"
-        return 0
-    fi
-
-    # 3. 如果官方失败或未配置，则并行测试所有镜像
-    local other_mirrors=()
+    # 添加其他镜像
     for mirror_url in "${PULL_MIRROR_LIST[@]}"; do
-        [[ "$mirror_url" != "$github_public_url" ]] && other_mirrors+=("$mirror_url")
+        if [[ "$mirror_url" != "$github_public_url" ]]; then
+            local mirror_host
+            mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
+            local private_repo_mirror_url=""
+            if [[ "$mirror_url" == *"hub.gitmirror.com"* ]]; then
+                private_repo_mirror_url="https://${mirror_host}/${repo_path}"
+            elif [[ "$mirror_url" == *"/gh/"* ]]; then
+                private_repo_mirror_url="https://${mirror_host}/gh/${repo_path}"
+            elif [[ "$mirror_url" == *"/github.com/"* ]]; then
+                private_repo_mirror_url="https://${mirror_host}/github.com/${repo_path}"
+            fi
+            [ -n "$private_repo_mirror_url" ] && all_mirrors_to_test+=("$private_repo_mirror_url")
+        fi
     done
 
-    if [ ${#other_mirrors[@]} -eq 0 ]; then
-        fn_print_error "没有配置其他镜像进行测试。" >&2
+    if [ ${#all_mirrors_to_test[@]} -eq 0 ]; then
+        fn_print_error "没有配置任何可用的镜像进行测试。" >&2
         return 1
     fi
 
-    echo -e "${YELLOW}已启动并行测试，等待所有镜像响应...${NC}" >&2
+    echo -e "${YELLOW}已启动并行测试，将完整测试所有线路...${NC}" >&2
     local results_file
     results_file=$(mktemp)
     local pids=()
 
-    for mirror_url in "${other_mirrors[@]}"; do
+    for test_url in "${all_mirrors_to_test[@]}"; do
         (
-            local authed_push_url=""
             local mirror_host
-            mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
-
-            if [[ "$mirror_url" == *"hub.gitmirror.com"* ]]; then
-                authed_push_url="https://${REPO_TOKEN}@${mirror_host}/${repo_path}"
-            elif [[ "$mirror_url" == *"/gh/"* ]]; then
-                authed_push_url="https://${REPO_TOKEN}@${mirror_host}/gh/${repo_path}"
-            elif [[ "$mirror_url" == *"/github.com/"* ]]; then
-                authed_push_url="https://${REPO_TOKEN}@${mirror_host}/github.com/${repo_path}"
-            else
-                exit 1
-            fi
+            mirror_host=$(echo "$test_url" | sed -e 's|https://||' -e 's|/.*$||')
+            local authed_url="https://${REPO_TOKEN}@${mirror_host}/${repo_path}"
             
-            if sync_test_one_mirror_push "$authed_push_url"; then
+            if sync_test_one_mirror_push "$authed_url"; then
+                echo "$test_url" >> "$results_file"
                 echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${GREEN}[成功]${NC}" >&2
-                echo "$authed_push_url" > "$results_file"
-                kill -9 "${pids[@]}" 2>/dev/null
             else
                 echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${RED}[失败]${NC}" >&2
             fi
@@ -403,17 +380,30 @@ sync_find_pushable_mirror() {
         pids+=($!)
     done
 
-    wait "${pids[@]}" 2>/dev/null
+    wait "${pids[@]}"
 
-    if [ -s "$results_file" ]; then
-        successful_url=$(head -n 1 "$results_file")
+    if [ ! -s "$results_file" ]; then
+        fn_print_error "所有上传线路都无法连接。" >&2
         rm -f "$results_file"
-        echo "$successful_url"
-        return 0
+        return 1
     fi
     
+    # 按照测试列表的原始顺序（即优先级）输出成功结果
+    for url in "${all_mirrors_to_test[@]}"; do
+        if grep -qF "$url" "$results_file"; then
+            local authed_url
+            authed_url=$(echo "$url" | sed "s|https://|https://${REPO_TOKEN}@|")
+            successful_urls+=("$authed_url")
+        fi
+    done
     rm -f "$results_file"
-    return 1
+
+    if [ ${#successful_urls[@]} -gt 0 ]; then
+        fn_print_success "测试完成，找到 ${#successful_urls[@]} 条可用上传线路。" >&2
+        printf '%s\n' "${successful_urls[@]}"
+    else
+        return 1
+    fi
 }
 
 sync_backup_to_cloud() {
@@ -426,74 +416,78 @@ sync_backup_to_cloud() {
         return
     fi
 
-    local push_url
-    push_url=$(sync_find_pushable_mirror)
+    mapfile -t push_urls < <(sync_find_pushable_mirror)
     
-    if [ -z "$push_url" ]; then
+    if [ ${#push_urls[@]} -eq 0 ]; then
         fn_print_error "未能找到任何支持上传的线路。"
         fn_print_warning "可能原因：1.网络不佳 2.Token失效或权限不足 3.远程仓库为空（请先在GitHub网页添加一个README文件）。"
         fn_press_any_key
         return
     fi
 
-    local chosen_host
-    chosen_host=$(echo "$push_url" | sed -e 's|https://.*@||' -e 's|/.*$||')
-    fn_print_success "已选定上传线路: ${chosen_host}"
-    fn_print_warning "开始备份..."
-    local temp_dir
-    temp_dir=$(mktemp -d)
+    local backup_success=false
+    for push_url in "${push_urls[@]}"; do
+        local chosen_host
+        chosen_host=$(echo "$push_url" | sed -e 's|https://.*@||' -e 's|/.*$||')
+        fn_print_warning "正在尝试使用线路 [${chosen_host}] 进行备份..."
+        
+        local temp_dir
+        temp_dir=$(mktemp -d)
 
-    fn_print_warning "正在准备云端仓库..."
-    if ! git clone --depth 1 "$push_url" "$temp_dir"; then
-        fn_print_error "克隆云端仓库失败！请检查网络或Token权限。"
-        rm -rf "$temp_dir"
-        fn_press_any_key
-        return
-    fi
-
-    fn_print_warning "正在同步本地数据到临时区..."
-    cd "$ST_DIR" || { fn_print_error "SillyTavern目录不存在！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
-    
-    local paths_to_sync=("data" "public/scripts/extensions/third-party" "plugins" "config.yaml")
-    for item in "${paths_to_sync[@]}"; do
-        if [ -e "$item" ]; then
-            rsync -av --delete --exclude='*/backups/*' --exclude='*.log' --exclude='*/_cache/*' "./$item" "$temp_dir/"
+        if ! git clone --depth 1 "$push_url" "$temp_dir"; then
+            fn_print_error "克隆云端仓库失败！正在切换下一条线路..."
+            rm -rf "$temp_dir"
+            continue
         fi
+
+        fn_print_warning "正在同步本地数据到临时区..."
+        cd "$ST_DIR" || { fn_print_error "SillyTavern目录不存在！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
+        
+        local paths_to_sync=("data" "public/scripts/extensions/third-party" "plugins" "config.yaml")
+        for item in "${paths_to_sync[@]}"; do
+            if [ -e "$item" ]; then
+                rsync -av --delete --exclude='*/backups/*' --exclude='*.log' --exclude='*/_cache/*' "./$item" "$temp_dir/"
+            fi
+        done
+
+        cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
+        
+        git add .
+
+        if git diff-index --quiet HEAD; then
+            fn_print_success "数据与云端一致，无需上传。"
+            backup_success=true
+            rm -rf "$temp_dir"
+            break
+        fi
+
+        fn_print_warning "正在提交数据变更..."
+        if ! git commit -m "Sync from Termux on $(date -u)"; then
+            fn_print_error "Git 提交失败！无法创建数据快照。"
+            rm -rf "$temp_dir"
+            fn_press_any_key
+            return
+        fi
+        
+        fn_print_warning "正在上传到云端..."
+        if ! git push; then
+            fn_print_error "上传失败！正在切换下一条线路..."
+            rm -rf "$temp_dir"
+            continue
+        fi
+
+        fn_print_success "数据成功备份到云端！"
+        backup_success=true
+        rm -rf "$temp_dir"
+        break
     done
 
-    cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
-    
-    git add .
-
-    if git diff-index --quiet HEAD; then
-        fn_print_success "数据与云端一致，无需上传。"
-        rm -rf "$temp_dir"
-        fn_press_any_key
-        return
+    if ! $backup_success; then
+        fn_print_error "已尝试所有可用线路，但备份均失败。"
     fi
-
-    fn_print_warning "正在提交数据变更..."
-    if ! git commit -m "Sync from Termux on $(date -u)"; then
-        fn_print_error "Git 提交失败！无法创建数据快照。"
-        rm -rf "$temp_dir"
-        fn_press_any_key
-        return
-    fi
-    
-    fn_print_warning "正在上传到云端..."
-    if ! git push; then
-        fn_print_error "上传失败！请检查网络或Token权限。"
-        rm -rf "$temp_dir"
-        fn_press_any_key
-        return
-    fi
-
-    fn_print_success "数据成功备份到云端！"
-    rm -rf "$temp_dir"
     fn_press_any_key
 }
 
-# 【已重写】统一网络测试逻辑，并修复并行输出
 sync_restore_from_cloud() {
     clear
     fn_print_header "从云端恢复数据 (下载)"
@@ -523,119 +517,64 @@ sync_restore_from_cloud() {
         return
     fi
 
-    local temp_dir
-    temp_dir=$(mktemp -d)
-
-    fn_print_warning "正在寻找最快的下载线路..."
-    # shellcheck source=/dev/null
-    source "$SYNC_CONFIG_FILE"
-    local repo_path
-    repo_path=$(echo "$REPO_URL" | sed 's|https://github.com/||')
-    local github_public_url="https://github.com/SillyTavern/SillyTavern.git"
-    local fastest_pull_url=""
-    
-    # 1. 优先测试官方地址 (如果用户在列表中配置了)
-    if [[ " ${PULL_MIRROR_LIST[*]} " =~ " ${github_public_url} " ]]; then
-        local official_pull_url="https://github.com/${repo_path}"
-        local authed_official_url="https://${REPO_TOKEN}@github.com/${repo_path}"
-        echo -e "  - 优先测试: 官方 GitHub ..." >&2
-        if timeout 10s git ls-remote "$authed_official_url" HEAD >/dev/null 2>&1; then
-            echo -e " ${GREEN}[成功]${NC}" >&2
-            fastest_pull_url="$official_pull_url"
-        else
-            echo -e " ${RED}[失败]${NC}" >&2
-        fi
+    # 此处逻辑与 sync_find_pushable_mirror 类似，但用于下载
+    # 为简化，直接调用 fn_find_fastest_mirror 的逻辑，因为它返回的是公开可读的URL列表
+    mapfile -t pull_urls < <(fn_find_fastest_mirror)
+    if [ ${#pull_urls[@]} -eq 0 ]; then
+        fn_print_error "未能找到任何支持下载的线路。"
+        fn_press_any_key
+        return
     fi
 
-    # 2. 如果官方测试成功，直接进入下载
-    if [ -z "$fastest_pull_url" ]; then
-        fn_print_warning "官方线路连接失败或未配置，正在并行测试所有镜像..." >&2
-        local other_mirrors=()
-        for mirror_url in "${PULL_MIRROR_LIST[@]}"; do
-            [[ "$mirror_url" != "$github_public_url" ]] && other_mirrors+=("$mirror_url")
+    local restore_success=false
+    for pull_url in "${pull_urls[@]}"; do
+        local temp_dir
+        temp_dir=$(mktemp -d)
+        local chosen_host
+        chosen_host=$(echo "$pull_url" | sed -e 's|https://||' -e 's|/.*$||')
+        fn_print_warning "正在尝试使用线路 [${chosen_host}] 进行恢复..."
+
+        # shellcheck source=/dev/null
+        source "$SYNC_CONFIG_FILE"
+        local repo_path
+        repo_path=$(echo "$REPO_URL" | sed 's|https://github.com/||')
+        local private_repo_url
+        private_repo_url=$(echo "$pull_url" | sed "s|/SillyTavern/SillyTavern.git|/${repo_path}|")
+        local pull_url_with_auth
+        pull_url_with_auth=$(echo "$private_repo_url" | sed "s|https://|https://${REPO_TOKEN}@|")
+
+        if ! git clone --depth 1 "$pull_url_with_auth" "$temp_dir"; then
+            fn_print_error "下载云端数据失败！正在切换下一条线路..."
+            rm -rf "$temp_dir"
+            continue
+        fi
+
+        if [ ! -d "$temp_dir/data" ] || [ -z "$(ls -A "$temp_dir/data")" ]; then
+            fn_print_error "下载的数据源无效或为空，恢复操作已中止以保护您的本地数据！"
+            rm -rf "$temp_dir"
+            fn_press_any_key
+            return
+        fi
+
+        fn_print_warning "正在将云端数据同步到本地..."
+        cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
+        
+        local paths_to_sync=("data" "public/scripts/extensions/third-party" "plugins" "config.yaml")
+        for item in "${paths_to_sync[@]}"; do
+            if [ -e "$item" ]; then
+                rsync -av --delete "./$item" "$ST_DIR/"
+            fi
         done
 
-        if [ ${#other_mirrors[@]} -gt 0 ]; then
-            local results_file
-            results_file=$(mktemp)
-            local pids=()
-            for mirror_url in "${other_mirrors[@]}"; do
-                (
-                    local private_repo_mirror_url=""
-                    local mirror_host
-                    mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
-                    if [[ "$mirror_url" == *"hub.gitmirror.com"* ]]; then
-                        private_repo_mirror_url="https://hub.gitmirror.com/${repo_path}"
-                    elif [[ "$mirror_url" == *"/gh/"* ]]; then
-                        private_repo_mirror_url="https://${mirror_host}/gh/${repo_path}"
-                    elif [[ "$mirror_url" == *"/github.com/"* ]]; then
-                        private_repo_mirror_url="https://${mirror_host}/github.com/${repo_path}"
-                    else
-                        exit 1
-                    fi
-                    local authed_mirror
-                    authed_mirror=$(echo "$private_repo_mirror_url" | sed "s|https://|https://${REPO_TOKEN}@|")
-                    
-                    if timeout 10s git ls-remote "$authed_mirror" HEAD >/dev/null 2>&1; then
-                        echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${GREEN}[成功]${NC}" >&2
-                        echo "$private_repo_mirror_url" > "$results_file"
-                        kill -9 "${pids[@]}" 2>/dev/null
-                    else
-                        echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${RED}[失败]${NC}" >&2
-                    fi
-                ) &
-                pids+=($!)
-            done
-            wait "${pids[@]}" 2>/dev/null
-            if [ -s "$results_file" ]; then
-                fastest_pull_url=$(head -n 1 "$results_file")
-            fi
-            rm -f "$results_file"
-        fi
-    fi
-
-    if [ -z "$fastest_pull_url" ]; then
-        fn_print_error "所有下载线路均测试失败！"
+        fn_print_success "数据已从云端成功恢复！"
+        restore_success=true
         rm -rf "$temp_dir"
-        fn_press_any_key
-        return
-    fi
-
-    local chosen_host
-    chosen_host=$(echo "$fastest_pull_url" | sed -e 's|https://||' -e 's|/.*$||')
-    fn_print_success "已选定下载线路: ${chosen_host}"
-    
-    local pull_url_with_auth
-    pull_url_with_auth=$(echo "$fastest_pull_url" | sed "s|https://|https://${REPO_TOKEN}@|")
-
-    fn_print_warning "正在从云端下载数据..."
-    if ! git clone --depth 1 "$pull_url_with_auth" "$temp_dir"; then
-        fn_print_error "下载云端数据失败！请检查网络或Token。"
-        rm -rf "$temp_dir"
-        fn_press_any_key
-        return
-    fi
-
-    # --- 关键安全检查 ---
-    if [ ! -d "$temp_dir/data" ] || [ -z "$(ls -A "$temp_dir/data")" ]; then
-        fn_print_error "下载的数据源无效或为空，恢复操作已中止以保护您的本地数据！"
-        rm -rf "$temp_dir"
-        fn_press_any_key
-        return
-    fi
-
-    fn_print_warning "正在将云端数据同步到本地..."
-    cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
-    
-    local paths_to_sync=("data" "public/scripts/extensions/third-party" "plugins" "config.yaml")
-    for item in "${paths_to_sync[@]}"; do
-        if [ -e "$item" ]; then
-            rsync -av --delete "./$item" "$ST_DIR/"
-        fi
+        break
     done
 
-    fn_print_success "数据已从云端成功恢复！"
-    rm -rf "$temp_dir"
+    if ! $restore_success; then
+        fn_print_error "已尝试所有可用线路，但恢复均失败。"
+    fi
     fn_press_any_key
 }
 
@@ -655,7 +594,6 @@ sync_clear_config() {
 }
 
 main_sync_menu() {
-    # 【已修复】将身份检查移至循环外，作为模块的“守卫”
     if ! sync_ensure_git_identity; then
         fn_print_error "Git身份配置失败，无法继续。"
         fn_press_any_key
@@ -1317,7 +1255,7 @@ while true; do
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v1.9.9    ║
+    ║      SillyTavern 助手 v2.0.0    ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
