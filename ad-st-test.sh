@@ -35,7 +35,7 @@ CACHED_MIRRORS=()
 
 # 用于下载(pull/clone)的镜像列表
 PULL_MIRROR_LIST=(
- #   "https://github.com/SillyTavern/SillyTavern.git"
+    "https://github.com/SillyTavern/SillyTavern.git"
     "https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
     "https://git.723123.xyz/gh/SillyTavern/SillyTavern.git"
     "https://xget.xi-xu.me/gh/SillyTavern/SillyTavern.git"
@@ -1150,4 +1150,118 @@ fn_create_shortcut() {
     local BASHRC_FILE="$HOME/.bashrc"
     local ALIAS_CMD="alias st='\"$SCRIPT_SELF_PATH\"'"
     local ALIAS_COMMENT="# SillyTavern 助手快捷命令"
-    if 
+    if ! grep -qF "$ALIAS_CMD" "$BASHRC_FILE"; then
+        chmod +x "$SCRIPT_SELF_PATH"
+        echo -e "\n$ALIAS_COMMENT\n$ALIAS_CMD" >>"$BASHRC_FILE"
+        fn_print_success "已创建快捷命令 'st'。请重启 Termux 或执行 'source ~/.bashrc' 生效。"
+    fi
+}
+
+main_manage_autostart() {
+    local BASHRC_FILE="$HOME/.bashrc"
+    local AUTOSTART_CMD="[ -f \"$SCRIPT_SELF_PATH\" ] && \"$SCRIPT_SELF_PATH\""
+    local is_set=false
+    grep -qF "$AUTOSTART_CMD" "$BASHRC_FILE" && is_set=true
+
+    if [[ "$1" == "set_default" ]]; then
+        if ! $is_set; then
+            echo -e "\n# SillyTavern 助手\n$AUTOSTART_CMD" >>"$BASHRC_FILE"
+            fn_print_success "已设置 Termux 启动时自动运行本助手。"
+        fi
+        return
+    fi
+
+    clear
+    fn_print_header "管理助手自启"
+    if $is_set; then
+        echo -e "当前状态: ${GREEN}已启用${NC}"
+        echo -e "${CYAN}提示: 关闭自启后，输入 'st' 命令即可手动启动助手。${NC}"
+        read -p "是否取消自启？ (y/n): " confirm
+        if [[ "$confirm" =~ ^[yY]$ ]]; then
+            sed -i "/# SillyTavern 助手/d" "$BASHRC_FILE"
+            sed -i "\|$AUTOSTART_CMD|d" "$BASHRC_FILE"
+            fn_print_success "已取消自启。"
+        fi
+    else
+        echo -e "当前状态: ${RED}未启用${NC}"
+        echo -e "${CYAN}提示: 在 Termux 中输入 'st' 命令可以手动启动助手。${NC}"
+        read -p "是否设置自启？ (y/n): " confirm
+        if [[ "$confirm" =~ ^[yY]$ ]]; then
+            echo -e "\n# SillyTavern 助手\n$AUTOSTART_CMD" >>"$BASHRC_FILE"
+            fn_print_success "已成功设置自启。"
+        fi
+    fi
+    fn_press_any_key
+}
+
+main_open_docs() {
+    clear
+    fn_print_header "查看帮助文档"
+    local docs_url="https://blog.qjyg.de"
+    echo -e "文档网址: ${CYAN}${docs_url}${NC}\n"
+    if fn_check_command "termux-open-url"; then
+        termux-open-url "$docs_url"
+        fn_print_success "已尝试在浏览器中打开，若未自动跳转请手动复制上方网址。"
+    else
+        fn_print_warning "命令 'termux-open-url' 不存在。\n请先安装【Termux:API】应用及 'pkg install termux-api'。"
+    fi
+    fn_press_any_key
+}
+
+# =========================================================================
+#   主菜单与脚本入口
+# =========================================================================
+
+if [[ "$1" != "--no-check" && "$1" != "--updated" ]]; then
+    check_for_updates_on_start
+fi
+if [[ "$1" == "--updated" ]]; then
+    clear
+    fn_print_success "助手已成功更新至最新版本！"
+    sleep 2
+fi
+
+while true; do
+    clear
+    echo -e "${CYAN}${BOLD}"
+    cat << "EOF"
+    ╔═════════════════════════════════╗
+    ║      SillyTavern 助手 v2.0.1    ║
+    ║   by Qingjue | XHS:826702880    ║
+    ╚═════════════════════════════════╝
+EOF
+    update_notice=""
+    if [ -f "$UPDATE_FLAG_FILE" ]; then
+        update_notice=" ${YELLOW}[!] 有更新${NC}"
+    fi
+
+    echo -e "${NC}\n    选择一个操作来开始：\n"
+    echo -e "      [1] ${GREEN}${BOLD}启动 SillyTavern${NC}"
+    echo -e "      [2] ${CYAN}${BOLD}数据同步 (云端备份/恢复)${NC}"
+    echo -e "      [3] ${CYAN}${BOLD}本地数据管理${NC}"
+    echo -e "      [4] ${YELLOW}${BOLD}首次部署 (全新安装)${NC}\n"
+    echo -e "      [5] 更新 ST 主程序    [6] 更新助手脚本${update_notice}"
+    echo -e "      [7] 管理助手自启      [8] 查看帮助文档\n"
+    echo -e "      ${RED}[0] 退出助手${NC}\n"
+    read -p "    请输入选项数字: " choice
+
+    case $choice in
+    1) main_start ;;
+    2) main_sync_menu ;;
+    3) main_data_management_menu ;;
+    4) main_install ;;
+    5) main_update_st ;;
+    6) main_update_script ;;
+    7) main_manage_autostart ;;
+    8) main_open_docs ;;
+    0)
+        echo -e "\n感谢使用，助手已退出。"
+        rm -f "$UPDATE_FLAG_FILE"
+        exit 0
+        ;;
+    *)
+        fn_print_warning "无效输入，请重新选择。"
+        sleep 1.5
+        ;;
+    esac
+done
