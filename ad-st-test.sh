@@ -1,8 +1,8 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v1.9.1
+# SillyTavern 助手 v1.9.2
 # 作者: Qingjue | 小红书号: 826702880
-# 修复云同步逻辑漏洞并优化用户体验
+# 修复云同步逻辑漏洞，分离标准输出与标准错误
 
 # =========================================================================
 #   脚本环境与色彩定义
@@ -245,7 +245,6 @@ sync_configure() {
         fi
     done
     while true; do
-        # 根据您的要求，移除 -s 参数，让输入可见
         read -p "请输入您的Personal Access Token: " repo_token
         if [[ -z "$repo_token" ]]; then
             fn_print_error "Token不能为空！"
@@ -270,22 +269,18 @@ sync_test_one_mirror_push() {
     temp_repo_dir=$(mktemp -d)
     
     cd "$temp_repo_dir" || return 1
-    # 初始化一个空的git仓库
     git init -q
     git remote add origin "$authed_url"
 
-    # 尝试推送一个新标签，超时时间增加到25秒
     if timeout 25s git push origin "refs/tags/$test_tag" >/dev/null 2>&1; then
-        # 推送成功！立即删除远程标签，清理痕迹
         timeout 25s git push origin --delete "$test_tag" >/dev/null 2>&1
         cd "$HOME"
         rm -rf "$temp_repo_dir"
-        return 0 # 成功
+        return 0
     else
-        # 推送失败
         cd "$HOME"
         rm -rf "$temp_repo_dir"
-        return 1 # 失败
+        return 1
     fi
 }
 
@@ -293,11 +288,12 @@ sync_find_pushable_mirror() {
     # shellcheck source=/dev/null
     source "$SYNC_CONFIG_FILE"
     if [[ -z "$REPO_URL" || -z "$REPO_TOKEN" ]]; then
-        fn_print_error "同步配置不完整或不存在。"
+        fn_print_error "同步配置不完整或不存在。" >&2
         return 1
     fi
 
-    fn_print_warning "正在自动测试支持数据上传的加速线路..."
+    # 【修复】所有给用户看的提示信息，全部重定向到 stderr (>&2)
+    fn_print_warning "正在自动测试支持数据上传的加速线路..." >&2
     
     local repo_path
     repo_path=$(echo "$REPO_URL" | sed 's|https://github.com/||')
@@ -305,28 +301,28 @@ sync_find_pushable_mirror() {
     # 1. 测试镜像
     for host in "${PUSH_MIRROR_HOSTS[@]}"; do
         local test_url="https://${REPO_TOKEN}@${host}/${repo_path}"
-        echo -ne "  - 测试: ${host} ..."
+        echo -ne "  - 测试: ${host} ..." >&2
         if sync_test_one_mirror_push "$test_url"; then
-            echo -e " ${GREEN}[成功]${NC}"
+            echo -e " ${GREEN}[成功]${NC}" >&2
+            # 【修复】只将纯净的URL输出到 stdout
             echo "$test_url"
             return 0
         else
-            echo -e " ${RED}[失败]${NC}"
+            echo -e " ${RED}[失败]${NC}" >&2
         fi
     done
 
     # 2. 测试官方地址
     local official_url="https://${REPO_TOKEN}@github.com/${repo_path}"
-    echo -ne "  - 测试: 官方 GitHub ..."
+    echo -ne "  - 测试: 官方 GitHub ..." >&2
     if sync_test_one_mirror_push "$official_url"; then
-        echo -e " ${GREEN}[成功]${NC}"
+        echo -e " ${GREEN}[成功]${NC}" >&2
         echo "$official_url"
         return 0
     else
-        echo -e " ${RED}[失败]${NC}"
+        echo -e " ${RED}[失败]${NC}" >&2
     fi
     
-    # 所有线路都失败了
     return 1
 }
 
@@ -343,7 +339,6 @@ sync_backup_to_cloud() {
     local push_url
     push_url=$(sync_find_pushable_mirror)
     
-    # 【修复】严格检查返回值
     if [ -z "$push_url" ]; then
         fn_print_error "未能找到任何支持上传的线路。"
         fn_print_warning "可能原因：1.网络不佳 2.Token失效或权限不足 3.所有加速线路均临时不可用。"
@@ -434,21 +429,19 @@ sync_restore_from_cloud() {
     temp_dir=$(mktemp -d)
 
     fn_print_warning "正在寻找最快的下载线路..."
-    # 使用主程序的镜像列表进行下载测试
     local repo_path
     repo_path=$(echo "$REPO_URL" | sed 's|https://github.com/||')
-    local test_repo_url="https://github.com/${repo_path}"
     
-    # 构造一个临时的镜像列表用于下载测试
-    local download_mirror_list=("$test_repo_url")
+    local download_mirror_list=("https://github.com/${repo_path}")
     for host in "${PUSH_MIRROR_HOSTS[@]}"; do
         download_mirror_list+=("https://${host}/${repo_path}")
     done
 
-    # 此处简化测试，直接用ls-remote，因为下载不需要并行那么复杂
     local fastest_pull_url=""
     for mirror in "${download_mirror_list[@]}"; do
-        echo -ne "  - 测试: $(echo "$mirror" | sed -e 's|https://||' -e 's|/.*$||') ..."
+        local mirror_host
+        mirror_host=$(echo "$mirror" | sed -e 's|https://||' -e 's|/.*$||')
+        echo -ne "  - 测试: ${mirror_host} ..."
         if timeout 15s git ls-remote "$mirror" HEAD >/dev/null 2>&1; then
             echo -e " ${GREEN}[成功]${NC}"
             fastest_pull_url="$mirror"
@@ -1170,7 +1163,7 @@ while true; do
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v1.9.1    ║
+    ║      SillyTavern 助手 v1.9.2    ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
