@@ -1,8 +1,8 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v1.9
+# SillyTavern 助手 v1.9.1
 # 作者: Qingjue | 小红书号: 826702880
-# 新增云同步功能
+# 修复云同步逻辑漏洞并优化用户体验
 
 # =========================================================================
 #   脚本环境与色彩定义
@@ -24,7 +24,7 @@ BACKUP_LIMIT=10
 SCRIPT_SELF_PATH=$(readlink -f "$0")
 SCRIPT_URL="https://gitee.com/canaan723/st-tools/raw/main/ad-st.sh"
 CONFIG_FILE="$HOME/.st_assistant.conf"
-SYNC_CONFIG_FILE="$HOME/.st_sync.conf" # 新增：同步配置文件
+SYNC_CONFIG_FILE="$HOME/.st_sync.conf"
 UPDATE_FLAG_FILE="/data/data/com.termux/files/usr/tmp/.st_assistant_update_flag"
 CACHED_MIRRORS=()
 
@@ -245,8 +245,8 @@ sync_configure() {
         fi
     done
     while true; do
-        read -sp "请输入您的Personal Access Token (输入时不会显示): " repo_token
-        echo
+        # 根据您的要求，移除 -s 参数，让输入可见
+        read -p "请输入您的Personal Access Token: " repo_token
         if [[ -z "$repo_token" ]]; then
             fn_print_error "Token不能为空！"
         else
@@ -270,18 +270,22 @@ sync_test_one_mirror_push() {
     temp_repo_dir=$(mktemp -d)
     
     cd "$temp_repo_dir" || return 1
+    # 初始化一个空的git仓库
     git init -q
     git remote add origin "$authed_url"
 
-    if timeout 20s git push origin "refs/tags/$test_tag" >/dev/null 2>&1; then
-        timeout 20s git push origin --delete "$test_tag" >/dev/null 2>&1
+    # 尝试推送一个新标签，超时时间增加到25秒
+    if timeout 25s git push origin "refs/tags/$test_tag" >/dev/null 2>&1; then
+        # 推送成功！立即删除远程标签，清理痕迹
+        timeout 25s git push origin --delete "$test_tag" >/dev/null 2>&1
         cd "$HOME"
         rm -rf "$temp_repo_dir"
-        return 0
+        return 0 # 成功
     else
+        # 推送失败
         cd "$HOME"
         rm -rf "$temp_repo_dir"
-        return 1
+        return 1 # 失败
     fi
 }
 
@@ -321,8 +325,8 @@ sync_find_pushable_mirror() {
     else
         echo -e " ${RED}[失败]${NC}"
     fi
-
-    fn_print_error "未能找到任何支持上传的线路。"
+    
+    # 所有线路都失败了
     return 1
 }
 
@@ -338,8 +342,10 @@ sync_backup_to_cloud() {
 
     local push_url
     push_url=$(sync_find_pushable_mirror)
+    
+    # 【修复】严格检查返回值
     if [ -z "$push_url" ]; then
-        fn_print_error "备份失败，没有可用的上传线路。"
+        fn_print_error "未能找到任何支持上传的线路。"
         fn_print_warning "可能原因：1.网络不佳 2.Token失效或权限不足 3.所有加速线路均临时不可用。"
         fn_press_any_key
         return
@@ -428,19 +434,42 @@ sync_restore_from_cloud() {
     temp_dir=$(mktemp -d)
 
     fn_print_warning "正在寻找最快的下载线路..."
-    mapfile -t sorted_mirrors < <(fn_find_fastest_mirror)
-    if [ ${#sorted_mirrors[@]} -eq 0 ]; then
+    # 使用主程序的镜像列表进行下载测试
+    local repo_path
+    repo_path=$(echo "$REPO_URL" | sed 's|https://github.com/||')
+    local test_repo_url="https://github.com/${repo_path}"
+    
+    # 构造一个临时的镜像列表用于下载测试
+    local download_mirror_list=("$test_repo_url")
+    for host in "${PUSH_MIRROR_HOSTS[@]}"; do
+        download_mirror_list+=("https://${host}/${repo_path}")
+    done
+
+    # 此处简化测试，直接用ls-remote，因为下载不需要并行那么复杂
+    local fastest_pull_url=""
+    for mirror in "${download_mirror_list[@]}"; do
+        echo -ne "  - 测试: $(echo "$mirror" | sed -e 's|https://||' -e 's|/.*$||') ..."
+        if timeout 15s git ls-remote "$mirror" HEAD >/dev/null 2>&1; then
+            echo -e " ${GREEN}[成功]${NC}"
+            fastest_pull_url="$mirror"
+            break
+        else
+            echo -e " ${RED}[失败]${NC}"
+        fi
+    done
+
+    if [ -z "$fastest_pull_url" ]; then
         fn_print_error "所有下载线路均测试失败！"
         rm -rf "$temp_dir"
         fn_press_any_key
         return
     fi
 
-    local pull_url
-    pull_url=$(echo "${sorted_mirrors[0]}" | sed "s|https://|https://${REPO_TOKEN}@|")
+    local pull_url_with_auth
+    pull_url_with_auth=$(echo "$fastest_pull_url" | sed "s|https://|https://${REPO_TOKEN}@|")
 
     fn_print_warning "正在从云端下载数据..."
-    if ! git clone --depth 1 "$pull_url" "$temp_dir"; then
+    if ! git clone --depth 1 "$pull_url_with_auth" "$temp_dir"; then
         fn_print_error "下载云端数据失败！请检查网络或Token。"
         rm -rf "$temp_dir"
         fn_press_any_key
@@ -1141,7 +1170,7 @@ while true; do
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v1.9      ║
+    ║      SillyTavern 助手 v1.9.1    ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
