@@ -1,7 +1,8 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v1.8
+# SillyTavern 助手 v1.9
 # 作者: Qingjue | 小红书号: 826702880
+# 新增云同步功能
 
 # =========================================================================
 #   脚本环境与色彩定义
@@ -23,10 +24,12 @@ BACKUP_LIMIT=10
 SCRIPT_SELF_PATH=$(readlink -f "$0")
 SCRIPT_URL="https://gitee.com/canaan723/st-tools/raw/main/ad-st.sh"
 CONFIG_FILE="$HOME/.st_assistant.conf"
+SYNC_CONFIG_FILE="$HOME/.st_sync.conf" # 新增：同步配置文件
 UPDATE_FLAG_FILE="/data/data/com.termux/files/usr/tmp/.st_assistant_update_flag"
 CACHED_MIRRORS=()
 
-MIRROR_LIST=(
+# 用于下载(pull/clone)的镜像列表
+PULL_MIRROR_LIST=(
     "https://github.com/SillyTavern/SillyTavern.git"
     "https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
     "https://git.723123.xyz/gh/SillyTavern/SillyTavern.git"
@@ -38,6 +41,12 @@ MIRROR_LIST=(
     "https://gh.catmak.name/https://github.com/SillyTavern/SillyTavern.git"
     "https://hub.gitmirror.com/https://github.com/SillyTavern/SillyTavern.git"
     "https://gh-proxy.net/https://github.com/SillyTavern/SillyTavern.git"
+)
+
+# 用于上传(push)测试的镜像域名列表 (通常是支持全协议的)
+PUSH_MIRROR_HOSTS=(
+    "hub.gitmirror.com"
+    # 可以根据测试添加更多
 )
 
 # =========================================================================
@@ -59,11 +68,11 @@ fn_find_fastest_mirror() {
         return 0
     fi
 
-    fn_print_warning "开始测试 Git 镜像连通性与速度..." >&2
+    fn_print_warning "开始测试 Git 镜像连通性与速度 (用于下载)..." >&2
     local github_url="https://github.com/SillyTavern/SillyTavern.git"
     local temp_sorted_list=()
 
-    if [[ " ${MIRROR_LIST[*]} " =~ " ${github_url} " ]]; then
+    if [[ " ${PULL_MIRROR_LIST[*]} " =~ " ${github_url} " ]]; then
         echo -e "  [1/?] 正在优先测试 GitHub 官方源..." >&2
         if timeout 15s git ls-remote "$github_url" HEAD >/dev/null 2>&1; then
             fn_print_success "GitHub 官方源直连可用，将优先使用！" >&2
@@ -80,7 +89,7 @@ fn_find_fastest_mirror() {
     fi
 
     local other_mirrors=()
-    for mirror in "${MIRROR_LIST[@]}"; do
+    for mirror in "${PULL_MIRROR_LIST[@]}"; do
         [[ "$mirror" != "$github_url" ]] && other_mirrors+=("$mirror")
     done
 
@@ -193,6 +202,311 @@ fn_update_source_with_retry() {
 
     fn_print_error "已尝试 3 次，但均无法成功更新软件源。"
     return 1
+}
+
+# =========================================================================
+#   数据同步功能模块
+# =========================================================================
+
+sync_check_deps() {
+    if ! fn_check_command "git" || ! fn_check_command "rsync"; then
+        fn_print_error "缺少核心工具 git 或 rsync。"
+        fn_print_warning "请先运行 [首次部署] 来安装所有必需的依赖项。"
+        return 1
+    fi
+    return 0
+}
+
+sync_configure() {
+    clear
+    fn_print_header "配置同步服务 (首次使用)"
+    echo -e "${YELLOW}本功能将引导您使用一个私有的 GitHub 仓库来同步您的数据。${NC}"
+    echo -e "准备工作:"
+    echo -e "  1. 在电脑或手机浏览器上登录 GitHub。"
+    echo -e "  2. 创建一个新的【私有(Private)】仓库，例如命名为 'st-data'。"
+    echo -e "  3. 前往 GitHub 设置 -> Developer settings -> Personal access tokens -> Tokens (classic)。"
+    echo -e "  4. 生成一个新的Token，权限(Scope)只需勾选 ${GREEN}repo${NC} 即可，有效期建议选长一点。"
+    echo -e "  5. ${RED}重要：${NC}生成后立即复制并保存好您的Token，此页面关闭后将无法再次查看。"
+    
+    read -p $'\n'"确认已完成以上准备工作吗？(直接回车=是, 输入n=否): " confirm
+    if [[ "$confirm" == "n" || "$confirm" == "N" ]]; then
+        fn_print_warning "操作已取消。"
+        fn_press_any_key
+        return
+    fi
+
+    local repo_url repo_token
+    while true; do
+        read -p "请输入您的私有仓库HTTPS地址 (例如: https://github.com/yourname/st-data.git): " repo_url
+        if [[ -z "$repo_url" ]]; then
+            fn_print_error "仓库地址不能为空！"
+        else
+            break
+        fi
+    done
+    while true; do
+        read -sp "请输入您的Personal Access Token (输入时不会显示): " repo_token
+        echo
+        if [[ -z "$repo_token" ]]; then
+            fn_print_error "Token不能为空！"
+        else
+            break
+        fi
+    done
+
+    echo "REPO_URL=\"$repo_url\"" > "$SYNC_CONFIG_FILE"
+    echo "REPO_TOKEN=\"$repo_token\"" >> "$SYNC_CONFIG_FILE"
+    chmod 600 "$SYNC_CONFIG_FILE"
+
+    fn_print_success "同步服务配置已保存！"
+    fn_print_warning "现在您可以进行备份或恢复操作了。"
+    fn_press_any_key
+}
+
+sync_test_one_mirror_push() {
+    local authed_url="$1"
+    local test_tag="st-sync-test-$(date +%s%N)"
+    local temp_repo_dir
+    temp_repo_dir=$(mktemp -d)
+    
+    cd "$temp_repo_dir" || return 1
+    git init -q
+    git remote add origin "$authed_url"
+
+    if timeout 20s git push origin "refs/tags/$test_tag" >/dev/null 2>&1; then
+        timeout 20s git push origin --delete "$test_tag" >/dev/null 2>&1
+        cd "$HOME"
+        rm -rf "$temp_repo_dir"
+        return 0
+    else
+        cd "$HOME"
+        rm -rf "$temp_repo_dir"
+        return 1
+    fi
+}
+
+sync_find_pushable_mirror() {
+    # shellcheck source=/dev/null
+    source "$SYNC_CONFIG_FILE"
+    if [[ -z "$REPO_URL" || -z "$REPO_TOKEN" ]]; then
+        fn_print_error "同步配置不完整或不存在。"
+        return 1
+    fi
+
+    fn_print_warning "正在自动测试支持数据上传的加速线路..."
+    
+    local repo_path
+    repo_path=$(echo "$REPO_URL" | sed 's|https://github.com/||')
+
+    # 1. 测试镜像
+    for host in "${PUSH_MIRROR_HOSTS[@]}"; do
+        local test_url="https://${REPO_TOKEN}@${host}/${repo_path}"
+        echo -ne "  - 测试: ${host} ..."
+        if sync_test_one_mirror_push "$test_url"; then
+            echo -e " ${GREEN}[成功]${NC}"
+            echo "$test_url"
+            return 0
+        else
+            echo -e " ${RED}[失败]${NC}"
+        fi
+    done
+
+    # 2. 测试官方地址
+    local official_url="https://${REPO_TOKEN}@github.com/${repo_path}"
+    echo -ne "  - 测试: 官方 GitHub ..."
+    if sync_test_one_mirror_push "$official_url"; then
+        echo -e " ${GREEN}[成功]${NC}"
+        echo "$official_url"
+        return 0
+    else
+        echo -e " ${RED}[失败]${NC}"
+    fi
+
+    fn_print_error "未能找到任何支持上传的线路。"
+    return 1
+}
+
+sync_backup_to_cloud() {
+    clear
+    fn_print_header "备份数据到云端 (上传)"
+    if ! sync_check_deps; then fn_press_any_key; return; fi
+    if [ ! -f "$SYNC_CONFIG_FILE" ]; then
+        fn_print_error "请先在菜单 [1] 中配置同步服务。"
+        fn_press_any_key
+        return
+    fi
+
+    local push_url
+    push_url=$(sync_find_pushable_mirror)
+    if [ -z "$push_url" ]; then
+        fn_print_error "备份失败，没有可用的上传线路。"
+        fn_print_warning "可能原因：1.网络不佳 2.Token失效或权限不足 3.所有加速线路均临时不可用。"
+        fn_press_any_key
+        return
+    fi
+
+    fn_print_success "已选定可用上传线路，开始备份..."
+    local temp_dir
+    temp_dir=$(mktemp -d)
+
+    fn_print_warning "正在准备云端仓库..."
+    if ! git clone --depth 1 "$push_url" "$temp_dir"; then
+        fn_print_error "克隆云端仓库失败！请检查网络或Token权限。"
+        rm -rf "$temp_dir"
+        fn_press_any_key
+        return
+    fi
+
+    fn_print_warning "正在同步本地数据到临时区..."
+    cd "$ST_DIR" || { fn_print_error "SillyTavern目录不存在！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
+    
+    local paths_to_sync=("data" "public/scripts/extensions/third-party" "plugins" "config.yaml")
+    for item in "${paths_to_sync[@]}"; do
+        if [ -e "$item" ]; then
+            rsync -av --delete --exclude='*/backups/*' --exclude='*.log' --exclude='*/_cache/*' "./$item" "$temp_dir/"
+        fi
+    done
+
+    cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
+    
+    if git diff-index --quiet HEAD; then
+        fn_print_success "数据与云端一致，无需上传。"
+        rm -rf "$temp_dir"
+        fn_press_any_key
+        return
+    fi
+
+    fn_print_warning "正在提交数据变更..."
+    git add .
+    git commit -m "Sync from Termux on $(date -u)"
+    
+    fn_print_warning "正在上传到云端..."
+    if ! git push; then
+        fn_print_error "上传失败！请检查网络。"
+        rm -rf "$temp_dir"
+        fn_press_any_key
+        return
+    fi
+
+    fn_print_success "数据成功备份到云端！"
+    rm -rf "$temp_dir"
+    fn_press_any_key
+}
+
+sync_restore_from_cloud() {
+    clear
+    fn_print_header "从云端恢复数据 (下载)"
+    if ! sync_check_deps; then fn_press_any_key; return; fi
+    if [ ! -f "$SYNC_CONFIG_FILE" ]; then
+        fn_print_error "请先在菜单 [1] 中配置同步服务。"
+        fn_press_any_key
+        return
+    fi
+
+    fn_print_warning "此操作将用云端数据【覆盖】本地数据！"
+    read -p "是否在恢复前，先对当前本地数据进行一次备份？(强烈推荐) [Y/n]: " backup_confirm
+    if [[ "${backup_confirm:-y}" =~ ^[Yy]$ ]]; then
+        if fn_create_data_zip_backup; then
+            fn_print_success "本地数据已备份。"
+        else
+            fn_print_error "本地备份失败，恢复操作已中止。"
+            fn_press_any_key
+            return
+        fi
+    fi
+
+    read -p "确认要从云端恢复数据吗？[y/N]: " restore_confirm
+    if [[ ! "$restore_confirm" =~ ^[Yy]$ ]]; then
+        fn_print_warning "操作已取消。"
+        fn_press_any_key
+        return
+    fi
+
+    # shellcheck source=/dev/null
+    source "$SYNC_CONFIG_FILE"
+    local temp_dir
+    temp_dir=$(mktemp -d)
+
+    fn_print_warning "正在寻找最快的下载线路..."
+    mapfile -t sorted_mirrors < <(fn_find_fastest_mirror)
+    if [ ${#sorted_mirrors[@]} -eq 0 ]; then
+        fn_print_error "所有下载线路均测试失败！"
+        rm -rf "$temp_dir"
+        fn_press_any_key
+        return
+    fi
+
+    local pull_url
+    pull_url=$(echo "${sorted_mirrors[0]}" | sed "s|https://|https://${REPO_TOKEN}@|")
+
+    fn_print_warning "正在从云端下载数据..."
+    if ! git clone --depth 1 "$pull_url" "$temp_dir"; then
+        fn_print_error "下载云端数据失败！请检查网络或Token。"
+        rm -rf "$temp_dir"
+        fn_press_any_key
+        return
+    fi
+
+    # --- 关键安全检查 ---
+    if [ ! -d "$temp_dir/data" ] || [ -z "$(ls -A "$temp_dir/data")" ]; then
+        fn_print_error "下载的数据源无效或为空，恢复操作已中止以保护您的本地数据！"
+        rm -rf "$temp_dir"
+        fn_press_any_key
+        return
+    fi
+
+    fn_print_warning "正在将云端数据同步到本地..."
+    cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
+    
+    local paths_to_sync=("data" "public/scripts/extensions/third-party" "plugins" "config.yaml")
+    for item in "${paths_to_sync[@]}"; do
+        if [ -e "$item" ]; then
+            rsync -av --delete "./$item" "$ST_DIR/"
+        fi
+    done
+
+    fn_print_success "数据已从云端成功恢复！"
+    rm -rf "$temp_dir"
+    fn_press_any_key
+}
+
+sync_clear_config() {
+    if [ -f "$SYNC_CONFIG_FILE" ]; then
+        read -p "确认要清除已保存的同步配置吗？(y/n): " confirm
+        if [[ "$confirm" =~ ^[yY]$ ]]; then
+            rm -f "$SYNC_CONFIG_FILE"
+            fn_print_success "同步配置已清除。"
+        else
+            fn_print_warning "操作已取消。"
+        fi
+    else
+        fn_print_warning "未找到任何同步配置。"
+    fi
+    fn_press_any_key
+}
+
+main_sync_menu() {
+    while true; do
+        clear
+        fn_print_header "SillyTavern 数据同步"
+        echo -e "      [1] ${CYAN}配置同步服务 (首次使用)${NC}"
+        echo -e "      [2] ${GREEN}备份数据到云端 (上传)${NC}"
+        echo -e "      [3] ${YELLOW}从云端恢复数据 (下载)${NC}"
+        echo -e "      [4] ${RED}清除同步配置${NC}"
+        echo -e "      [0] ${CYAN}返回主菜单${NC}"
+        read -p "    请输入选项: " choice
+        case $choice in
+        1) sync_configure ;;
+        2) sync_backup_to_cloud ;;
+        3) sync_restore_from_cloud ;;
+        4) sync_clear_config ;;
+        0) break ;;
+        *)
+            fn_print_error "无效输入。"
+            sleep 1
+            ;;
+        esac
+    done
 }
 
 # =========================================================================
@@ -364,7 +678,6 @@ main_update_st() {
     fi
 
     cd "$ST_DIR" || fn_print_error_exit "无法进入 SillyTavern 目录: $ST_DIR"
-    
     local update_success=false
     while ! $update_success; do
         mapfile -t sorted_mirrors < <(fn_find_fastest_mirror)
@@ -379,97 +692,107 @@ main_update_st() {
             continue
         fi
 
+        local pull_attempted_in_loop=false
         for mirror_url in "${sorted_mirrors[@]}"; do
             local mirror_host
             mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
             fn_print_warning "正在尝试使用镜像 [${mirror_host}] 更新..."
             git remote set-url origin "$mirror_url"
 
-            fn_print_warning "正在检查本地文件修改..."
-            local stashed=false
-            if [ -n "$(git status --porcelain)" ]; then
-                fn_print_warning "检测到本地修改 (如 start.sh)，将尝试安全合并..."
-                git stash >/dev/null 2>&1
-                stashed=true
+            local git_output
+            git_output=$(git pull origin "$REPO_BRANCH" 2>&1)
+            if [ $? -eq 0 ]; then
+                fn_print_success "代码更新成功。"
+                if fn_run_npm_install_with_retry; then
+                    update_success=true
+                fi
+                break
             else
-                fn_print_success "本地文件无修改，直接更新。"
-            fi
-
-            fn_print_warning "正在拉取远程更新..."
-            if ! git pull origin "$REPO_BRANCH"; then
-                fn_print_error "拉取远程更新失败！正在切换下一条线路..."
-                if $stashed; then git stash pop >/dev/null 2>&1; fi
-                sleep 1
-                continue
-            fi
-            fn_print_success "代码拉取成功。"
-
-            local merge_ok=true
-            if $stashed; then
-                fn_print_warning "正在恢复您的本地修改..."
-                if ! git stash pop; then
-                    merge_ok=false
-                    git reset --hard >/dev/null 2>&1
-                    
+                if echo "$git_output" | grep -qE "overwritten by merge|Please commit|unmerged files"; then
                     clear
                     fn_print_header "检测到更新冲突！"
-                    fn_print_error "自动合并失败！您的本地修改与官方更新存在冲突。"
+                    fn_print_warning "原因: 你可能修改过酒馆的文件，导致无法自动合并新版本。"
+                    echo "--- 冲突文件预览 ---"
+                    echo "$git_output" | grep -E "^\s+" | head -n 5
+                    echo "--------------------"
                     echo -e "\n请选择操作方式："
-                    echo -e "  [${GREEN}回车${NC}] ${BOLD}自动备份并重新安装 (最安全，推荐)${NC}"
+                    echo -e "  [${GREEN}回车${NC}] ${BOLD}自动备份并重新安装 (推荐)${NC}"
+                    echo -e "  [1]    ${YELLOW}强制覆盖更新 (危险)${NC}"
                     echo -e "  [0]    ${CYAN}放弃更新${NC}"
                     read -p "请输入选项: " choice
 
-                    if [[ "$choice" == "" ]]; then
+                    case "$choice" in
+                    "" | 'b' | 'B')
                         clear
                         fn_print_header "步骤 1/5: 创建核心数据备份"
                         local data_backup_zip_path
                         data_backup_zip_path=$(fn_create_data_zip_backup)
-                        [ -z "$data_backup_zip_path" ] && fn_print_error_exit "核心数据备份(.zip)创建失败！"
+                        if [ -z "$data_backup_zip_path" ]; then
+                            fn_print_error_exit "核心数据备份(.zip)创建失败，更新流程终止。"
+                        fi
 
                         fn_print_header "步骤 2/5: 完整备份当前目录"
                         local renamed_backup_dir="${ST_DIR}_backup_$(date +%Y%m%d%H%M%S)"
                         cd "$HOME"
-                        mv "$ST_DIR" "$renamed_backup_dir" || fn_print_error_exit "备份失败！请检查权限。"
+                        mv "$ST_DIR" "$renamed_backup_dir" || fn_print_error_exit "备份失败！请检查权限或手动重命名后重试。"
                         fn_print_success "旧目录已完整备份为: $(basename "$renamed_backup_dir")"
 
                         fn_print_header "步骤 3/5: 下载并安装新版 SillyTavern"
                         main_install "no-start"
-                        [ ! -d "$ST_DIR" ] && fn_print_error_exit "新版本安装失败！"
+                        if [ ! -d "$ST_DIR" ]; then
+                            fn_print_error_exit "新版本安装失败，流程终止。"
+                        fi
 
                         fn_print_header "步骤 4/5: 自动恢复用户数据"
                         fn_print_warning "正在将备份数据解压至新目录..."
-                        unzip -o "$data_backup_zip_path" -d "$ST_DIR" >/dev/null 2>&1 || fn_print_error_exit "数据恢复失败！"
+                        if ! unzip -o "$data_backup_zip_path" -d "$ST_DIR" >/dev/null 2>&1; then
+                            fn_print_error_exit "数据恢复失败！请检查zip文件是否有效。"
+                        fi
                         fn_print_success "用户数据已成功恢复到新版本中。"
 
-                        fn_print_header "步骤 5/5: 更新完成"
-                        fn_print_success "SillyTavern 已通过安全模式更新并恢复数据！"
+                        fn_print_header "步骤 5/5: 更新完成，请确认"
+                        fn_print_success "SillyTavern 已更新并恢复数据！"
+                        fn_print_warning "请注意:"
                         echo -e "  - 您的聊天记录、角色卡、插件和设置已恢复。"
-                        echo -e "  - ${YELLOW}注意: 您对启动脚本(start.sh)等文件的修改需要重新手动设置。${NC}"
+                        echo -e "  - 如果您曾手动修改过酒馆核心文件(如 server.js)，这些修改需要您重新操作。"
                         echo -e "  - 您的完整旧版本已备份在: ${CYAN}$(basename "$renamed_backup_dir")${NC}"
-                        
+                        echo -e "  - 本次恢复所用的核心数据备份位于: ${CYAN}$(basename "$BACKUP_ROOT_DIR")/$(basename "$data_backup_zip_path")${NC}"
+
                         echo -e "\n${CYAN}请按任意键，启动更新后的 SillyTavern...${NC}"
                         read -n 1 -s
                         main_start
                         return
-                    else
+                        ;;
+                    '1')
+                        fn_print_warning "正在执行强制覆盖 (git reset --hard)..."
+                        if git reset --hard "origin/$REPO_BRANCH" && git pull origin "$REPO_BRANCH"; then
+                            fn_print_success "强制更新成功。"
+                            if fn_run_npm_install_with_retry; then
+                                update_success=true
+                            fi
+                        else
+                            fn_print_error "强制更新失败！"
+                        fi
+                        pull_attempted_in_loop=true
+                        break
+                        ;;
+                    *)
                         fn_print_warning "已取消更新。"
                         fn_press_any_key
                         return
-                    fi
+                        ;;
+                    esac
                 else
-                    fn_print_success "本地修改已成功合并！"
-                fi
-            fi
-            
-            if $merge_ok; then
-                if fn_run_npm_install_with_retry; then
-                    update_success=true
-                    break
-                else
-                    fn_print_error "依赖安装失败，更新未完成。"
+                    fn_print_error "使用镜像 [${mirror_host}] 更新失败！错误: $(echo "$git_output" | tail -n 1)"
+                    fn_print_error "正在切换下一条线路..."
+                    sleep 1
                 fi
             fi
         done
+
+        if $pull_attempted_in_loop; then
+            break
+        fi
 
         if ! $update_success; then
             read -p $'\n'"${RED}所有线路均更新失败。是否重新测速并重试？(直接回车=是, 输入n=否): ${NC}" retry_choice
@@ -628,7 +951,7 @@ main_migration_guide() {
     echo -e "  4. 使用 MT 管理器等工具，将压缩包 ${GREEN}“解压到当前目录”${NC}。"
     echo -e "  5. 如果提示文件已存在，请选择 ${YELLOW}“全部覆盖”${NC}。"
     echo -e "  6. 操作完成后，重启 SillyTavern 即可看到所有数据。"
-    echo -e "\n${YELLOW}如需更详细的图文教程，请在主菜单选择 [7] 查看帮助文档。${NC}"
+    echo -e "\n${YELLOW}如需更详细的图文教程，请在主菜单选择 [8] 查看帮助文档。${NC}"
     fn_press_any_key
 }
 
@@ -680,7 +1003,7 @@ run_delete_backup() {
 main_data_management_menu() {
     while true; do
         clear
-        fn_print_header "SillyTavern 数据管理"
+        fn_print_header "SillyTavern 本地数据管理"
         echo -e "      [1] ${GREEN}创建自定义备份${NC}"
         echo -e "      [2] ${CYAN}数据迁移/恢复指南${NC}"
         echo -e "      [3] ${RED}删除旧备份${NC}"
@@ -829,21 +1152,23 @@ EOF
 
     echo -e "${NC}\n    选择一个操作来开始：\n"
     echo -e "      [1] ${GREEN}${BOLD}启动 SillyTavern${NC}"
-    echo -e "      [2] ${CYAN}${BOLD}数据管理${NC}"
-    echo -e "      [3] ${YELLOW}${BOLD}首次部署 (全新安装)${NC}\n"
-    echo -e "      [4] 更新 ST 主程序    [5] 更新助手脚本${update_notice}"
-    echo -e "      [6] 管理助手自启      [7] 查看帮助文档\n"
+    echo -e "      [2] ${CYAN}${BOLD}数据同步 (云端备份/恢复)${NC}"
+    echo -e "      [3] ${CYAN}${BOLD}本地数据管理${NC}"
+    echo -e "      [4] ${YELLOW}${BOLD}首次部署 (全新安装)${NC}\n"
+    echo -e "      [5] 更新 ST 主程序    [6] 更新助手脚本${update_notice}"
+    echo -e "      [7] 管理助手自启      [8] 查看帮助文档\n"
     echo -e "      ${RED}[0] 退出助手${NC}\n"
     read -p "    请输入选项数字: " choice
 
     case $choice in
     1) main_start ;;
-    2) main_data_management_menu ;;
-    3) main_install ;;
-    4) main_update_st ;;
-    5) main_update_script ;;
-    6) main_manage_autostart ;;
-    7) main_open_docs ;;
+    2) main_sync_menu ;;
+    3) main_data_management_menu ;;
+    4) main_install ;;
+    5) main_update_st ;;
+    6) main_update_script ;;
+    7) main_manage_autostart ;;
+    8) main_open_docs ;;
     0)
         echo -e "\n感谢使用，助手已退出。"
         rm -f "$UPDATE_FLAG_FILE"
