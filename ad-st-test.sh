@@ -1,12 +1,13 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v1.9.7 (社区修正版)
+# SillyTavern 助手 v1.9.8 (社区修正版)
 # 作者: Qingjue | 小红书号: 826702880
 # 1. 修复云同步逻辑，使其能智能解析并利用完整的镜像列表。
 # 2. 恢复“官方优先，镜像并行”的高效测试策略。
 # 3. 修复“数据一致”的致命逻辑错误。
 # 4. 增加 commit 和 push 步骤的严格错误检查，杜绝“假成功”。
-# 5. 【新增】在同步菜单首次使用时，自动检测并引导用户一次性配置全局Git身份，实现一劳永逸。
+# 5. 在同步菜单首次使用时，自动检测并引导用户一次性配置全局Git身份，实现一劳永逸。
+# 6. 【新增】修复同步菜单循环逻辑，避免重复进行Git身份检查。
 
 # =========================================================================
 #   脚本环境与色彩定义
@@ -34,7 +35,7 @@ CACHED_MIRRORS=()
 
 # 用于下载(pull/clone)的镜像列表
 PULL_MIRROR_LIST=(
-    "https://github.com/SillyTavern/SillyTavern.git"
+#    "https://github.com/SillyTavern/SillyTavern.git"
     "https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
     "https://git.723123.xyz/gh/SillyTavern/SillyTavern.git"
     "https://xget.xi-xu.me/gh/SillyTavern/SillyTavern.git"
@@ -215,7 +216,6 @@ sync_check_deps() {
     return 0
 }
 
-# 【新增】一次性检测并永久配置Git全局身份
 sync_ensure_git_identity() {
     if [ -z "$(git config --global --get user.name)" ] || [ -z "$(git config --global --get user.email)" ]; then
         clear
@@ -635,13 +635,14 @@ sync_clear_config() {
 }
 
 main_sync_menu() {
+    # 【已修复】将身份检查移至循环外，作为模块的“守卫”
+    if ! sync_ensure_git_identity; then
+        fn_print_error "Git身份配置失败，无法继续。"
+        fn_press_any_key
+        return
+    fi
+
     while true; do
-        # 【已修改】在进入菜单时，首先确保Git身份已配置
-        if ! sync_ensure_git_identity; then
-            fn_print_error "Git身份配置失败，无法继续。"
-            fn_press_any_key
-            break
-        fi
         clear
         fn_print_header "SillyTavern 数据同步"
         echo -e "      [1] ${CYAN}配置同步服务 (首次使用)${NC}"
@@ -1296,7 +1297,7 @@ while true; do
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v1.9.7    ║
+    ║      SillyTavern 助手 v1.9.8    ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
