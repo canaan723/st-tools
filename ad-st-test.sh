@@ -1,8 +1,10 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v1.9.3 (社区修正版)
+# SillyTavern 助手 v1.9.4 (社区修正版)
 # 作者: Qingjue | 小红书号: 826702880
-# 修正云同步逻辑，使其能智能解析并利用完整的镜像列表进行上传和下载。
+# 1. 修复云同步逻辑，使其能智能解析并利用完整的镜像列表。
+# 2. 恢复“官方优先，镜像并行”的高效测试策略。
+# 3. 修复“数据一致”的致命逻辑错误。
 
 # =========================================================================
 #   脚本环境与色彩定义
@@ -29,7 +31,6 @@ UPDATE_FLAG_FILE="/data/data/com.termux/files/usr/tmp/.st_assistant_update_flag"
 CACHED_MIRRORS=()
 
 # 用于下载(pull/clone)的镜像列表
-# 新的脚本将智能地从这个列表中寻找可用于上传和下载私有仓库的线路
 PULL_MIRROR_LIST=(
     "https://github.com/SillyTavern/SillyTavern.git"
     "https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
@@ -43,8 +44,6 @@ PULL_MIRROR_LIST=(
     "https://hub.gitmirror.com/https://github.com/SillyTavern/SillyTavern.git"
     "https://gh-proxy.net/https://github.com/SillyTavern/SillyTavern.git"
 )
-
-# 【已移除】不再需要独立的PUSH_MIRROR_HOSTS列表
 
 # =========================================================================
 #   辅助函数库
@@ -71,7 +70,7 @@ fn_find_fastest_mirror() {
 
     if [[ " ${PULL_MIRROR_LIST[*]} " =~ " ${github_url} " ]]; then
         echo -e "  [1/?] 正在优先测试 GitHub 官方源..." >&2
-        if timeout 15s git ls-remote "$github_url" HEAD >/dev/null 2>&1; then
+        if timeout 10s git ls-remote "$github_url" HEAD >/dev/null 2>&1; then
             fn_print_success "GitHub 官方源直连可用，将优先使用！" >&2
             temp_sorted_list=("$github_url")
         else
@@ -106,7 +105,7 @@ fn_find_fastest_mirror() {
             mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
             local start_time
             start_time=$(date +%s.%N)
-            if timeout 15s git ls-remote "$mirror_url" HEAD >/dev/null 2>&1; then
+            if timeout 10s git ls-remote "$mirror_url" HEAD >/dev/null 2>&1; then
                 local end_time
                 end_time=$(date +%s.%N)
                 local elapsed_time
@@ -260,34 +259,27 @@ sync_configure() {
     fn_press_any_key
 }
 
-# 【已修正】这是一个更健壮的测试函数，它通过创建一个临时的本地commit来确保测试的有效性
 sync_test_one_mirror_push() {
     local authed_url="$1"
     local test_tag="st-sync-test-$(date +%s%N)"
     local temp_repo_dir
     temp_repo_dir=$(mktemp -d)
     
-    # 使用子shell来隔离cd和git操作，确保执行后返回原目录
     (
         cd "$temp_repo_dir" || return 1
         git init -q
-        # 配置临时的git用户信息，避免全局配置缺失的错误
         git config user.name "test"
         git config user.email "test@example.com"
-        # 创建一个虚拟文件和commit，这样本地的HEAD引用才会存在
         touch testfile.txt
         git add testfile.txt
         git commit -m "Sync test commit" -q
         git remote add origin "$authed_url"
         
-        # 核心测试：尝试推送一个带commit的标签，这需要写入权限
-        # 这个命令在远程仓库非空的情况下才能成功
-        if timeout 25s git push origin "HEAD:refs/tags/$test_tag" >/dev/null 2>&1; then
-            # 如果推送成功，立即删除测试标签，清理痕迹
-            timeout 25s git push origin --delete "refs/tags/$test_tag" >/dev/null 2>&1
-            return 0 # 返回成功
+        if timeout 15s git push origin "HEAD:refs/tags/$test_tag" >/dev/null 2>&1; then
+            timeout 15s git push origin --delete "refs/tags/$test_tag" >/dev/null 2>&1
+            return 0
         else
-            return 1 # 返回失败
+            return 1
         fi
     )
     local exit_code=$?
@@ -295,7 +287,7 @@ sync_test_one_mirror_push() {
     return $exit_code
 }
 
-# 【已重写】智能查找支持推送的镜像
+# 【已重写】采用“官方优先，镜像并行”的高效测试策略
 sync_find_pushable_mirror() {
     # shellcheck source=/dev/null
     source "$SYNC_CONFIG_FILE"
@@ -304,51 +296,14 @@ sync_find_pushable_mirror() {
         return 1
     fi
 
-    fn_print_warning "正在从您的下载镜像列表中，自动测试支持数据上传的加速线路..." >&2
+    fn_print_warning "正在自动测试支持数据上传的加速线路..." >&2
     
     local repo_path
     repo_path=$(echo "$REPO_URL" | sed 's|https://github.com/||')
 
-    # 遍历您脚本中完整的 PULL_MIRROR_LIST
-    for mirror_url in "${PULL_MIRROR_LIST[@]}"; do
-        # 跳过官方地址，最后再测
-        if [[ "$mirror_url" == "https://github.com/SillyTavern/SillyTavern.git" ]]; then
-            continue
-        fi
-
-        local authed_push_url=""
-        local mirror_host
-        mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
-
-        # --- 智能判断URL拼接模式，生成正确的上传地址 ---
-        if [[ "$mirror_url" == *"hub.gitmirror.com"* ]]; then
-            # 模式1: 特殊域名直接替换 (如 hub.gitmirror.com)
-            authed_push_url="https://${REPO_TOKEN}@${mirror_host}/${repo_path}"
-        elif [[ "$mirror_url" == *"/gh/"* ]]; then
-            # 模式2: 路径替换模式 (保留 /gh/ 前缀，如 git.ark.xx.kg)
-            authed_push_url="https://${REPO_TOKEN}@${mirror_host}/gh/${repo_path}"
-        elif [[ "$mirror_url" == *"/github.com/"* ]]; then
-            # 模式3: URL作为路径的代理模式 (如 gh-proxy.com)
-            authed_push_url="https://${REPO_TOKEN}@${mirror_host}/github.com/${repo_path}"
-        else
-            # 对于其他无法识别的格式，暂时跳过
-            continue
-        fi
-        
-        echo -ne "  - 测试: ${mirror_host} ..." >&2
-        if sync_test_one_mirror_push "$authed_push_url"; then
-            echo -e " ${GREEN}[成功]${NC}" >&2
-            # 成功后，只将纯净的URL输出到 stdout
-            echo "$authed_push_url"
-            return 0
-        else
-            echo -e " ${RED}[失败]${NC}" >&2
-        fi
-    done
-
-    # 如果所有镜像都失败了，最后尝试官方地址
+    # 1. 优先测试官方地址
     local official_url="https://${REPO_TOKEN}@github.com/${repo_path}"
-    echo -ne "  - 测试: 官方 GitHub ..." >&2
+    echo -ne "  - 优先测试: 官方 GitHub ..." >&2
     if sync_test_one_mirror_push "$official_url"; then
         echo -e " ${GREEN}[成功]${NC}" >&2
         echo "$official_url"
@@ -356,7 +311,63 @@ sync_find_pushable_mirror() {
     else
         echo -e " ${RED}[失败]${NC}" >&2
     fi
+
+    # 2. 如果官方失败，则并行测试所有镜像
+    fn_print_warning "官方线路连接失败，正在并行测试所有镜像..." >&2
+    local other_mirrors=()
+    for mirror_url in "${PULL_MIRROR_LIST[@]}"; do
+        [[ "$mirror_url" != "https://github.com/SillyTavern/SillyTavern.git" ]] && other_mirrors+=("$mirror_url")
+    done
+
+    if [ ${#other_mirrors[@]} -eq 0 ]; then
+        fn_print_error "没有配置其他镜像进行测试。" >&2
+        return 1
+    fi
+
+    local results_file
+    results_file=$(mktemp)
+    local pids=()
+
+    for mirror_url in "${other_mirrors[@]}"; do
+        (
+            local authed_push_url=""
+            local mirror_host
+            mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
+
+            if [[ "$mirror_url" == *"hub.gitmirror.com"* ]]; then
+                authed_push_url="https://${REPO_TOKEN}@${mirror_host}/${repo_path}"
+            elif [[ "$mirror_url" == *"/gh/"* ]]; then
+                authed_push_url="https://${REPO_TOKEN}@${mirror_host}/gh/${repo_path}"
+            elif [[ "$mirror_url" == *"/github.com/"* ]]; then
+                authed_push_url="https://${REPO_TOKEN}@${mirror_host}/github.com/${repo_path}"
+            else
+                exit 1
+            fi
+            
+            echo -ne "  - 并行测试: ${mirror_host} ..." >&2
+            if sync_test_one_mirror_push "$authed_push_url"; then
+                echo -e " ${GREEN}[成功]${NC}" >&2
+                echo "$authed_push_url" > "$results_file"
+                # 杀死其他仍在运行的测试进程以节省时间
+                kill -9 "${pids[@]}" 2>/dev/null
+            else
+                echo -e " ${RED}[失败]${NC}" >&2
+            fi
+        ) &
+        pids+=($!)
+    done
+
+    wait "${pids[@]}" 2>/dev/null
+
+    if [ -s "$results_file" ]; then
+        local successful_url
+        successful_url=$(head -n 1 "$results_file")
+        rm -f "$results_file"
+        echo "$successful_url"
+        return 0
+    fi
     
+    rm -f "$results_file"
     return 1
 }
 
@@ -404,6 +415,9 @@ sync_backup_to_cloud() {
 
     cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
     
+    # 【已修复】必须先将文件添加到暂存区，才能正确检测到差异
+    git add .
+
     if git diff-index --quiet HEAD; then
         fn_print_success "数据与云端一致，无需上传。"
         rm -rf "$temp_dir"
@@ -412,7 +426,6 @@ sync_backup_to_cloud() {
     fi
 
     fn_print_warning "正在提交数据变更..."
-    git add .
     git commit -m "Sync from Termux on $(date -u)"
     
     fn_print_warning "正在上传到云端..."
@@ -460,54 +473,71 @@ sync_restore_from_cloud() {
     local temp_dir
     temp_dir=$(mktemp -d)
 
-    # 【已修正】智能测试下载线路
-    fn_print_warning "正在从您的下载镜像列表中，自动测试支持数据下载的加速线路..."
+    fn_print_warning "正在寻找最快的下载线路..."
     # shellcheck source=/dev/null
     source "$SYNC_CONFIG_FILE"
     local repo_path
     repo_path=$(echo "$REPO_URL" | sed 's|https://github.com/||')
     
     local fastest_pull_url=""
-    local test_urls=()
-    # 优先测试官方地址
-    test_urls+=("https://github.com/${repo_path}")
+    
+    # 1. 优先测试官方地址
+    local official_pull_url="https://github.com/${repo_path}"
+    local authed_official_url="https://${REPO_TOKEN}@github.com/${repo_path}"
+    echo -ne "  - 优先测试: 官方 GitHub ..." >&2
+    if timeout 10s git ls-remote "$authed_official_url" HEAD >/dev/null 2>&1; then
+        echo -e " ${GREEN}[成功]${NC}" >&2
+        fastest_pull_url="$official_pull_url"
+    else
+        echo -e " ${RED}[失败]${NC}" >&2
+    fi
 
-    # 从PULL_MIRROR_LIST智能构建私有仓库的下载地址
-    for mirror_url in "${PULL_MIRROR_LIST[@]}"; do
-        if [[ "$mirror_url" == "https://github.com/SillyTavern/SillyTavern.git" ]]; then continue; fi
-        local mirror_host
-        mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
-        local private_repo_mirror_url=""
-        if [[ "$mirror_url" == *"hub.gitmirror.com"* ]]; then
-            private_repo_mirror_url="https://hub.gitmirror.com/${repo_path}"
-        elif [[ "$mirror_url" == *"/gh/"* ]]; then
-            private_repo_mirror_url="https://${mirror_host}/gh/${repo_path}"
-        elif [[ "$mirror_url" == *"/github.com/"* ]]; then
-            private_repo_mirror_url="https://${mirror_host}/github.com/${repo_path}"
-        fi
-        if [ -n "$private_repo_mirror_url" ]; then
-            # 避免重复添加
-            if [[ ! " ${test_urls[*]} " =~ " ${private_repo_mirror_url} " ]]; then
-                test_urls+=("$private_repo_mirror_url")
+    # 2. 如果官方失败，并行测试镜像
+    if [ -z "$fastest_pull_url" ]; then
+        fn_print_warning "官方线路连接失败，正在并行测试所有镜像..." >&2
+        local other_mirrors=()
+        for mirror_url in "${PULL_MIRROR_LIST[@]}"; do
+            [[ "$mirror_url" != "https://github.com/SillyTavern/SillyTavern.git" ]] && other_mirrors+=("$mirror_url")
+        done
+
+        if [ ${#other_mirrors[@]} -gt 0 ]; then
+            local results_file
+            results_file=$(mktemp)
+            local pids=()
+            for mirror_url in "${other_mirrors[@]}"; do
+                (
+                    local private_repo_mirror_url=""
+                    local mirror_host
+                    mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
+                    if [[ "$mirror_url" == *"hub.gitmirror.com"* ]]; then
+                        private_repo_mirror_url="https://hub.gitmirror.com/${repo_path}"
+                    elif [[ "$mirror_url" == *"/gh/"* ]]; then
+                        private_repo_mirror_url="https://${mirror_host}/gh/${repo_path}"
+                    elif [[ "$mirror_url" == *"/github.com/"* ]]; then
+                        private_repo_mirror_url="https://${mirror_host}/github.com/${repo_path}"
+                    else
+                        exit 1
+                    fi
+                    local authed_mirror
+                    authed_mirror=$(echo "$private_repo_mirror_url" | sed "s|https://|https://${REPO_TOKEN}@|")
+                    echo -ne "  - 并行测试: ${mirror_host} ..." >&2
+                    if timeout 10s git ls-remote "$authed_mirror" HEAD >/dev/null 2>&1; then
+                        echo -e " ${GREEN}[成功]${NC}" >&2
+                        echo "$private_repo_mirror_url" > "$results_file"
+                        kill -9 "${pids[@]}" 2>/dev/null
+                    else
+                        echo -e " ${RED}[失败]${NC}" >&2
+                    fi
+                ) &
+                pids+=($!)
+            done
+            wait "${pids[@]}" 2>/dev/null
+            if [ -s "$results_file" ]; then
+                fastest_pull_url=$(head -n 1 "$results_file")
             fi
+            rm -f "$results_file"
         fi
-    done
-
-    for mirror in "${test_urls[@]}"; do
-        local mirror_host
-        mirror_host=$(echo "$mirror" | sed -e 's|https://||' -e 's|/.*$||')
-        echo -ne "  - 测试: ${mirror_host} ..." >&2
-        # 私有仓库的 ls-remote 也需要认证
-        local authed_mirror
-        authed_mirror=$(echo "$mirror" | sed "s|https://|https://${REPO_TOKEN}@|")
-        if timeout 15s git ls-remote "$authed_mirror" HEAD >/dev/null 2>&1; then
-            echo -e " ${GREEN}[成功]${NC}" >&2
-            fastest_pull_url="$mirror"
-            break
-        else
-            echo -e " ${RED}[失败]${NC}" >&2
-        fi
-    done
+    fi
 
     if [ -z "$fastest_pull_url" ]; then
         fn_print_error "所有下载线路均测试失败！"
@@ -1221,7 +1251,7 @@ while true; do
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v1.9.3    ║
+    ║      SillyTavern 助手 v1.9.4    ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
