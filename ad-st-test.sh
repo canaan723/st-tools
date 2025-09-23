@@ -1,10 +1,12 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v1.9.4 (社区修正版)
+# SillyTavern 助手 v1.9.7 (社区修正版)
 # 作者: Qingjue | 小红书号: 826702880
 # 1. 修复云同步逻辑，使其能智能解析并利用完整的镜像列表。
 # 2. 恢复“官方优先，镜像并行”的高效测试策略。
 # 3. 修复“数据一致”的致命逻辑错误。
+# 4. 增加 commit 和 push 步骤的严格错误检查，杜绝“假成功”。
+# 5. 【新增】在同步菜单首次使用时，自动检测并引导用户一次性配置全局Git身份，实现一劳永逸。
 
 # =========================================================================
 #   脚本环境与色彩定义
@@ -213,6 +215,41 @@ sync_check_deps() {
     return 0
 }
 
+# 【新增】一次性检测并永久配置Git全局身份
+sync_ensure_git_identity() {
+    if [ -z "$(git config --global --get user.name)" ] || [ -z "$(git config --global --get user.email)" ]; then
+        clear
+        fn_print_header "首次同步环境配置"
+        fn_print_warning "检测到您的Git尚未配置身份信息（用户名和邮箱）。"
+        echo -e "这是数据同步功能所必需的，用于记录每一次数据变更的操作者。"
+        echo -e "${CYAN}此为一次性设置，将永久生效，请放心配置。${NC}"
+        
+        local user_name user_email
+        while true; do
+            read -p "请输入您的用户名 (例如 Your Name): " user_name
+            if [[ -n "$user_name" ]]; then
+                break
+            else
+                fn_print_error "用户名不能为空！"
+            fi
+        done
+        while true; do
+            read -p "请输入您的邮箱 (例如 you@example.com): " user_email
+            if [[ -n "$user_email" ]]; then
+                break
+            else
+                fn_print_error "邮箱不能为空！"
+            fi
+        done
+
+        git config --global user.name "$user_name"
+        git config --global user.email "$user_email"
+        fn_print_success "Git身份信息已配置成功！"
+        sleep 2
+    fi
+    return 0
+}
+
 sync_configure() {
     clear
     fn_print_header "配置同步服务 (首次使用)"
@@ -287,7 +324,6 @@ sync_test_one_mirror_push() {
     return $exit_code
 }
 
-# 【已重写】采用“官方优先，镜像并行”的高效测试策略
 sync_find_pushable_mirror() {
     # shellcheck source=/dev/null
     source "$SYNC_CONFIG_FILE"
@@ -348,7 +384,6 @@ sync_find_pushable_mirror() {
             if sync_test_one_mirror_push "$authed_push_url"; then
                 echo -e " ${GREEN}[成功]${NC}" >&2
                 echo "$authed_push_url" > "$results_file"
-                # 杀死其他仍在运行的测试进程以节省时间
                 kill -9 "${pids[@]}" 2>/dev/null
             else
                 echo -e " ${RED}[失败]${NC}" >&2
@@ -415,7 +450,6 @@ sync_backup_to_cloud() {
 
     cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
     
-    # 【已修复】必须先将文件添加到暂存区，才能正确检测到差异
     git add .
 
     if git diff-index --quiet HEAD; then
@@ -426,11 +460,16 @@ sync_backup_to_cloud() {
     fi
 
     fn_print_warning "正在提交数据变更..."
-    git commit -m "Sync from Termux on $(date -u)"
+    if ! git commit -m "Sync from Termux on $(date -u)"; then
+        fn_print_error "Git 提交失败！无法创建数据快照。"
+        rm -rf "$temp_dir"
+        fn_press_any_key
+        return
+    fi
     
     fn_print_warning "正在上传到云端..."
     if ! git push; then
-        fn_print_error "上传失败！请检查网络。"
+        fn_print_error "上传失败！请检查网络或Token权限。"
         rm -rf "$temp_dir"
         fn_press_any_key
         return
@@ -597,6 +636,12 @@ sync_clear_config() {
 
 main_sync_menu() {
     while true; do
+        # 【已修改】在进入菜单时，首先确保Git身份已配置
+        if ! sync_ensure_git_identity; then
+            fn_print_error "Git身份配置失败，无法继续。"
+            fn_press_any_key
+            break
+        fi
         clear
         fn_print_header "SillyTavern 数据同步"
         echo -e "      [1] ${CYAN}配置同步服务 (首次使用)${NC}"
@@ -1251,7 +1296,7 @@ while true; do
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v1.9.4    ║
+    ║      SillyTavern 助手 v1.9.7    ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
