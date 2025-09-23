@@ -1,13 +1,13 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v2.0.0 (社区修正版)
+# SillyTavern 助手 v2.0.1 (社区修正版)
 # 作者: Qingjue | 小红书号: 826702880
-# 重大逻辑重构：
-# 1. 废弃“竞速模式”测试，所有网络测试函数现在都会完整测试所有线路，并返回一个按优先级排序的成功列表。
-# 2. 所有依赖网络操作的功能（安装、更新、同步）均已实现循环重试逻辑，会在操作失败时自动切换到下一个可用线路。
-# 3. 修复并行测试输出混乱的问题，并明确显示最终选择。
-# 4. 统一所有网络测试逻辑，使其行为完全由 PULL_MIRROR_LIST 控制。
-# 5. 在同步菜单首次使用时，自动检测并引导用户一次性配置全局Git身份，实现一劳永逸。
+# 重大BUG修复：
+# 1. 【修复】重构测试逻辑，严格确保“官方优先”的串行测试，之后再对镜像进行并行测试。
+# 2. 【修复】修复了v2.0.0中因重构丢失的、对不同类型镜像拼接不同URL的逻辑（灾难性回归BUG）。
+# 3. 【修复】通过在关键操作前切换到安全目录，解决了并行测试中可能引发 "Unable to read current working directory" 的竞态条件BUG。
+# 4. 废弃“竞速模式”测试，所有网络测试函数现在都会完整测试所有线路，并返回一个按优先级排序的成功列表。
+# 5. 所有依赖网络操作的功能（安装、更新、同步）均已实现循环重试逻辑。
 
 # =========================================================================
 #   脚本环境与色彩定义
@@ -35,7 +35,7 @@ CACHED_MIRRORS=()
 
 # 用于下载(pull/clone)的镜像列表
 PULL_MIRROR_LIST=(
-    "https://github.com/SillyTavern/SillyTavern.git"
+ #   "https://github.com/SillyTavern/SillyTavern.git"
     "https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
     "https://git.723123.xyz/gh/SillyTavern/SillyTavern.git"
     "https://xget.xi-xu.me/gh/SillyTavern/SillyTavern.git"
@@ -60,7 +60,6 @@ fn_print_error_exit() { echo -e "\n${RED}✗ ${BOLD}$1${NC}\n${RED}流程已终�
 fn_press_any_key() { echo -e "\n${CYAN}请按任意键返回...${NC}"; read -n 1 -s; }
 fn_check_command() { command -v "$1" >/dev/null 2>&1; }
 
-# 【已重构】测试所有线路，返回按速度排序的成功列表
 fn_find_fastest_mirror() {
     if [ ${#CACHED_MIRRORS[@]} -gt 0 ]; then
         fn_print_success "已使用缓存的测速结果。" >&2
@@ -72,66 +71,71 @@ fn_find_fastest_mirror() {
     local github_url="https://github.com/SillyTavern/SillyTavern.git"
     local sorted_successful_mirrors=()
     
-    local all_mirrors_to_test=()
-    # 优先添加官方地址
+    # 1. 优先测试官方地址 (如果用户在列表中配置了)
     if [[ " ${PULL_MIRROR_LIST[*]} " =~ " ${github_url} " ]]; then
-        all_mirrors_to_test+=("$github_url")
+        echo -e "  - 优先测试: GitHub 官方源..." >&2
+        if timeout 10s git ls-remote "$github_url" HEAD >/dev/null 2>&1; then
+            fn_print_success "GitHub 官方源直连可用！" >&2
+            sorted_successful_mirrors+=("$github_url")
+        else
+            fn_print_error "GitHub 官方源连接超时，将测试其他镜像..." >&2
+        fi
     fi
-    # 添加其他镜像
+
+    # 2. 并行测试其他镜像
+    local other_mirrors=()
     for mirror in "${PULL_MIRROR_LIST[@]}"; do
-        [[ "$mirror" != "$github_url" ]] && all_mirrors_to_test+=("$mirror")
+        [[ "$mirror" != "$github_url" ]] && other_mirrors+=("$mirror")
     done
 
-    if [ ${#all_mirrors_to_test[@]} -eq 0 ]; then
-        fn_print_error "没有配置任何可用的镜像进行测试。" >&2
-        return 1
-    fi
+    if [ ${#other_mirrors[@]} -eq 0 ]; then
+        # 如果只有官方地址且失败了，这里需要处理
+        if [ ${#sorted_successful_mirrors[@]} -eq 0 ]; then
+            fn_print_error "没有其他可用的镜像进行测试。" >&2
+            return 1
+        fi
+    else
+        echo -e "${YELLOW}已启动并行测试，将完整测试所有线路...${NC}" >&2
+        local results_file
+        results_file=$(mktemp)
+        local pids=()
 
-    echo -e "${YELLOW}已启动并行测试，将完整测试所有线路...${NC}" >&2
-    local results_file
-    results_file=$(mktemp)
-    local pids=()
+        for mirror_url in "${other_mirrors[@]}"; do
+            (
+                local mirror_host
+                mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
+                local start_time
+                start_time=$(date +%s.%N)
+                if timeout 10s git ls-remote "$mirror_url" HEAD >/dev/null 2>&1; then
+                    local end_time
+                    end_time=$(date +%s.%N)
+                    local elapsed_time
+                    elapsed_time=$(echo "$end_time - $start_time" | bc)
+                    echo "$elapsed_time $mirror_url" >>"$results_file"
+                    echo -e "  - 测试: ${CYAN}${mirror_host}${NC} - 耗时 ${GREEN}${elapsed_time}s${NC} ${GREEN}[成功]${NC}" >&2
+                else
+                    echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${RED}[失败]${NC}" >&2
+                fi
+            ) &
+            pids+=($!)
+        done
 
-    for mirror_url in "${all_mirrors_to_test[@]}"; do
-        (
-            local mirror_host
-            mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
-            local start_time
-            start_time=$(date +%s.%N)
-            if timeout 10s git ls-remote "$mirror_url" HEAD >/dev/null 2>&1; then
-                local end_time
-                end_time=$(date +%s.%N)
-                local elapsed_time
-                elapsed_time=$(echo "$end_time - $start_time" | bc)
-                # 将结果写入临时文件，格式：耗时 URL
-                echo "$elapsed_time $mirror_url" >>"$results_file"
-                echo -e "  - 测试: ${CYAN}${mirror_host}${NC} - 耗时 ${GREEN}${elapsed_time}s${NC} ${GREEN}[成功]${NC}" >&2
-            else
-                echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${RED}[失败]${NC}" >&2
-            fi
-        ) &
-        pids+=($!)
-    done
+        wait "${pids[@]}"
 
-    wait "${pids[@]}"
-
-    if [ ! -s "$results_file" ]; then
-        fn_print_error "所有镜像都无法连接。" >&2
+        if [ -s "$results_file" ]; then
+            # 从结果文件中排序并追加到成功列表
+            mapfile -t other_successful_mirrors < <(sort -n "$results_file" | awk '{print $2}')
+            sorted_successful_mirrors+=("${other_successful_mirrors[@]}")
+        fi
         rm -f "$results_file"
-        return 1
     fi
-
-    # 从结果文件中排序并提取URL列表
-    mapfile -t sorted_successful_mirrors < <(sort -n "$results_file" | awk '{print $2}')
-    rm -f "$results_file"
 
     if [ ${#sorted_successful_mirrors[@]} -gt 0 ]; then
         fn_print_success "测试完成，找到 ${#sorted_successful_mirrors[@]} 个可用线路。" >&2
         CACHED_MIRRORS=("${sorted_successful_mirrors[@]}")
         printf '%s\n' "${CACHED_MIRRORS[@]}"
     else
-        # 理论上不会到这里，因为上面已经检查过文件是否为空
-        fn_print_error "未能找到任何可用的下载线路。" >&2
+        fn_print_error "所有线路均测试失败。" >&2
         return 1
     fi
 }
@@ -316,7 +320,7 @@ sync_test_one_mirror_push() {
     return $exit_code
 }
 
-# 【已重构】测试所有线路，返回按优先级排序的成功列表
+# 【已重构】严格分离官方测试和镜像并行测试
 sync_find_pushable_mirror() {
     # shellcheck source=/dev/null
     source "$SYNC_CONFIG_FILE"
@@ -332,76 +336,72 @@ sync_find_pushable_mirror() {
     local github_public_url="https://github.com/SillyTavern/SillyTavern.git"
     local successful_urls=()
 
-    local all_mirrors_to_test=()
-    # 优先添加官方地址
+    # 1. 优先测试官方地址 (如果用户在列表中配置了)
     if [[ " ${PULL_MIRROR_LIST[*]} " =~ " ${github_public_url} " ]]; then
-        all_mirrors_to_test+=("https://github.com/${repo_path}")
+        local official_url="https://${REPO_TOKEN}@github.com/${repo_path}"
+        echo -e "  - 优先测试: 官方 GitHub ..." >&2
+        if sync_test_one_mirror_push "$official_url"; then
+            echo -e "    ${GREEN}[成功]${NC}" >&2
+            successful_urls+=("$official_url")
+        else
+            echo -e "    ${RED}[失败]${NC}" >&2
+        fi
     fi
-    # 添加其他镜像
+
+    # 2. 并行测试其他镜像
+    local other_mirrors=()
     for mirror_url in "${PULL_MIRROR_LIST[@]}"; do
-        if [[ "$mirror_url" != "$github_public_url" ]]; then
-            local mirror_host
-            mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
-            local private_repo_mirror_url=""
-            if [[ "$mirror_url" == *"hub.gitmirror.com"* ]]; then
-                private_repo_mirror_url="https://${mirror_host}/${repo_path}"
-            elif [[ "$mirror_url" == *"/gh/"* ]]; then
-                private_repo_mirror_url="https://${mirror_host}/gh/${repo_path}"
-            elif [[ "$mirror_url" == *"/github.com/"* ]]; then
-                private_repo_mirror_url="https://${mirror_host}/github.com/${repo_path}"
-            fi
-            [ -n "$private_repo_mirror_url" ] && all_mirrors_to_test+=("$private_repo_mirror_url")
+        [[ "$mirror_url" != "$github_public_url" ]] && other_mirrors+=("$mirror_url")
+    done
+
+    if [ ${#other_mirrors[@]} -gt 0 ]; then
+        echo -e "${YELLOW}已启动并行测试，将完整测试所有镜像...${NC}" >&2
+        local results_file
+        results_file=$(mktemp)
+        local pids=()
+
+        for mirror_url in "${other_mirrors[@]}"; do
+            (
+                local authed_push_url=""
+                local mirror_host
+                mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
+
+                # 【已修复】重新加入智能拼接URL的逻辑
+                if [[ "$mirror_url" == *"hub.gitmirror.com"* ]]; then
+                    authed_push_url="https://${REPO_TOKEN}@${mirror_host}/${repo_path}"
+                elif [[ "$mirror_url" == *"/gh/"* ]]; then
+                    authed_push_url="https://${REPO_TOKEN}@${mirror_host}/gh/${repo_path}"
+                elif [[ "$mirror_url" == *"/github.com/"* ]]; then
+                    authed_push_url="https://${REPO_TOKEN}@${mirror_host}/github.com/${repo_path}"
+                else
+                    exit 1 # 跳过无法识别的格式
+                fi
+                
+                if sync_test_one_mirror_push "$authed_push_url"; then
+                    echo "$authed_push_url" >> "$results_file"
+                    echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${GREEN}[成功]${NC}" >&2
+                else
+                    echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${RED}[失败]${NC}" >&2
+                fi
+            ) &
+            pids+=($!)
+        done
+
+        wait "${pids[@]}"
+
+        if [ -s "$results_file" ]; then
+            # 读取所有成功的URL并追加到列表
+            mapfile -t other_successful_urls < "$results_file"
+            successful_urls+=("${other_successful_urls[@]}")
         fi
-    done
-
-    if [ ${#all_mirrors_to_test[@]} -eq 0 ]; then
-        fn_print_error "没有配置任何可用的镜像进行测试。" >&2
-        return 1
-    fi
-
-    echo -e "${YELLOW}已启动并行测试，将完整测试所有线路...${NC}" >&2
-    local results_file
-    results_file=$(mktemp)
-    local pids=()
-
-    for test_url in "${all_mirrors_to_test[@]}"; do
-        (
-            local mirror_host
-            mirror_host=$(echo "$test_url" | sed -e 's|https://||' -e 's|/.*$||')
-            local authed_url="https://${REPO_TOKEN}@${mirror_host}/${repo_path}"
-            
-            if sync_test_one_mirror_push "$authed_url"; then
-                echo "$test_url" >> "$results_file"
-                echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${GREEN}[成功]${NC}" >&2
-            else
-                echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${RED}[失败]${NC}" >&2
-            fi
-        ) &
-        pids+=($!)
-    done
-
-    wait "${pids[@]}"
-
-    if [ ! -s "$results_file" ]; then
-        fn_print_error "所有上传线路都无法连接。" >&2
         rm -f "$results_file"
-        return 1
     fi
-    
-    # 按照测试列表的原始顺序（即优先级）输出成功结果
-    for url in "${all_mirrors_to_test[@]}"; do
-        if grep -qF "$url" "$results_file"; then
-            local authed_url
-            authed_url=$(echo "$url" | sed "s|https://|https://${REPO_TOKEN}@|")
-            successful_urls+=("$authed_url")
-        fi
-    done
-    rm -f "$results_file"
 
     if [ ${#successful_urls[@]} -gt 0 ]; then
         fn_print_success "测试完成，找到 ${#successful_urls[@]} 条可用上传线路。" >&2
         printf '%s\n' "${successful_urls[@]}"
     else
+        fn_print_error "所有上传线路均测试失败。" >&2
         return 1
     fi
 }
@@ -433,6 +433,9 @@ sync_backup_to_cloud() {
         
         local temp_dir
         temp_dir=$(mktemp -d)
+
+        # 【已修复】在执行git操作前，切换到安全的家目录
+        cd "$HOME" || { fn_print_error "无法进入家目录！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
 
         if ! git clone --depth 1 "$push_url" "$temp_dir"; then
             fn_print_error "克隆云端仓库失败！正在切换下一条线路..."
@@ -517,8 +520,6 @@ sync_restore_from_cloud() {
         return
     fi
 
-    # 此处逻辑与 sync_find_pushable_mirror 类似，但用于下载
-    # 为简化，直接调用 fn_find_fastest_mirror 的逻辑，因为它返回的是公开可读的URL列表
     mapfile -t pull_urls < <(fn_find_fastest_mirror)
     if [ ${#pull_urls[@]} -eq 0 ]; then
         fn_print_error "未能找到任何支持下载的线路。"
@@ -533,6 +534,9 @@ sync_restore_from_cloud() {
         local chosen_host
         chosen_host=$(echo "$pull_url" | sed -e 's|https://||' -e 's|/.*$||')
         fn_print_warning "正在尝试使用线路 [${chosen_host}] 进行恢复..."
+
+        # 【已修复】在执行git操作前，切换到安全的家目录
+        cd "$HOME" || { fn_print_error "无法进入家目录！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
 
         # shellcheck source=/dev/null
         source "$SYNC_CONFIG_FILE"
@@ -728,37 +732,26 @@ main_install() {
         fn_print_error_exit "目录 $ST_DIR 已存在但安装不完整。请手动删除该目录后再试。"
     else
         local download_success=false
-        while ! $download_success; do
-            mapfile -t sorted_mirrors < <(fn_find_fastest_mirror)
-            if [ ${#sorted_mirrors[@]} -eq 0 ]; then
-                read -p $'\n'"${RED}所有 Git 镜像均测试失败。是否重新测速并重试？(直接回车=是, 输入n=否): ${NC}" retry_choice
-                if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
-                    fn_print_error_exit "下载失败，用户取消操作。"
-                fi
-                CACHED_MIRRORS=()
-                continue
-            fi
-            for mirror_url in "${sorted_mirrors[@]}"; do
-                local mirror_host
-                mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
-                fn_print_warning "正在尝试从镜像 [${mirror_host}] 下载 (${REPO_BRANCH} 分支)..."
-                if git clone --depth 1 -b "$REPO_BRANCH" "$mirror_url" "$ST_DIR"; then
-                    fn_print_success "主程序下载完成。"
-                    download_success=true
-                    break
-                else
-                    fn_print_error "使用镜像 [${mirror_host}] 下载失败！正在切换..."
-                    rm -rf "$ST_DIR"
-                fi
-            done
-            if ! $download_success; then
-                read -p $'\n'"${RED}所有线路均下载失败。是否重新测速并重试？(直接回车=是, 输入n=否): ${NC}" retry_choice
-                if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
-                    fn_print_error_exit "下载失败，用户取消操作。"
-                fi
-                CACHED_MIRRORS=()
+        mapfile -t sorted_mirrors < <(fn_find_fastest_mirror)
+        if [ ${#sorted_mirrors[@]} -eq 0 ]; then
+            fn_print_error_exit "所有 Git 镜像均测试失败，无法下载主程序。"
+        fi
+        for mirror_url in "${sorted_mirrors[@]}"; do
+            local mirror_host
+            mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
+            fn_print_warning "正在尝试从镜像 [${mirror_host}] 下载 (${REPO_BRANCH} 分支)..."
+            if git clone --depth 1 -b "$REPO_BRANCH" "$mirror_url" "$ST_DIR"; then
+                fn_print_success "主程序下载完成。"
+                download_success=true
+                break
+            else
+                fn_print_error "使用镜像 [${mirror_host}] 下载失败！正在切换..."
+                rm -rf "$ST_DIR"
             fi
         done
+        if ! $download_success; then
+            fn_print_error_exit "已尝试所有可用线路，但下载均失败。"
+        fi
     fi
 
     fn_print_header "4/5: 配置并安装依赖"
@@ -793,133 +786,111 @@ main_update_st() {
 
     cd "$ST_DIR" || fn_print_error_exit "无法进入 SillyTavern 目录: $ST_DIR"
     local update_success=false
-    while ! $update_success; do
-        mapfile -t sorted_mirrors < <(fn_find_fastest_mirror)
-        if [ ${#sorted_mirrors[@]} -eq 0 ]; then
-            read -p $'\n'"${RED}所有 Git 镜像均测试失败。是否重新测速并重试？(直接回车=是, 输入n=否): ${NC}" retry_choice
-            if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
-                fn_print_warning "更新失败，用户取消操作。"
-                fn_press_any_key
-                return
+    mapfile -t sorted_mirrors < <(fn_find_fastest_mirror)
+    if [ ${#sorted_mirrors[@]} -eq 0 ]; then
+        fn_print_error "所有 Git 镜像均测试失败，无法更新。"
+        fn_press_any_key
+        return
+    fi
+
+    for mirror_url in "${sorted_mirrors[@]}"; do
+        local mirror_host
+        mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
+        fn_print_warning "正在尝试使用镜像 [${mirror_host}] 更新..."
+        git remote set-url origin "$mirror_url"
+
+        local git_output
+        git_output=$(git pull origin "$REPO_BRANCH" 2>&1)
+        if [ $? -eq 0 ]; then
+            fn_print_success "代码更新成功。"
+            if fn_run_npm_install_with_retry; then
+                update_success=true
             fi
-            CACHED_MIRRORS=()
-            continue
-        fi
-
-        local pull_attempted_in_loop=false
-        for mirror_url in "${sorted_mirrors[@]}"; do
-            local mirror_host
-            mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
-            fn_print_warning "正在尝试使用镜像 [${mirror_host}] 更新..."
-            git remote set-url origin "$mirror_url"
-
-            local git_output
-            git_output=$(git pull origin "$REPO_BRANCH" 2>&1)
-            if [ $? -eq 0 ]; then
-                fn_print_success "代码更新成功。"
-                if fn_run_npm_install_with_retry; then
-                    update_success=true
-                fi
-                break
-            else
-                if echo "$git_output" | grep -qE "overwritten by merge|Please commit|unmerged files"; then
-                    clear
-                    fn_print_header "检测到更新冲突！"
-                    fn_print_warning "原因: 你可能修改过酒馆的文件，导致无法自动合并新版本。"
-                    echo "--- 冲突文件预览 ---"
-                    echo "$git_output" | grep -E "^\s+" | head -n 5
-                    echo "--------------------"
-                    echo -e "\n请选择操作方式："
-                    echo -e "  [${GREEN}回车${NC}] ${BOLD}自动备份并重新安装 (推荐)${NC}"
-                    echo -e "  [1]    ${YELLOW}强制覆盖更新 (危险)${NC}"
-                    echo -e "  [0]    ${CYAN}放弃更新${NC}"
-                    read -p "请输入选项: " choice
-
-                    case "$choice" in
-                    "" | 'b' | 'B')
-                        clear
-                        fn_print_header "步骤 1/5: 创建核心数据备份"
-                        local data_backup_zip_path
-                        data_backup_zip_path=$(fn_create_data_zip_backup)
-                        if [ -z "$data_backup_zip_path" ]; then
-                            fn_print_error_exit "核心数据备份(.zip)创建失败，更新流程终止。"
-                        fi
-
-                        fn_print_header "步骤 2/5: 完整备份当前目录"
-                        local renamed_backup_dir="${ST_DIR}_backup_$(date +%Y%m%d%H%M%S)"
-                        cd "$HOME"
-                        mv "$ST_DIR" "$renamed_backup_dir" || fn_print_error_exit "备份失败！请检查权限或手动重命名后重试。"
-                        fn_print_success "旧目录已完整备份为: $(basename "$renamed_backup_dir")"
-
-                        fn_print_header "步骤 3/5: 下载并安装新版 SillyTavern"
-                        main_install "no-start"
-                        if [ ! -d "$ST_DIR" ]; then
-                            fn_print_error_exit "新版本安装失败，流程终止。"
-                        fi
-
-                        fn_print_header "步骤 4/5: 自动恢复用户数据"
-                        fn_print_warning "正在将备份数据解压至新目录..."
-                        if ! unzip -o "$data_backup_zip_path" -d "$ST_DIR" >/dev/null 2>&1; then
-                            fn_print_error_exit "数据恢复失败！请检查zip文件是否有效。"
-                        fi
-                        fn_print_success "用户数据已成功恢复到新版本中。"
-
-                        fn_print_header "步骤 5/5: 更新完成，请确认"
-                        fn_print_success "SillyTavern 已更新并恢复数据！"
-                        fn_print_warning "请注意:"
-                        echo -e "  - 您的聊天记录、角色卡、插件和设置已恢复。"
-                        echo -e "  - 如果您曾手动修改过酒馆核心文件(如 server.js)，这些修改需要您重新操作。"
-                        echo -e "  - 您的完整旧版本已备份在: ${CYAN}$(basename "$renamed_backup_dir")${NC}"
-                        echo -e "  - 本次恢复所用的核心数据备份位于: ${CYAN}$(basename "$BACKUP_ROOT_DIR")/$(basename "$data_backup_zip_path")${NC}"
-
-                        echo -e "\n${CYAN}请按任意键，启动更新后的 SillyTavern...${NC}"
-                        read -n 1 -s
-                        main_start
-                        return
-                        ;;
-                    '1')
-                        fn_print_warning "正在执行强制覆盖 (git reset --hard)..."
-                        if git reset --hard "origin/$REPO_BRANCH" && git pull origin "$REPO_BRANCH"; then
-                            fn_print_success "强制更新成功。"
-                            if fn_run_npm_install_with_retry; then
-                                update_success=true
-                            fi
-                        else
-                            fn_print_error "强制更新失败！"
-                        fi
-                        pull_attempted_in_loop=true
-                        break
-                        ;;
-                    *)
-                        fn_print_warning "已取消更新。"
-                        fn_press_any_key
-                        return
-                        ;;
-                    esac
-                else
-                    fn_print_error "使用镜像 [${mirror_host}] 更新失败！错误: $(echo "$git_output" | tail -n 1)"
-                    fn_print_error "正在切换下一条线路..."
-                    sleep 1
-                fi
-            fi
-        done
-
-        if $pull_attempted_in_loop; then
             break
-        fi
+        else
+            if echo "$git_output" | grep -qE "overwritten by merge|Please commit|unmerged files"; then
+                clear
+                fn_print_header "检测到更新冲突！"
+                fn_print_warning "原因: 你可能修改过酒馆的文件，导致无法自动合并新版本。"
+                echo "--- 冲突文件预览 ---"
+                echo "$git_output" | grep -E "^\s+" | head -n 5
+                echo "--------------------"
+                echo -e "\n请选择操作方式："
+                echo -e "  [${GREEN}回车${NC}] ${BOLD}自动备份并重新安装 (推荐)${NC}"
+                echo -e "  [1]    ${YELLOW}强制覆盖更新 (危险)${NC}"
+                echo -e "  [0]    ${CYAN}放弃更新${NC}"
+                read -p "请输入选项: " choice
 
-        if ! $update_success; then
-            read -p $'\n'"${RED}所有线路均更新失败。是否重新测速并重试？(直接回车=是, 输入n=否): ${NC}" retry_choice
-            if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
-                fn_print_warning "更新失败，用户取消操作。"
-                break
+                case "$choice" in
+                "" | 'b' | 'B')
+                    clear
+                    fn_print_header "步骤 1/5: 创建核心数据备份"
+                    local data_backup_zip_path
+                    data_backup_zip_path=$(fn_create_data_zip_backup)
+                    if [ -z "$data_backup_zip_path" ]; then
+                        fn_print_error_exit "核心数据备份(.zip)创建失败，更新流程终止。"
+                    fi
+
+                    fn_print_header "步骤 2/5: 完整备份当前目录"
+                    local renamed_backup_dir="${ST_DIR}_backup_$(date +%Y%m%d%H%M%S)"
+                    cd "$HOME"
+                    mv "$ST_DIR" "$renamed_backup_dir" || fn_print_error_exit "备份失败！请检查权限或手动重命名后重试。"
+                    fn_print_success "旧目录已完整备份为: $(basename "$renamed_backup_dir")"
+
+                    fn_print_header "步骤 3/5: 下载并安装新版 SillyTavern"
+                    main_install "no-start"
+                    if [ ! -d "$ST_DIR" ]; then
+                        fn_print_error_exit "新版本安装失败，流程终止。"
+                    fi
+
+                    fn_print_header "步骤 4/5: 自动恢复用户数据"
+                    fn_print_warning "正在将备份数据解压至新目录..."
+                    if ! unzip -o "$data_backup_zip_path" -d "$ST_DIR" >/dev/null 2>&1; then
+                        fn_print_error_exit "数据恢复失败！请检查zip文件是否有效。"
+                    fi
+                    fn_print_success "用户数据已成功恢复到新版本中。"
+
+                    fn_print_header "步骤 5/5: 更新完成，请确认"
+                    fn_print_success "SillyTavern 已更新并恢复数据！"
+                    fn_print_warning "请注意:"
+                    echo -e "  - 您的聊天记录、角色卡、插件和设置已恢复。"
+                    echo -e "  - 如果您曾手动修改过酒馆核心文件(如 server.js)，这些修改需要您重新操作。"
+                    echo -e "  - 您的完整旧版本已备份在: ${CYAN}$(basename "$renamed_backup_dir")${NC}"
+                    echo -e "  - 本次恢复所用的核心数据备份位于: ${CYAN}$(basename "$BACKUP_ROOT_DIR")/$(basename "$data_backup_zip_path")${NC}"
+
+                    echo -e "\n${CYAN}请按任意键，启动更新后的 SillyTavern...${NC}"
+                    read -n 1 -s
+                    main_start
+                    return
+                    ;;
+                '1')
+                    fn_print_warning "正在执行强制覆盖 (git reset --hard)..."
+                    if git reset --hard "origin/$REPO_BRANCH" && git pull origin "$REPO_BRANCH"; then
+                        fn_print_success "强制更新成功。"
+                        if fn_run_npm_install_with_retry; then
+                            update_success=true
+                        fi
+                    else
+                        fn_print_error "强制更新失败！"
+                    fi
+                    break
+                    ;;
+                *)
+                    fn_print_warning "已取消更新。"
+                    fn_press_any_key
+                    return
+                    ;;
+                esac
+            else
+                fn_print_error "使用镜像 [${mirror_host}] 更新失败！错误: $(echo "$git_output" | tail -n 1)"
+                fn_print_error "正在切换下一条线路..."
+                sleep 1
             fi
-            CACHED_MIRRORS=()
         fi
     done
 
-    if $update_success; then
-        fn_print_success "SillyTavern 更新完成！"
+    if ! $update_success; then
+        fn_print_error "已尝试所有可用线路，但更新均失败。"
     fi
     fn_press_any_key
 }
@@ -1179,118 +1150,4 @@ fn_create_shortcut() {
     local BASHRC_FILE="$HOME/.bashrc"
     local ALIAS_CMD="alias st='\"$SCRIPT_SELF_PATH\"'"
     local ALIAS_COMMENT="# SillyTavern 助手快捷命令"
-    if ! grep -qF "$ALIAS_CMD" "$BASHRC_FILE"; then
-        chmod +x "$SCRIPT_SELF_PATH"
-        echo -e "\n$ALIAS_COMMENT\n$ALIAS_CMD" >>"$BASHRC_FILE"
-        fn_print_success "已创建快捷命令 'st'。请重启 Termux 或执行 'source ~/.bashrc' 生效。"
-    fi
-}
-
-main_manage_autostart() {
-    local BASHRC_FILE="$HOME/.bashrc"
-    local AUTOSTART_CMD="[ -f \"$SCRIPT_SELF_PATH\" ] && \"$SCRIPT_SELF_PATH\""
-    local is_set=false
-    grep -qF "$AUTOSTART_CMD" "$BASHRC_FILE" && is_set=true
-
-    if [[ "$1" == "set_default" ]]; then
-        if ! $is_set; then
-            echo -e "\n# SillyTavern 助手\n$AUTOSTART_CMD" >>"$BASHRC_FILE"
-            fn_print_success "已设置 Termux 启动时自动运行本助手。"
-        fi
-        return
-    fi
-
-    clear
-    fn_print_header "管理助手自启"
-    if $is_set; then
-        echo -e "当前状态: ${GREEN}已启用${NC}"
-        echo -e "${CYAN}提示: 关闭自启后，输入 'st' 命令即可手动启动助手。${NC}"
-        read -p "是否取消自启？ (y/n): " confirm
-        if [[ "$confirm" =~ ^[yY]$ ]]; then
-            sed -i "/# SillyTavern 助手/d" "$BASHRC_FILE"
-            sed -i "\|$AUTOSTART_CMD|d" "$BASHRC_FILE"
-            fn_print_success "已取消自启。"
-        fi
-    else
-        echo -e "当前状态: ${RED}未启用${NC}"
-        echo -e "${CYAN}提示: 在 Termux 中输入 'st' 命令可以手动启动助手。${NC}"
-        read -p "是否设置自启？ (y/n): " confirm
-        if [[ "$confirm" =~ ^[yY]$ ]]; then
-            echo -e "\n# SillyTavern 助手\n$AUTOSTART_CMD" >>"$BASHRC_FILE"
-            fn_print_success "已成功设置自启。"
-        fi
-    fi
-    fn_press_any_key
-}
-
-main_open_docs() {
-    clear
-    fn_print_header "查看帮助文档"
-    local docs_url="https://blog.qjyg.de"
-    echo -e "文档网址: ${CYAN}${docs_url}${NC}\n"
-    if fn_check_command "termux-open-url"; then
-        termux-open-url "$docs_url"
-        fn_print_success "已尝试在浏览器中打开，若未自动跳转请手动复制上方网址。"
-    else
-        fn_print_warning "命令 'termux-open-url' 不存在。\n请先安装【Termux:API】应用及 'pkg install termux-api'。"
-    fi
-    fn_press_any_key
-}
-
-# =========================================================================
-#   主菜单与脚本入口
-# =========================================================================
-
-if [[ "$1" != "--no-check" && "$1" != "--updated" ]]; then
-    check_for_updates_on_start
-fi
-if [[ "$1" == "--updated" ]]; then
-    clear
-    fn_print_success "助手已成功更新至最新版本！"
-    sleep 2
-fi
-
-while true; do
-    clear
-    echo -e "${CYAN}${BOLD}"
-    cat << "EOF"
-    ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v2.0.0    ║
-    ║   by Qingjue | XHS:826702880    ║
-    ╚═════════════════════════════════╝
-EOF
-    update_notice=""
-    if [ -f "$UPDATE_FLAG_FILE" ]; then
-        update_notice=" ${YELLOW}[!] 有更新${NC}"
-    fi
-
-    echo -e "${NC}\n    选择一个操作来开始：\n"
-    echo -e "      [1] ${GREEN}${BOLD}启动 SillyTavern${NC}"
-    echo -e "      [2] ${CYAN}${BOLD}数据同步 (云端备份/恢复)${NC}"
-    echo -e "      [3] ${CYAN}${BOLD}本地数据管理${NC}"
-    echo -e "      [4] ${YELLOW}${BOLD}首次部署 (全新安装)${NC}\n"
-    echo -e "      [5] 更新 ST 主程序    [6] 更新助手脚本${update_notice}"
-    echo -e "      [7] 管理助手自启      [8] 查看帮助文档\n"
-    echo -e "      ${RED}[0] 退出助手${NC}\n"
-    read -p "    请输入选项数字: " choice
-
-    case $choice in
-    1) main_start ;;
-    2) main_sync_menu ;;
-    3) main_data_management_menu ;;
-    4) main_install ;;
-    5) main_update_st ;;
-    6) main_update_script ;;
-    7) main_manage_autostart ;;
-    8) main_open_docs ;;
-    0)
-        echo -e "\n感谢使用，助手已退出。"
-        rm -f "$UPDATE_FLAG_FILE"
-        exit 0
-        ;;
-    *)
-        fn_print_warning "无效输入，请重新选择。"
-        sleep 1.5
-        ;;
-    esac
-done
+    if 
