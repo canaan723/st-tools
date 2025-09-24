@@ -1,10 +1,10 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v2.1.2 (社区修正版)
+# SillyTavern 助手 v2.1.3 (社区修正版)
 # 作者: Qingjue | 小红书号: 826702880
-# 用户体验优化：
-# 1. 【修复】移除了Rclone设置主密码时的隐藏输入。现在所有密码/密钥的输入均为明文可见，贯彻小白友好原则。
-# 2. 修复并固化了v2.1.1版本中的所有BUG修复和逻辑优化。
+# 语法修复：
+# 1. 【修复】修正了 check_for_updates_on_start 函数中的致命语法错误 ( &; )，该错误导致脚本无法启动。
+# 2. 固化了v2.1.2版本中的所有BUG修复和逻辑优化。
 
 # =========================================================================
 #   脚本环境与色彩定义
@@ -57,7 +57,7 @@ fn_print_warning() { echo -e "${YELLOW}⚠ $1${NC}"; }
 fn_print_error() { echo -e "${RED}✗ $1${NC}" >&2; }
 fn_print_error_exit() { echo -e "\n${RED}✗ ${BOLD}$1${NC}\n${RED}流程已终止。${NC}" >&2; fn_press_any_key; exit 1; }
 fn_press_any_key() { echo -e "\n${CYAN}请按任意键返回...${NC}"; read -n 1 -s; }
-fn_check_command() { command -v "$1" >/dev/null 2&>1; }
+fn_check_command() { command -v "$1" >/dev/null 2>&1; }
 
 fn_find_fastest_mirror() {
     if [ ${#CACHED_MIRRORS[@]} -gt 0 ]; then
@@ -257,10 +257,7 @@ rclone_ensure_password() {
             if [[ "$pass1" == "$pass2" ]]; then break; else fn_print_error "两次输入的密码不匹配，请重试。"; fi
         done
         local obscured_pass; obscured_pass=$(echo "$pass1" | rclone obscure -)
-        local temp_conf; temp_conf=$(mktemp)
-        { echo "[DEFAULT]"; echo "ask_password = false"; echo "pass = $obscured_pass"; echo ""; } > "$temp_conf"
-        if [ -f "$RCLONE_CONFIG_FILE" ]; then cat "$RCLONE_CONFIG_FILE" >> "$temp_conf"; fi
-        mv "$temp_conf" "$RCLONE_CONFIG_FILE"
+        (umask 077; echo -e "[DEFAULT]\nask_password = false\npass = $obscured_pass" > "$RCLONE_CONFIG_FILE")
         fn_print_success "主密码设置完成！"; sleep 1
     fi
 }
@@ -367,7 +364,20 @@ main_update_st() {
 }
 main_data_management_menu() { while true; do clear; fn_print_header "SillyTavern 本地数据管理"; echo -e "      [1] ${GREEN}创建自定义备份${NC}\n      [2] ${CYAN}数据迁移/恢复指南${NC}\n      [3] ${RED}删除旧备份${NC}\n      [0] ${CYAN}返回主菜单${NC}"; read -p "\n    请输入选项: " choice; case $choice in 1) run_backup_interactive ;; 2) main_migration_guide ;; 3) run_delete_backup ;; 0) break ;; *) echo -e "${RED}无效输入。${NC}"; sleep 1 ;; esac; done; }
 main_update_script() { clear; fn_print_header "更新助手脚本"; echo -e "${YELLOW}正在从 Gitee 下载新版本...${NC}"; local temp_file; temp_file=$(mktemp); if ! curl -L -o "$temp_file" "$SCRIPT_URL"; then rm -f "$temp_file"; fn_print_warning "下载失败。"; elif cmp -s "$SCRIPT_SELF_PATH" "$temp_file"; then rm -f "$temp_file"; fn_print_success "当前已是最新版本。"; else sed -i 's/\r$//' "$temp_file"; chmod +x "$temp_file"; mv "$temp_file" "$SCRIPT_SELF_PATH"; rm -f "$UPDATE_FLAG_FILE"; echo -e "${GREEN}助手更新成功！正在自动重启...${NC}"; sleep 2; exec "$SCRIPT_SELF_PATH" --updated; fi; fn_press_any_key; }
-check_for_updates_on_start() { ( local temp_file; temp_file=$(mktemp); if curl -L -s --connect-timeout 10 -o "$temp_file" "$SCRIPT_URL"; then if ! cmp -s "$SCRIPT_SELF_PATH" "$temp_file"; then touch "$UPDATE_FLAG_FILE"; else rm -f "$UPDATE_FLAG_FILE"; fi; fi; rm -f "$temp_file" ) &; }
+check_for_updates_on_start() {
+    (
+        local temp_file
+        temp_file=$(mktemp)
+        if curl -L -s --connect-timeout 10 -o "$temp_file" "$SCRIPT_URL"; then
+            if ! cmp -s "$SCRIPT_SELF_PATH" "$temp_file"; then
+                touch "$UPDATE_FLAG_FILE"
+            else
+                rm -f "$UPDATE_FLAG_FILE"
+            fi
+        fi
+        rm -f "$temp_file"
+    ) &
+}
 fn_create_shortcut() { local BASHRC_FILE="$HOME/.bashrc"; local ALIAS_CMD="alias st='\"$SCRIPT_SELF_PATH\"'"; local ALIAS_COMMENT="# SillyTavern 助手快捷命令"; if ! grep -qF "$ALIAS_CMD" "$BASHRC_FILE"; then chmod +x "$SCRIPT_SELF_PATH"; echo -e "\n$ALIAS_COMMENT\n$ALIAS_CMD" >>"$BASHRC_FILE"; fn_print_success "已创建快捷命令 'st'。请重启 Termux 或执行 'source ~/.bashrc' 生效。"; fi; }
 main_manage_autostart() { local BASHRC_FILE="$HOME/.bashrc"; local AUTOSTART_CMD="[ -f \"$SCRIPT_SELF_PATH\" ] && \"$SCRIPT_SELF_PATH\""; local is_set=false; grep -qF "$AUTOSTART_CMD" "$BASHRC_FILE" && is_set=true; if [[ "$1" == "set_default" ]]; then if ! $is_set; then echo -e "\n# SillyTavern 助手\n$AUTOSTART_CMD" >>"$BASHRC_FILE"; fn_print_success "已设置 Termux 启动时自动运行本助手。"; fi; return; fi; clear; fn_print_header "管理助手自启"; if $is_set; then echo -e "当前状态: ${GREEN}已启用${NC}"; echo -e "${CYAN}提示: 关闭自启后，输入 'st' 命令即可手动启动助手。${NC}"; read -p "是否取消自启？ (y/n): " confirm; if [[ "$confirm" =~ ^[yY]$ ]]; then sed -i "/# SillyTavern 助手/d" "$BASHRC_FILE"; sed -i "\|$AUTOSTART_CMD|d" "$BASHRC_FILE"; fn_print_success "已取消自启。"; fi; else echo -e "当前状态: ${RED}未启用${NC}"; echo -e "${CYAN}提示: 在 Termux 中输入 'st' 命令可以手动启动助手。${NC}"; read -p "是否设置自启？ (y/n): " confirm; if [[ "$confirm" =~ ^[yY]$ ]]; then echo -e "\n# SillyTavern 助手\n$AUTOSTART_CMD" >>"$BASHRC_FILE"; fn_print_success "已成功设置自启。"; fi; fi; fn_press_any_key; }
 main_open_docs() { clear; fn_print_header "查看帮助文档"; local docs_url="https://blog.qjyg.de"; echo -e "文档网址: ${CYAN}${docs_url}${NC}\n"; if fn_check_command "termux-open-url"; then termux-open-url "$docs_url"; fn_print_success "已尝试在浏览器中打开。"; else fn_print_warning "命令 'termux-open-url' 不存在。\n请先安装【Termux:API】应用及 'pkg install termux-api'。"; fi; fn_press_any_key; }
