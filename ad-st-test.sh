@@ -29,6 +29,8 @@ CONFIG_DIR="$HOME/.config/ad-st"
 CONFIG_FILE="$CONFIG_DIR/backup_prefs.conf"
 GIT_SYNC_CONFIG_FILE="$CONFIG_DIR/git_sync.conf"
 PROXY_CONFIG_FILE="$CONFIG_DIR/proxy.conf"
+# 【新增】高级同步规则配置文件
+SYNC_RULES_CONFIG_FILE="$CONFIG_DIR/sync_rules.conf"
 
 MIRROR_LIST=(
     "https://github.com/SillyTavern/SillyTavern.git"
@@ -50,7 +52,6 @@ MIRROR_LIST=(
 
 fn_print_header() { echo -e "\n${CYAN}═══ ${BOLD}$1 ${NC}═══${NC}"; }
 fn_print_success() { echo -e "${GREEN}✓ ${BOLD}$1${NC}"; }
-# 【BUG修复】将fn_print_warning的输出重定向到stderr，避免污染stdout
 fn_print_warning() { echo -e "${YELLOW}⚠ $1${NC}" >&2; }
 fn_print_error() { echo -e "${RED}✗ $1${NC}" >&2; }
 fn_print_error_exit() { echo -e "\n${RED}✗ ${BOLD}$1${NC}\n${RED}流程已终止。${NC}" >&2; fn_press_any_key; exit 1; }
@@ -229,42 +230,68 @@ git_sync_find_pushable_mirror() {
     fi
     if [ ${#successful_urls[@]} -gt 0 ]; then fn_print_success "测试完成，找到 ${#successful_urls[@]} 条可用上传线路。" >&2; printf '%s\n' "${successful_urls[@]}"; else fn_print_error "所有上传线路均测试失败。"; return 1; fi
 }
+
 git_sync_backup_to_cloud() {
     clear; fn_print_header "Git备份数据到云端 (上传)"; if [ ! -f "$GIT_SYNC_CONFIG_FILE" ]; then fn_print_warning "请先在菜单 [1] 中配置Git同步服务。"; fn_press_any_key; return; fi
     mapfile -t push_urls < <(git_sync_find_pushable_mirror); if [ ${#push_urls[@]} -eq 0 ]; then fn_print_error "未能找到任何支持上传的线路。"; fn_press_any_key; return; fi
+    
+    # 【改造】加载高级同步配置
+    local SYNC_CONFIG_YAML="false"
+    local USER_MAP=""
+    if [ -f "$SYNC_RULES_CONFIG_FILE" ]; then
+        # shellcheck source=/dev/null
+        source "$SYNC_RULES_CONFIG_FILE"
+    fi
+
     local backup_success=false
     for push_url in "${push_urls[@]}"; do
         local chosen_host; chosen_host=$(echo "$push_url" | sed -e 's|https://.*@||' -e 's|/.*$||'); fn_print_warning "正在尝试使用线路 [${chosen_host}] 进行备份..."; local temp_dir; temp_dir=$(mktemp -d); cd "$HOME" || { fn_print_error "无法进入家目录！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
         if ! git clone --depth 1 "$push_url" "$temp_dir"; then fn_print_error "克隆云端仓库失败！正在切换下一条线路..."; rm -rf "$temp_dir"; continue; fi
         
-        local paths_to_sync=("data" "public/scripts/extensions/third-party" "plugins" "config.yaml")
-        
-        # 【核心修正】进入临时仓库，先删除旧目录，避免gitlink问题
+        # 【改造】根据配置动态确定同步路径
+        local base_paths_to_sync=("public/scripts/extensions/third-party" "plugins")
+        [[ "$SYNC_CONFIG_YAML" == "true" ]] && base_paths_to_sync+=("config.yaml")
+
         cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
         fn_print_warning "正在清理云端旧数据..."
-        for item in "${paths_to_sync[@]}"; do
-            [ -e "$item" ] && rm -rf "$item"
-        done
+        for item in "${base_paths_to_sync[@]}" "data"; do [ -e "$item" ] && rm -rf "$item"; done
 
-        # 返回ST目录，执行rsync复制
-        fn_print_warning "正在同步本地数据到临时区..."
         cd "$ST_DIR" || { fn_print_error "SillyTavern目录不存在！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
-        for item in "${paths_to_sync[@]}"; do 
-            if [ -e "$item" ]; then 
-                # 使用 rsync -a --relative 将带路径的目录复制过去
-                rsync -a --relative "./$item" "$temp_dir/"
-            fi
+        fn_print_warning "正在同步本地数据到临时区..."
+
+        # 【改造】处理基础路径
+        for item in "${base_paths_to_sync[@]}"; do 
+            [ -e "$item" ] && rsync -a --relative "./$item" "$temp_dir/"
         done
 
-        # 再次进入临时仓库，执行后续操作
+        # 【改造】根据 USER_MAP 策略处理 data 目录
+        if [ -n "$USER_MAP" ] && [[ "$USER_MAP" == *":"* ]]; then
+            local local_user="${USER_MAP%%:*}"
+            local remote_user="${USER_MAP##*:}"
+            fn_print_warning "应用用户映射规则: 本地'${local_user}' -> 云端'${remote_user}'"
+            
+            # 1. 同步 data 目录，但排除本地用户文件夹
+            fn_print_warning "  - 同步基础 data (排除 ${local_user})..."
+            rsync -a --relative --delete --exclude "$local_user/" "./data" "$temp_dir/"
+            
+            # 2. 将本地用户文件夹同步到云端映射的文件夹
+            if [ -d "./data/$local_user" ]; then
+                fn_print_warning "  - 同步映射文件夹 ${local_user} -> ${remote_user}..."
+                mkdir -p "$temp_dir/data/$remote_user"
+                rsync -a --delete "./data/$local_user/" "$temp_dir/data/$remote_user/"
+            else
+                fn_print_warning "本地用户文件夹 './data/${local_user}' 不存在，跳过映射同步。"
+            fi
+        else
+            # 无映射规则，正常同步整个 data 目录
+            fn_print_warning "未配置用户映射，将完整同步 data 目录。"
+            [ -d "./data" ] && rsync -a --relative --delete "./data" "$temp_dir/"
+        fi
+
         cd "$temp_dir" || { fn_print_error "再次进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
         
         fn_print_warning "正在转换扩展仓库以进行完整备份..."
-        for item in "${paths_to_sync[@]}"; do
-            if [[ -d "$item" && "$item" != "config.yaml" ]]; then
-                find "$item" -type d -name ".git" -execdir mv .git _git_ \; 2>/dev/null
-            fi
-        done
+        find . -type d -name ".git" -execdir mv .git _git_ \; 2>/dev/null
         
         git add .; if git diff-index --quiet HEAD; then fn_print_success "数据与云端一致，无需上传。"; backup_success=true; rm -rf "$temp_dir"; break; fi
         
@@ -283,6 +310,16 @@ git_sync_restore_from_cloud() {
     fn_print_warning "此操作将用云端数据【覆盖】本地数据！"; read -p "是否在恢复前，先对当前本地数据进行一次备份？(强烈推荐) [Y/n]: " backup_confirm
     if [[ "${backup_confirm:-y}" =~ ^[Yy]$ ]]; then if ! fn_create_data_zip_backup >/dev/null; then fn_print_error "本地备份失败，恢复操作已中止。"; fn_press_any_key; return; fi; fi
     read -p "确认要从云端恢复数据吗？[y/N]: " restore_confirm; if [[ ! "$restore_confirm" =~ ^[yY]$ ]]; then fn_print_warning "操作已取消。"; fn_press_any_key; return; fi
+    
+    # 【改造】加载高级同步配置
+    local SYNC_CONFIG_YAML="false"
+    local USER_MAP=""
+    local EXCLUDE_USERS=""
+    if [ -f "$SYNC_RULES_CONFIG_FILE" ]; then
+        # shellcheck source=/dev/null
+        source "$SYNC_RULES_CONFIG_FILE"
+    fi
+
     mapfile -t pull_urls < <(fn_find_fastest_mirror); if [ ${#pull_urls[@]} -eq 0 ]; then fn_print_error "未能找到任何支持下载的线路。"; fn_press_any_key; return; fi
     local restore_success=false
     for pull_url in "${pull_urls[@]}"; do
@@ -293,21 +330,54 @@ git_sync_restore_from_cloud() {
         if [ ! -d "$temp_dir/data" ] && [ -z "$(ls -A "$temp_dir/data")" ]; then fn_print_error "下载的数据源无效或为空，恢复操作已中止！"; rm -rf "$temp_dir"; fn_press_any_key; return; fi
         
         fn_print_warning "正在将云端数据同步到本地..."; 
-        cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
-        local paths_to_sync=("data" "public/scripts/extensions/third-party" "plugins" "config.yaml")
-        for item in "${paths_to_sync[@]}"; do 
-            if [ -e "$item" ]; then 
-                # 【核心修正】添加 --relative 参数以保持正确的目录结构
-                rsync -av --relative --delete "./$item" "$ST_DIR/"
-            fi
-        done
         
-        fn_print_warning "正在恢复扩展仓库的Git信息..."
-        for item in "${paths_to_sync[@]}"; do
-            if [ -d "$ST_DIR/$item" ]; then
-                find "$ST_DIR/$item" -type d -name "_git_" -execdir mv _git_ .git \; 2>/dev/null
-            fi
+        # 【改造】根据配置动态确定同步路径
+        local base_paths_to_sync=("public/scripts/extensions/third-party" "plugins")
+        [[ "$SYNC_CONFIG_YAML" == "true" ]] && base_paths_to_sync+=("config.yaml")
+
+        # 【改造】处理基础路径
+        for item in "${base_paths_to_sync[@]}"; do 
+            [ -e "$temp_dir/$item" ] && rsync -av --relative --delete "$temp_dir/$item" "$ST_DIR/"
         done
+
+        # 【改造】根据 USER_MAP 策略处理 data 目录
+        if [ -n "$USER_MAP" ] && [[ "$USER_MAP" == *":"* ]]; then
+            local local_user="${USER_MAP%%:*}"
+            local remote_user="${USER_MAP##*:}"
+            fn_print_warning "应用用户映射规则: 云端'${remote_user}' -> 本地'${local_user}'"
+            
+            local exclude_args=()
+            # 1. 总是排除云端映射源，因为它将被单独处理
+            exclude_args+=("--exclude=${remote_user}/")
+            # 2. 添加用户自定义的排除列表
+            if [ -n "$EXCLUDE_USERS" ]; then
+                fn_print_warning "应用排除规则: ${EXCLUDE_USERS}"
+                for user in $EXCLUDE_USERS; do
+                    exclude_args+=("--exclude=${user}/")
+                done
+            fi
+
+            # 3. 同步基础 data 目录，应用所有排除规则
+            fn_print_warning "  - 同步基础 data (应用排除规则)..."
+            rsync -av --delete "${exclude_args[@]}" "$temp_dir/data/" "$ST_DIR/data/"
+
+            # 4. 将云端映射文件夹同步到本地用户文件夹
+            if [ -d "$temp_dir/data/$remote_user" ]; then
+                fn_print_warning "  - 同步映射文件夹 ${remote_user} -> ${local_user}..."
+                mkdir -p "$ST_DIR/data/$local_user"
+                rsync -av --delete "$temp_dir/data/$remote_user/" "$ST_DIR/data/$local_user/"
+            else
+                fn_print_warning "云端映射文件夹 '$temp_dir/data/${remote_user}' 不存在，跳过映射同步。"
+            fi
+        else
+            # 无映射规则，正常同步整个 data 目录
+            fn_print_warning "未配置用户映射，将完整恢复 data 目录。"
+            [ -d "$temp_dir/data" ] && rsync -av --delete "$temp_dir/data/" "$ST_DIR/data/"
+        fi
+
+        fn_print_warning "正在恢复扩展仓库的Git信息..."
+        find "$ST_DIR" -path "$ST_DIR/data/*" -prune -o -type d -name "_git_" -execdir mv _git_ .git \; 2>/dev/null
+        find "$ST_DIR/public/scripts/extensions/third-party" "$ST_DIR/plugins" -type d -name "_git_" -execdir mv _git_ .git \; 2>/dev/null
 
         fn_print_success "数据已从云端成功恢复！"; restore_success=true; rm -rf "$temp_dir"; break
     done
@@ -329,6 +399,103 @@ menu_git_config_management() {
                 break 
                 ;;
             2) git_sync_clear_config ;;
+            0) break ;;
+            *) fn_print_error "无效输入。"; sleep 1 ;;
+        esac
+    done
+}
+
+# 【新增】高级同步设置菜单函数
+menu_advanced_sync_settings() {
+    # 辅助函数，用于更新配置文件中的键值对
+    fn_update_config_value() {
+        local key="$1"
+        local value="$2"
+        local file="$3"
+        touch "$file" # 确保文件存在
+        # 如果键已存在，则替换；否则，追加
+        if grep -q "^${key}=" "$file"; then
+            sed -i "s|^${key}=.*|${key}=\"${value}\"|" "$file"
+        else
+            echo "${key}=\"${value}\"" >> "$file"
+        fi
+    }
+
+    while true; do
+        clear
+        fn_print_header "高级同步设置"
+
+        # 加载当前配置以显示状态
+        local SYNC_CONFIG_YAML="false"
+        local USER_MAP=""
+        local EXCLUDE_USERS=""
+        if [ -f "$SYNC_RULES_CONFIG_FILE" ]; then
+            # shellcheck source=/dev/null
+            source "$SYNC_RULES_CONFIG_FILE"
+        fi
+
+        # 显示 config.yaml 同步状态
+        local sync_config_status="${RED}关闭${NC}"
+        [[ "$SYNC_CONFIG_YAML" == "true" ]] && sync_config_status="${GREEN}开启${NC}"
+        echo -e "  [1] 同步 config.yaml         : ${sync_config_status}"
+
+        # 显示用户映射状态
+        local user_map_status="${RED}未设置${NC}"
+        if [ -n "$USER_MAP" ]; then
+            local local_user="${USER_MAP%%:*}"
+            local remote_user="${USER_MAP##*:}"
+            user_map_status="${GREEN}本地 ${local_user} -> 云端 ${remote_user}${NC}"
+        fi
+        echo -e "  [2] 设置用户数据映射        : ${user_map_status}"
+
+        # 显示排除用户状态
+        local exclude_users_status="${RED}未设置${NC}"
+        [ -n "$EXCLUDE_USERS" ] && exclude_users_status="${YELLOW}${EXCLUDE_USERS}${NC}"
+        echo -e "  [3] 下载时排除的云端用户    : ${exclude_users_status}"
+        
+        echo -e "\n  [4] ${RED}重置所有高级设置${NC}"
+        echo -e "  [0] ${CYAN}返回上一级${NC}\n"
+        read -p "    请输入选项: " choice
+
+        case $choice in
+            1)
+                local new_status="false"
+                [[ "$SYNC_CONFIG_YAML" != "true" ]] && new_status="true"
+                fn_update_config_value "SYNC_CONFIG_YAML" "$new_status" "$SYNC_RULES_CONFIG_FILE"
+                fn_print_success "config.yaml 同步已变更为: ${new_status}"
+                sleep 1
+                ;;
+            2)
+                read -p "请输入本地用户文件夹名 (例如 default-user): " local_u
+                read -p "请输入要映射到的云端用户文件夹名 (例如 a): " remote_u
+                if [ -n "$local_u" ] && [ -n "$remote_u" ]; then
+                    fn_update_config_value "USER_MAP" "${local_u}:${remote_u}" "$SYNC_RULES_CONFIG_FILE"
+                    fn_print_success "用户映射已设置为: ${local_u} -> ${remote_u}"
+                else
+                    fn_update_config_value "USER_MAP" "" "$SYNC_RULES_CONFIG_FILE"
+                    fn_print_warning "输入为空，已清除用户映射设置。"
+                fi
+                sleep 1.5
+                ;;
+            3)
+                read -p "请输入下载时要排除的云端用户名 (用空格隔开，例如 b c): " excluded
+                fn_update_config_value "EXCLUDE_USERS" "$excluded" "$SYNC_RULES_CONFIG_FILE"
+                if [ -n "$excluded" ]; then
+                    fn_print_success "已设置排除用户列表。"
+                else
+                    fn_print_warning "输入为空，已清除排除列表。"
+                fi
+                sleep 1.5
+                ;;
+            4)
+                if [ -f "$SYNC_RULES_CONFIG_FILE" ]; then
+                    rm -f "$SYNC_RULES_CONFIG_FILE"
+                    fn_print_success "所有高级同步设置已重置。"
+                else
+                    fn_print_warning "没有需要重置的设置。"
+                fi
+                sleep 1.5
+                ;;
             0) break ;;
             *) fn_print_error "无效输入。"; sleep 1 ;;
         esac
@@ -362,12 +529,17 @@ menu_git_sync() {
                 echo -e "      ${YELLOW}当前仓库: ${current_repo_name}${NC}\n"
             fi
         fi
-        echo -e "      [1] ${CYAN}管理同步配置${NC}\n      [2] ${GREEN}备份到云端 (上传)${NC}\n      [3] ${YELLOW}从云端恢复 (下载)${NC}\n      [0] ${CYAN}返回主菜单${NC}\n"
+        echo -e "      [1] ${CYAN}管理同步配置 (仓库地址/Token)${NC}"
+        echo -e "      [2] ${GREEN}备份到云端 (上传)${NC}"
+        echo -e "      [3] ${YELLOW}从云端恢复 (下载)${NC}"
+        echo -e "      [4] ${CYAN}高级同步设置 (用户映射等)${NC}\n"
+        echo -e "      [0] ${CYAN}返回主菜单${NC}\n"
         read -p "    请输入选项: " choice
         case $choice in 
             1) menu_git_config_management ;; 
             2) git_sync_backup_to_cloud ;; 
             3) git_sync_restore_from_cloud ;; 
+            4) menu_advanced_sync_settings ;;
             0) break ;; 
             *) fn_print_error "无效输入。"; sleep 1 ;; 
         esac
