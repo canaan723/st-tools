@@ -1,10 +1,11 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v2.3.1 (社区修正版)
+# SillyTavern 助手 v2.3.2 (社区修正版)
 # 作者: Qingjue | 小红书号: 826702880
-# 健壮性修复 (感谢用户持续的专业反馈):
-# 1. 【修复】采用“显式目录创建”模式。在上传打包备份前，强制使用`rclone mkdir`确保云端目录存在，彻底解决了因rclone无法自动创建父目录而导致的上传失败问题。
-# 2. 固化了v2.3.0版本中的所有功能和修复。
+# 终极健壮性修复 (感谢用户不懈的测试与反馈):
+# 1. 【修复】引入“飞行前检查”机制。在任何云端操作前，强制使用`rclone about`命令检查目标路径的可访问性。
+# 2. 【优化】如果路径检查失败，脚本会立即终止，并显示来自`rclone`的原始、精确的错误信息，帮助用户快速定位配置问题（如存储桶名称错误、权限不足等）。
+# 3. 此修复旨在从根本上解决之前所有版本中，因路径无效而导致的`mkdir`和`copy`连续失败的问题。
 
 # =========================================================================
 #   脚本环境与色彩定义
@@ -265,18 +266,28 @@ rclone_ensure_password() {
 rclone_zip_backup_logic() {
     local config_file="$1"; local type_name="$2"; clear; fn_print_header "打包备份到云端 ($type_name)"
     if [ ! -f "$config_file" ]; then fn_print_error "请先配置$type_name同步服务。"; fn_press_any_key; return; fi
+    
+    # shellcheck source=/dev/null
+    source "$config_file"; local base_path="${RCLONE_REMOTE_NAME}:${RCLONE_BUCKET_NAME}/"; local zip_backup_root="${base_path}zip_backups/"
+    
+    fn_print_warning "飞行前检查：正在验证云端基础路径的可访问性..."
+    local about_output; about_output=$(rclone about "$base_path" 2>&1)
+    if [ $? -ne 0 ]; then
+        fn_print_error "云端基础路径无法访问！"
+        fn_print_warning "请检查您的配置：远程名称、存储桶/根目录名称、密钥和权限。"
+        echo -e "\n--- Rclone 原始错误信息 ---\n${about_output}\n--------------------------" >&2
+        fn_press_any_key
+        return
+    fi
+    fn_print_success "路径检查通过，云端连接正常。"
+
     local local_zip_path; local_zip_path=$(fn_create_data_zip_backup)
     if [ -z "$local_zip_path" ]; then fn_print_error "创建本地压缩包失败，无法上传。"; fn_press_any_key; return; fi
-    # shellcheck source=/dev/null
-    source "$config_file"; local zip_backup_root="${RCLONE_REMOTE_NAME}:${RCLONE_BUCKET_NAME}/zip_backups/"
     
     fn_print_warning "正在确保云端备份目录存在..."
     if ! rclone mkdir "${zip_backup_root}"; then
-        fn_print_error "无法在云端创建备份目录！"
-        fn_print_warning "请检查您的存储桶/路径配置以及权限。"
-        rm -f "$local_zip_path"
-        fn_press_any_key
-        return
+        fn_print_error "无法在云端创建备份目录！请检查写入权限。"
+        rm -f "$local_zip_path"; fn_press_any_key; return
     fi
 
     fn_print_warning "正在上传压缩包到云端..."
@@ -489,7 +500,7 @@ if [[ "$1" == "--updated" ]]; then clear; fn_print_success "助手已成功更�
 while true; do
     clear; echo -e "${CYAN}${BOLD}"; cat << "EOF"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v2.3.1    ║
+    ║      SillyTavern 助手 v2.3.2    ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
