@@ -1,10 +1,11 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v2.4.0
+# SillyTavern 助手 v2.5.0
 # 作者: Qingjue | 小红书号: 826702880
-# 更新日志:
-# - 新增 Git 同步功能，支持通过私有 Git 仓库在多设备间同步数据。
-# - 优化 Git 镜像测速逻辑，提升下载/更新速度与成功率。
+# 更新日志 (v2.5.0):
+# - 优化菜单结构，简化本地备份流程。
+# - Git同步菜单增加当前仓库状态显示。
+# - Git配置与清除功能整合到三级菜单，界面更整洁。
 
 # =========================================================================
 #   脚本环境与色彩定义
@@ -265,9 +266,44 @@ git_sync_restore_from_cloud() {
     if ! $restore_success; then fn_print_error "已尝试所有可用线路，但恢复均失败。"; fi; fn_press_any_key
 }
 git_sync_clear_config() { if [ -f "$GIT_SYNC_CONFIG_FILE" ]; then read -p "确认要清除已保存的Git同步配置吗？(y/n): " confirm; if [[ "$confirm" =~ ^[yY]$ ]]; then rm -f "$GIT_SYNC_CONFIG_FILE"; fn_print_success "Git同步配置已清除。"; else fn_print_warning "操作已取消。"; fi; else fn_print_warning "未找到任何Git同步配置。"; fi; fn_press_any_key; }
+
+menu_git_config_management() {
+    while true; do
+        clear; fn_print_header "管理 Git 同步配置"
+        echo -e "      [1] ${CYAN}修改/设置同步信息${NC}"
+        echo -e "      [2] ${RED}清除所有同步配置${NC}"
+        echo -e "      [0] ${CYAN}返回上一级${NC}\n"
+        read -p "    请输入选项: " choice
+        case $choice in
+            1) git_sync_configure ;;
+            2) git_sync_clear_config ;;
+            0) break ;;
+            *) fn_print_error "无效输入。"; sleep 1 ;;
+        esac
+    done
+}
+
 menu_git_sync() {
     if ! git_sync_ensure_identity; then fn_print_error "Git身份配置失败，无法继续。"; fn_press_any_key; return; fi
-    while true; do clear; fn_print_header "数据同步 (Git 方案)"; echo -e "      [1] ${CYAN}配置Git同步服务${NC}\n      [2] ${GREEN}备份到云端 (上传)${NC}\n      [3] ${YELLOW}从云端恢复 (下载)${NC}\n      [4] ${RED}清除Git同步配置${NC}\n      [0] ${CYAN}返回上一级${NC}\n"; read -p "    请输入选项: " choice; case $choice in 1) git_sync_configure ;; 2) git_sync_backup_to_cloud ;; 3) git_sync_restore_from_cloud ;; 4) git_sync_clear_config ;; 0) break ;; *) fn_print_error "无效输入。"; sleep 1 ;; esac; done
+    while true; do 
+        clear; fn_print_header "数据同步 (Git 方案)"
+        if [ -f "$GIT_SYNC_CONFIG_FILE" ]; then
+            # shellcheck source=/dev/null
+            source "$GIT_SYNC_CONFIG_FILE"
+            local current_repo_name
+            current_repo_name=$(basename "$REPO_URL" .git)
+            echo -e "      ${YELLOW}当前仓库: ${current_repo_name}${NC}\n"
+        fi
+        echo -e "      [1] ${CYAN}管理同步配置${NC}\n      [2] ${GREEN}备份到云端 (上传)${NC}\n      [3] ${YELLOW}从云端恢复 (下载)${NC}\n      [0] ${CYAN}返回主菜单${NC}\n"
+        read -p "    请输入选项: " choice
+        case $choice in 
+            1) menu_git_config_management ;; 
+            2) git_sync_backup_to_cloud ;; 
+            3) git_sync_restore_from_cloud ;; 
+            0) break ;; 
+            *) fn_print_error "无效输入。"; sleep 1 ;; 
+        esac
+    done
 }
 
 # =========================================================================
@@ -702,87 +738,6 @@ run_backup_interactive() {
     fn_press_any_key
 }
 
-main_migration_guide() {
-    clear
-    fn_print_header "数据迁移 / 恢复指南"
-    echo -e "${YELLOW}请遵循以下步骤，将您的数据从旧设备迁移到新设备，或恢复备份：${NC}"
-    echo -e "  1. 在旧设备上，用MT管理器等文件工具，进入目录：\n     ${CYAN}${BACKUP_ROOT_DIR}/${NC}"
-    echo -e "  2. 找到需要的备份压缩包 (例如 ST_核心数据_xxxx.zip)，并将其发送到新设备。"
-    echo -e "  3. 在新设备上，将这个压缩包移动或复制到 SillyTavern 的根目录：\n     ${CYAN}${ST_DIR}/${NC}"
-    echo -e "  4. 使用 MT 管理器等工具，将压缩包 ${GREEN}“解压到当前目录”${NC}。"
-    echo -e "  5. 如果提示文件已存在，请选择 ${YELLOW}“全部覆盖”${NC}。"
-    echo -e "  6. 操作完成后，重启 SillyTavern 即可看到所有数据。"
-    echo -e "\n${YELLOW}如需更详细的图文教程，请在主菜单选择 [8] 查看帮助文档。${NC}"
-    fn_press_any_key
-}
-
-run_delete_backup() {
-    clear
-    fn_print_header "删除旧备份"
-    if [ ! -f "$ST_DIR/start.sh" ]; then
-        fn_print_warning "SillyTavern 尚未安装，没有可管理的备份。"
-        fn_press_any_key
-        return
-    fi
-
-    mkdir -p "$BACKUP_ROOT_DIR"
-    mapfile -t backup_files < <(find "$BACKUP_ROOT_DIR" -maxdepth 1 -name "*.zip" -printf "%T@ %p\n" | sort -nr | cut -d' ' -f2-)
-    if [ ${#backup_files[@]} -eq 0 ]; then
-        fn_print_warning "未找到任何备份文件。"
-        fn_press_any_key
-        return
-    fi
-
-    echo -e "检测到以下备份 (当前/上限: ${#backup_files[@]}/${BACKUP_LIMIT}):"
-    local i=0
-    for file in "${backup_files[@]}"; do
-        if [ -f "$file" ]; then
-            local size
-            size=$(du -h "$file" | cut -f1)
-            printf "    [%-2d] %-40s (%s)\n" "$((++i))" "$(basename "$file")" "$size"
-        fi
-    done
-
-    read -p "输入要删除的备份编号 (其他键取消): " choice
-    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#backup_files[@]}" ]; then
-        echo "操作已取消."
-        fn_press_any_key
-        return
-    fi
-
-    local chosen_backup="${backup_files[$((choice - 1))]}"
-    read -p "确认删除 '$(basename "$chosen_backup")' 吗？(y/n): " confirm
-    if [[ "$confirm" =~ ^[yY]$ ]]; then
-        rm "$chosen_backup"
-        fn_print_success "备份已删除。"
-    else
-        echo "操作已取消。"
-    fi
-    fn_press_any_key
-}
-
-main_data_management_menu() {
-    while true; do
-        clear
-        fn_print_header "SillyTavern 本地数据管理"
-        echo -e "      [1] ${GREEN}创建自定义备份${NC}"
-        echo -e "      [2] ${CYAN}数据迁移/恢复指南${NC}"
-        echo -e "      [3] ${RED}删除旧备份${NC}"
-        echo -e "      [0] ${CYAN}返回主菜单${NC}\n"
-        read -p "    请输入选项: " choice
-        case $choice in
-        1) run_backup_interactive ;;
-        2) main_migration_guide ;;
-        3) run_delete_backup ;;
-        0) break ;;
-        *)
-            echo -e "${RED}无效输入。${NC}"
-            sleep 1
-            ;;
-        esac
-    done
-}
-
 main_update_script() {
     clear
     fn_print_header "更新助手脚本"
@@ -902,7 +857,7 @@ while true; do
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v2.4.0    ║
+    ║      SillyTavern 助手 v2.5.0    ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
@@ -914,7 +869,7 @@ EOF
     echo -e "${NC}\n    选择一个操作来开始：\n"
     echo -e "      [1] ${GREEN}${BOLD}启动 SillyTavern${NC}"
     echo -e "      [2] ${CYAN}${BOLD}数据同步 (Git 云端)${NC}"
-    echo -e "      [3] ${CYAN}${BOLD}本地数据管理${NC}"
+    echo -e "      [3] ${CYAN}${BOLD}创建本地备份${NC}"
     echo -e "      [4] ${YELLOW}${BOLD}首次部署 (全新安装)${NC}\n"
     echo -e "      [5] 更新 ST 主程序    [6] 更新助手脚本${update_notice}"
     echo -e "      [7] 管理助手自启      [8] 查看帮助文档\n"
@@ -924,7 +879,7 @@ EOF
     case $choice in
     1) main_start ;;
     2) menu_git_sync ;;
-    3) main_data_management_menu ;;
+    3) run_backup_interactive ;;
     4) main_install ;;
     5) main_update_st ;;
     6) main_update_script ;;
