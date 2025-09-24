@@ -1,12 +1,13 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v2.1.9 (社区修正版)
+# SillyTavern 助手 v2.2.1 (社区修正版)
 # 作者: Qingjue | 小红书号: 826702880
-# 关键BUG修复与用户体验优化 (感谢用户精准反馈):
-# 1. 【修复】重写了Rclone备份命令，使用推荐的 --filter-from 规则，解决了因规则冲突导致上传0字节并谎报成功的致命BUG。
-# 2. 【优化】为WebDAV配置中的“根目录名”增加了默认值，防止用户留空导致路径问题。
-# 3. 【优化】调整了“清理旧备份”的提示逻辑，仅在实际需要清理时才显示，避免首次备份时造成困惑。
-# 4. 固化了v2.1.8版本中的所有功能和修复。
+# 终极备份重构与修复 (感谢用户持续的专业反馈):
+# 1. 【新增】在S3/WebDAV菜单中增加了独立的“打包备份到云端”功能，为用户提供最稳定的备份选择。
+# 2. 【修复】修正了S3配置流程，增加了“提供商(Provider)”输入项，从根源解决502服务端错误。
+# 3. 【修复】严格检查rclone命令的退出码，彻底修复了备份失败后“谎报成功”的严重BUG。
+# 4. 【修复】全面检查并修正了所有菜单中残留的“\n”显示问题。
+# 5. 固化了v2.2.0版本中的所有功能和修复。
 
 # =========================================================================
 #   脚本环境与色彩定义
@@ -235,7 +236,7 @@ git_sync_restore_from_cloud() {
 git_sync_clear_config() { if [ -f "$GIT_SYNC_CONFIG_FILE" ]; then read -p "确认要清除已保存的Git同步配置吗？(y/n): " confirm; if [[ "$confirm" =~ ^[yY]$ ]]; then rm -f "$GIT_SYNC_CONFIG_FILE"; fn_print_success "Git同步配置已清除。"; else fn_print_warning "操作已取消。"; fi; else fn_print_warning "未找到任何Git同步配置。"; fi; fn_press_any_key; }
 menu_git_sync() {
     if ! git_sync_ensure_identity; then fn_print_error "Git身份配置失败，无法继续。"; fn_press_any_key; return; fi
-    while true; do clear; fn_print_header "数据同步 (Git 方案)"; echo -e "      [1] ${CYAN}配置Git同步服务${NC}\n      [2] ${GREEN}备份到云端 (上传)${NC}\n      [3] ${YELLOW}从云端恢复 (下载)${NC}\n      [4] ${RED}清除Git同步配置${NC}\n      [0] ${CYAN}返回上一级${NC}"; read -p "\n    请输入选项: " choice; case $choice in 1) git_sync_configure ;; 2) git_sync_backup_to_cloud ;; 3) git_sync_restore_from_cloud ;; 4) git_sync_clear_config ;; 0) break ;; *) fn_print_error "无效输入。"; sleep 1 ;; esac; done
+    while true; do clear; fn_print_header "数据同步 (Git 方案)"; echo -e "      [1] ${CYAN}配置Git同步服务${NC}\n      [2] ${GREEN}备份到云端 (上传)${NC}\n      [3] ${YELLOW}从云端恢复 (下载)${NC}\n      [4] ${RED}清除Git同步配置${NC}\n      [0] ${CYAN}返回上一级${NC}\n"; read -p "    请输入选项: " choice; case $choice in 1) git_sync_configure ;; 2) git_sync_backup_to_cloud ;; 3) git_sync_restore_from_cloud ;; 4) git_sync_clear_config ;; 0) break ;; *) fn_print_error "无效输入。"; sleep 1 ;; esac; done
 }
 
 # =========================================================================
@@ -264,27 +265,32 @@ rclone_ensure_password() {
         fn_print_success "主密码设置完成！"; sleep 1
     fi
 }
-rclone_backup_logic() {
-    local config_file="$1"; local type_name="$2"; clear; fn_print_header "Rclone备份数据到云端 ($type_name)"
+rclone_incremental_backup_logic() {
+    local config_file="$1"; local type_name="$2"; clear; fn_print_header "增量备份到云端 ($type_name)"
     if [ ! -f "$config_file" ]; then fn_print_error "请先在菜单 [1] 中配置$type_name同步服务。"; fn_press_any_key; return; fi
     # shellcheck source=/dev/null
     source "$config_file"; local timestamp; timestamp=$(date +"%Y-%m-%d_%H-%M-%S"); local backups_root="${RCLONE_REMOTE_NAME}:${RCLONE_BUCKET_NAME}/backups"; local new_backup_path="${backups_root}/${timestamp}"; fn_print_warning "将创建新的云端备份: ${timestamp}"
     local latest_backup; latest_backup=$(rclone lsf "$backups_root" --dirs-only 2>/dev/null | sort -r | head -n 1)
     if [[ -n "$latest_backup" ]]; then
-        local latest_backup_path="${backups_root}/${latest_backup}"; fn_print_warning "发现最新备份: ${latest_backup%/}"; fn_print_warning "正在执行服务器端复制以加速备份..."
-        if ! rclone copy "$latest_backup_path" "$new_backup_path" --progress; then fn_print_error "服务器端复制失败！将转为完整上传。"; else fn_print_success "服务器端复制完成。"; fi
+        local latest_backup_path="${backups_root}/${latest_backup}"; fn_print_warning "发现最新备份: ${latest_backup%/}"
+        fn_print_warning "正在尝试高效备份 (服务器端复制)..."
+        if ! rclone copy "$latest_backup_path" "$new_backup_path" --progress; then
+            fn_print_warning "服务器端复制失败 (可能当前服务不支持)，已自动降级为完整上传模式。"
+        else
+            fn_print_success "服务器端复制完成。"
+        fi
     else fn_print_warning "未发现任何旧备份，将执行首次完整上传。"; fi
     local temp_filter_file; temp_filter_file=$(mktemp); cat > "$temp_filter_file" <<EOF
 + /data/**
 + /public/scripts/extensions/third-party/**
 + /plugins/**
 + /config.yaml
-- /_cache/**
+- /data/_cache/**
 - *.log
-- /backups/**
+- /data/backups/**
 - *
 EOF
-    fn_print_warning "正在同步本地数据变更 (增量上传)..."
+    fn_print_warning "正在同步本地数据变更..."
     if rclone sync "$ST_DIR" "$new_backup_path" --filter-from "$temp_filter_file" --progress; then
         fn_print_success "数据成功备份到云端！"
         mapfile -t all_backups < <(rclone lsf "$backups_root" --dirs-only 2>/dev/null | sort)
@@ -294,11 +300,28 @@ EOF
             for ((i=0; i<backups_to_delete_count; i++)); do local old_backup_to_delete="${all_backups[$i]}"; echo "  - 删除: ${old_backup_to_delete}"; rclone purge "${backups_root}/${old_backup_to_delete}"; done
             fn_print_success "清理完成。"
         fi
-    else fn_print_error "增量同步失败！正在自动清理本次不完整的备份..."; rclone purge "$new_backup_path"; fn_print_error "备份操作已中止。"; fi
+    else fn_print_error "数据同步失败！正在自动清理本次不完整的备份..."; rclone purge "$new_backup_path"; fn_print_error "备份操作已中止。"; fi
     rm -f "$temp_filter_file"; fn_press_any_key
 }
+rclone_zip_backup_logic() {
+    local config_file="$1"; local type_name="$2"; clear; fn_print_header "打包备份到云端 ($type_name)"
+    if [ ! -f "$config_file" ]; then fn_print_error "请先在菜单 [1] 中配置$type_name同步服务。"; fn_press_any_key; return; fi
+    local local_zip_path; local_zip_path=$(fn_create_data_zip_backup); if [ -z "$local_zip_path" ]; then fn_print_error "创建本地压缩包失败，无法上传。"; fn_press_any_key; return; fi
+    # shellcheck source=/dev/null
+    source "$config_file"; local zip_backup_root="${RCLONE_REMOTE_NAME}:${RCLONE_BUCKET_NAME}/zip_backups/"; fn_print_warning "正在上传压缩包到云端..."
+    if rclone copyto "$local_zip_path" "${zip_backup_root}$(basename "$local_zip_path")" --progress; then
+        fn_print_success "压缩包成功上传到云端！"; rm -f "$local_zip_path"
+        mapfile -t all_zip_backups < <(rclone lsf "$zip_backup_root" 2>/dev/null | sort); if [ "${#all_zip_backups[@]}" -gt $BACKUP_LIMIT ]; then
+            fn_print_warning "正在清理旧的打包备份..."; local zips_to_delete_count=$(( ${#all_zip_backups[@]} - BACKUP_LIMIT ))
+            fn_print_warning "打包备份数量超过上限(${BACKUP_LIMIT})，将删除 ${zips_to_delete_count} 个最旧的备份。"
+            for ((i=0; i<zips_to_delete_count; i++)); do local old_zip="${all_zip_backups[$i]}"; echo "  - 删除: ${old_zip}"; rclone deletefile "${zip_backup_root}${old_zip}"; done
+            fn_print_success "清理完成。"
+        fi
+    else fn_print_error "压缩包上传失败！"; fi
+    fn_press_any_key
+}
 rclone_restore_logic() {
-    local config_file="$1"; local type_name="$2"; clear; fn_print_header "Rclone从云端恢复数据 ($type_name)"; if [ ! -f "$config_file" ]; then fn_print_error "请先在菜单 [1] 中配置$type_name同步服务。"; fn_press_any_key; return; fi
+    local config_file="$1"; local type_name="$2"; clear; fn_print_header "从云端恢复数据 ($type_name)"; if [ ! -f "$config_file" ]; then fn_print_error "请先在菜单 [1] 中配置$type_name同步服务。"; fn_press_any_key; return; fi
     # shellcheck source=/dev/null
     source "$config_file"; fn_print_warning "正在获取云端备份列表..."; mapfile -t backup_list < <(rclone lsf "${RCLONE_REMOTE_NAME}:${RCLONE_BUCKET_NAME}/backups" --dirs-only 2>/dev/null | sort -r)
     if [ ${#backup_list[@]} -eq 0 ]; then fn_print_error "未在云端找到任何备份。"; fn_press_any_key; return; fi
@@ -316,14 +339,15 @@ rclone_restore_logic() {
 
 s3_configure() {
     clear; fn_print_header "配置 Rclone (S3) 同步服务"; rclone_ensure_password
-    local remote_name="st-s3-sync"; local access_key secret_key endpoint bucket region
+    local remote_name="st-s3-sync"; local access_key secret_key endpoint bucket region provider
     while true; do read -p "请输入 Access Key ID: " access_key; [[ -n "$access_key" ]] && break || fn_print_error "Access Key ID 不能为空！"; done
     while true; do read -p "请输入 Secret Access Key: " secret_key; [[ -n "$secret_key" ]] && break || fn_print_error "Secret Access Key 不能为空！"; done
     while true; do read -p "请输入 Endpoint URL: " endpoint; [[ -n "$endpoint" ]] && break || fn_print_error "Endpoint 不能为空！"; done
     while true; do read -p "请输入 Bucket (存储桶) 名称: " bucket; [[ -n "$bucket" ]] && break || fn_print_error "Bucket 名称不能为空！"; done
+    read -p "请输入 S3 提供商 (例如 AWS, Cloudflare, MinIO, Ceph, 其他请留空): " provider
     read -p "请输入 Region (地域，可留空): " region
     fn_print_warning "正在创建Rclone配置...";
-    rclone config create "$remote_name" s3 access_key_id="$access_key" secret_access_key="$secret_key" endpoint="$endpoint" ${region:+region="$region"}
+    rclone config create "$remote_name" s3 provider="$provider" access_key_id="$access_key" secret_access_key="$secret_key" endpoint="$endpoint" ${region:+region="$region"}
     if [ $? -eq 0 ]; then echo "RCLONE_REMOTE_NAME=\"$remote_name\"" > "$S3_SYNC_CONFIG_FILE"; echo "RCLONE_BUCKET_NAME=\"$bucket\"" >> "$S3_SYNC_CONFIG_FILE"; fn_print_success "Rclone (S3) 同步服务配置已保存！"; else fn_print_error "Rclone配置创建失败！请检查输入信息。"; fi
     fn_press_any_key
 }
@@ -335,7 +359,15 @@ s3_clear_config() {
 }
 menu_s3_sync() {
     if ! rclone_check_deps; then fn_press_any_key; return; fi
-    while true; do clear; fn_print_header "数据同步 (Rclone/S3 方案)"; echo -e "      [1] ${CYAN}配置S3同步服务${NC}\n      [2] ${GREEN}备份到云端 (上传)${NC}\n      [3] ${YELLOW}从云端恢复 (下载)${NC}\n      [4] ${RED}清除S3同步配置${NC}\n      [0] ${CYAN}返回上一级${NC}"; read -p "\n    请输入选项: " choice; case $choice in 1) s3_configure ;; 2) rclone_backup_logic "$S3_SYNC_CONFIG_FILE" "S3" ;; 3) rclone_restore_logic "$S3_SYNC_CONFIG_FILE" "S3" ;; 4) s3_clear_config ;; 0) break ;; *) fn_print_error "无效输入。"; sleep 1 ;; esac; done
+    while true; do clear; fn_print_header "数据同步 (Rclone/S3 方案)"
+    echo -e "      [1] ${CYAN}配置S3同步服务${NC}"
+    echo -e "      [2] ${GREEN}增量备份到云端 (推荐)${NC}"
+    echo -e "      [3] ${GREEN}打包备份到云端 (最稳定)${NC}"
+    echo -e "      [4] ${YELLOW}从云端恢复 (增量备份)${NC}"
+    echo -e "      [5] ${RED}清除S3同步配置${NC}"
+    echo -e "      [0] ${CYAN}返回上一级${NC}\n"
+    read -p "    请输入选项: " choice
+    case $choice in 1) s3_configure ;; 2) rclone_incremental_backup_logic "$S3_SYNC_CONFIG_FILE" "S3" ;; 3) rclone_zip_backup_logic "$S3_SYNC_CONFIG_FILE" "S3" ;; 4) rclone_restore_logic "$S3_SYNC_CONFIG_FILE" "S3" ;; 5) s3_clear_config ;; 0) break ;; *) fn_print_error "无效输入。"; sleep 1 ;; esac; done
 }
 
 # =========================================================================
@@ -363,7 +395,15 @@ webdav_clear_config() {
 }
 menu_webdav_sync() {
     if ! rclone_check_deps; then fn_press_any_key; return; fi
-    while true; do clear; fn_print_header "数据同步 (WebDAV 方案)"; echo -e "      [1] ${CYAN}配置WebDAV同步服务${NC}\n      [2] ${GREEN}备份到云端 (上传)${NC}\n      [3] ${YELLOW}从云端恢复 (下载)${NC}\n      [4] ${RED}清除WebDAV同步配置${NC}\n      [0] ${CYAN}返回上一级${NC}"; read -p "\n    请输入选项: " choice; case $choice in 1) webdav_configure ;; 2) rclone_backup_logic "$WEBDAV_SYNC_CONFIG_FILE" "WebDAV" ;; 3) rclone_restore_logic "$WEBDAV_SYNC_CONFIG_FILE" "WebDAV" ;; 4) webdav_clear_config ;; 0) break ;; *) fn_print_error "无效输入。"; sleep 1 ;; esac; done
+    while true; do clear; fn_print_header "数据同步 (WebDAV 方案)"
+    echo -e "      [1] ${CYAN}配置WebDAV同步服务${NC}"
+    echo -e "      [2] ${GREEN}增量备份到云端 (推荐)${NC}"
+    echo -e "      [3] ${GREEN}打包备份到云端 (最稳定)${NC}"
+    echo -e "      [4] ${YELLOW}从云端恢复 (增量备份)${NC}"
+    echo -e "      [5] ${RED}清除WebDAV同步配置${NC}"
+    echo -e "      [0] ${CYAN}返回上一级${NC}\n"
+    read -p "    请输入选项: " choice
+    case $choice in 1) webdav_configure ;; 2) rclone_incremental_backup_logic "$WEBDAV_SYNC_CONFIG_FILE" "WebDAV" ;; 3) rclone_zip_backup_logic "$WEBDAV_SYNC_CONFIG_FILE" "WebDAV" ;; 4) rclone_restore_logic "$WEBDAV_SYNC_CONFIG_FILE" "WebDAV" ;; 5) webdav_clear_config ;; 0) break ;; *) fn_print_error "无效输入。"; sleep 1 ;; esac; done
 }
 
 # =========================================================================
@@ -414,7 +454,7 @@ main_update_st() {
     done
     if ! $update_success; then fn_print_error "已尝试所有可用线路，但更新均失败。"; fi; fn_press_any_key
 }
-main_data_management_menu() { while true; do clear; fn_print_header "SillyTavern 本地数据管理"; echo -e "      [1] ${GREEN}创建自定义备份${NC}\n      [2] ${CYAN}数据迁移/恢复指南${NC}\n      [3] ${RED}删除旧备份${NC}\n      [0] ${CYAN}返回主菜单${NC}"; read -p "\n    请输入选项: " choice; case $choice in 1) run_backup_interactive ;; 2) main_migration_guide ;; 3) run_delete_backup ;; 0) break ;; *) echo -e "${RED}无效输入。${NC}"; sleep 1 ;; esac; done; }
+main_data_management_menu() { while true; do clear; fn_print_header "SillyTavern 本地数据管理"; echo -e "      [1] ${GREEN}创建自定义备份${NC}\n      [2] ${CYAN}数据迁移/恢复指南${NC}\n      [3] ${RED}删除旧备份${NC}\n      [0] ${CYAN}返回主菜单${NC}\n"; read -p "    请输入选项: " choice; case $choice in 1) run_backup_interactive ;; 2) main_migration_guide ;; 3) run_delete_backup ;; 0) break ;; *) echo -e "${RED}无效输入。${NC}"; sleep 1 ;; esac; done; }
 main_update_script() { clear; fn_print_header "更新助手脚本"; echo -e "${YELLOW}正在从 Gitee 下载新版本...${NC}"; local temp_file; temp_file=$(mktemp); if ! curl -L -o "$temp_file" "$SCRIPT_URL"; then rm -f "$temp_file"; fn_print_warning "下载失败。"; elif cmp -s "$SCRIPT_SELF_PATH" "$temp_file"; then rm -f "$temp_file"; fn_print_success "当前已是最新版本。"; else sed -i 's/\r$//' "$temp_file"; chmod +x "$temp_file"; mv "$temp_file" "$SCRIPT_SELF_PATH"; rm -f "$UPDATE_FLAG_FILE"; echo -e "${GREEN}助手更新成功！正在自动重启...${NC}"; sleep 2; exec "$SCRIPT_SELF_PATH" --updated; fi; fn_press_any_key; }
 check_for_updates_on_start() {
     (
@@ -444,7 +484,7 @@ if [[ "$1" == "--updated" ]]; then clear; fn_print_success "助手已成功更�
 while true; do
     clear; echo -e "${CYAN}${BOLD}"; cat << "EOF"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v2.1.9    ║
+    ║      SillyTavern 助手 v2.2.1    ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
