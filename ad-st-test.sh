@@ -1,10 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v2.6.0
+# SillyTavern 助手 v2.6.1
 # 作者: Qingjue | 小红书号: 826702880
-# 更新日志 (v2.6.0):
-# - 【优化】遵循XDG规范，将所有配置文件统一迁移至 ~/.config/ad-st/ 目录。
-# - 【新增】首次运行时，自动迁移旧的根目录配置文件到新位置。
 
 # =========================================================================
 #   脚本环境与色彩定义
@@ -194,6 +191,13 @@ fn_update_source_with_retry() {
 
 git_sync_check_deps() { if ! fn_check_command "git" || ! fn_check_command "rsync"; then fn_print_error "缺少核心工具 git 或 rsync。"; fn_print_warning "请先运行 [首次部署] 来安装所有必需的依赖项。"; return 1; fi; return 0; }
 git_sync_ensure_identity() {
+    # 【修复】在执行任何git操作前，先检查git命令是否存在
+    if ! fn_check_command "git"; then
+        fn_print_error "Git尚未安装，无法配置身份。"
+        fn_print_warning "请先运行 [首次部署] 来安装所有必需的依赖项。"
+        return 1
+    fi
+
     if [ -z "$(git config --global --get user.name)" ] || [ -z "$(git config --global --get user.email)" ]; then
         clear; fn_print_header "首次使用Git同步：配置身份"
         local user_name user_email
@@ -286,7 +290,7 @@ menu_git_config_management() {
 }
 
 menu_git_sync() {
-    if ! git_sync_ensure_identity; then fn_print_error "Git身份配置失败，无法继续。"; fn_press_any_key; return; fi
+    if ! git_sync_ensure_identity; then fn_press_any_key; return; fi
     while true; do 
         clear; fn_print_header "数据同步 (Git 方案)"
         if [ -f "$GIT_SYNC_CONFIG_FILE" ]; then
@@ -728,6 +732,8 @@ run_backup_interactive() {
 
     mapfile -t all_backups < <(find "$BACKUP_ROOT_DIR" -maxdepth 1 -name "*.zip" -printf "%T@ %p\n" | sort -nr | cut -d' ' -f2-)
     fn_print_success "备份成功：${backup_name}.zip (当前备份数: ${#all_backups[@]}/${BACKUP_LIMIT})"
+    # 【优化】明确显示备份文件的完整存储路径
+    echo -e "  ${CYAN}保存路径: ${backup_zip_path}${NC}"
     printf "%s\n" "${paths_to_backup[@]}" >"$CONFIG_FILE"
 
     if [ "${#all_backups[@]}" -gt $BACKUP_LIMIT ]; then
@@ -893,7 +899,7 @@ while true; do
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v2.6.0    ║
+    ║      SillyTavern 助手 v2.6.1    ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
