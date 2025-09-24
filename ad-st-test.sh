@@ -1,12 +1,11 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v2.2.2 (社区修正版)
+# SillyTavern 助手 v2.2.3 (社区修正版)
 # 作者: Qingjue | 小红书号: 826702880
-# 核心体验重构 (感谢用户持续的专业反馈):
-# 1. 【重构】彻底重构了S3/WebDAV的菜单逻辑，采用“任务向导”式设计，大幅提升了清晰度和易用性。
-# 2. 【新增】增加了关键的“从打包备份恢复”功能，补全了备份流程的闭环。
-# 3. 【优化】将S3/WebDAV的菜单逻辑抽象为通用函数，大幅减少了代码冗余，提升了可维护性。
-# 4. 固化了v2.2.1版本中的所有功能和修复。
+# 健壮性与BUG修复 (感谢用户持续的专业反馈):
+# 1. 【修复】重写了fn_create_data_zip_backup函数，将提示信息重定向到stderr，彻底解决了打包备份功能因路径污染而失败的严重BUG。
+# 2. 【优化】采纳了“快速失败”原则。现在当服务器不支持服务器端复制时，增量备份会立即报错并给出建议，而不是自动降级。
+# 3. 固化了v2.2.2版本中的所有功能和修复。
 
 # =========================================================================
 #   脚本环境与色彩定义
@@ -216,7 +215,7 @@ git_sync_backup_to_cloud() {
 git_sync_restore_from_cloud() {
     clear; fn_print_header "Git从云端恢复数据 (下载)"; if ! git_sync_check_deps; then fn_press_any_key; return; fi; if [ ! -f "$GIT_SYNC_CONFIG_FILE" ]; then fn_print_error "请先在菜单 [1] 中配置Git同步服务。"; fn_press_any_key; return; fi
     fn_print_warning "此操作将用云端数据【覆盖】本地数据！"; read -p "是否在恢复前，先对当前本地数据进行一次备份？(强烈推荐) [Y/n]: " backup_confirm
-    if [[ "${backup_confirm:-y}" =~ ^[Yy]$ ]]; then if ! fn_create_data_zip_backup; then fn_print_error "本地备份失败，恢复操作已中止。"; fn_press_any_key; return; fi; fi
+    if [[ "${backup_confirm:-y}" =~ ^[Yy]$ ]]; then if ! fn_create_data_zip_backup >/dev/null; then fn_print_error "本地备份失败，恢复操作已中止。"; fn_press_any_key; return; fi; fi
     read -p "确认要从云端恢复数据吗？[y/N]: " restore_confirm; if [[ ! "$restore_confirm" =~ ^[yY]$ ]]; then fn_print_warning "操作已取消。"; fn_press_any_key; return; fi
     mapfile -t pull_urls < <(fn_find_fastest_mirror); if [ ${#pull_urls[@]} -eq 0 ]; then fn_print_error "未能找到任何支持下载的线路。"; fn_press_any_key; return; fi
     local restore_success=false
@@ -274,10 +273,13 @@ rclone_incremental_backup_logic() {
         local latest_backup_path="${backups_root}/${latest_backup}"; fn_print_warning "发现最新备份: ${latest_backup%/}"
         fn_print_warning "正在尝试高效备份 (服务器端复制)..."
         if ! rclone copy "$latest_backup_path" "$new_backup_path" --progress; then
-            fn_print_warning "服务器端复制失败 (可能当前服务不支持)，已自动降级为完整上传模式。"
-        else
-            fn_print_success "服务器端复制完成。"
+            fn_print_error "服务器端复制失败！"
+            fn_print_warning "这通常意味着您的云服务不支持此高级功能。"
+            fn_print_warning "建议您改用【打包备份】功能，它具有更好的兼容性。"
+            fn_press_any_key
+            return
         fi
+        fn_print_success "服务器端复制完成。"
     else fn_print_warning "未发现任何旧备份，将执行首次完整上传。"; fi
     local temp_filter_file; temp_filter_file=$(mktemp); cat > "$temp_filter_file" <<EOF
 + /data/**
@@ -305,12 +307,13 @@ EOF
 rclone_zip_backup_logic() {
     local config_file="$1"; local type_name="$2"; clear; fn_print_header "打包备份到云端 ($type_name)"
     if [ ! -f "$config_file" ]; then fn_print_error "请先在菜单 [1] 中配置$type_name同步服务。"; fn_press_any_key; return; fi
-    local local_zip_path; local_zip_path=$(fn_create_data_zip_backup); if [ -z "$local_zip_path" ]; then fn_print_error "创建本地压缩包失败，无法上传。"; fn_press_any_key; return; fi
+    local local_zip_path; local_zip_path=$(fn_create_data_zip_backup)
+    if [ -z "$local_zip_path" ]; then fn_print_error "创建本地压缩包失败，无法上传。"; fn_press_any_key; return; fi
     # shellcheck source=/dev/null
     source "$config_file"; local zip_backup_root="${RCLONE_REMOTE_NAME}:${RCLONE_BUCKET_NAME}/zip_backups/"; fn_print_warning "正在上传压缩包到云端..."
     if rclone copyto "$local_zip_path" "${zip_backup_root}$(basename "$local_zip_path")" --progress; then
         fn_print_success "压缩包成功上传到云端！"; rm -f "$local_zip_path"
-        mapfile -t all_zip_backups < <(rclone lsf "$zip_backup_root" 2>/dev/null | sort); if [ "${#all_zip_backups[@]}" -gt $BACKUP_LIMIT ]; then
+        mapfile -t all_zip_backups < <(rclone lsf "$zip_backup_root" 2>/dev/null | grep '\.zip$' | sort); if [ "${#all_zip_backups[@]}" -gt $BACKUP_LIMIT ]; then
             fn_print_warning "正在清理旧的打包备份..."; local zips_to_delete_count=$(( ${#all_zip_backups[@]} - BACKUP_LIMIT ))
             fn_print_warning "打包备份数量超过上限(${BACKUP_LIMIT})，将删除 ${zips_to_delete_count} 个最旧的备份。"
             for ((i=0; i<zips_to_delete_count; i++)); do local old_zip="${all_zip_backups[$i]}"; echo "  - 删除: ${old_zip}"; rclone deletefile "${zip_backup_root}${old_zip}"; done
@@ -465,7 +468,30 @@ main_sync_menu() {
 # =========================================================================
 
 main_start() { clear; fn_print_header "启动 SillyTavern"; if [ ! -f "$ST_DIR/start.sh" ]; then fn_print_warning "SillyTavern 尚未安装，请先部署。"; fn_press_any_key; return; fi; cd "$ST_DIR" || fn_print_error_exit "无法进入 SillyTavern 目录。"; echo -e "正在配置NPM镜像并准备启动环境..."; npm config set registry https://registry.npmmirror.com; echo -e "${YELLOW}环境准备就绪，正在启动SillyTavern服务...${NC}"; echo -e "${YELLOW}首次启动或更新后会自动安装依赖，耗时可能较长...${NC}"; bash start.sh; echo -e "\n${YELLOW}SillyTavern 已停止运行。${NC}"; fn_press_any_key; }
-fn_create_data_zip_backup() { fn_print_warning "正在创建核心数据备份 (.zip)..."; if [ ! -d "$ST_DIR" ]; then fn_print_error "SillyTavern 目录不存在，无法备份。"; return 1; fi; local paths_to_backup=("./data" "./public/scripts/extensions/third-party" "./plugins" "./config.yaml"); mkdir -p "$BACKUP_ROOT_DIR"; local timestamp; timestamp=$(date +"%Y-%m-%d_%H-%M"); local backup_name="ST_核心数据_${timestamp}.zip"; local backup_zip_path="${BACKUP_ROOT_DIR}/${backup_name}"; cd "$ST_DIR" || { fn_print_error "无法进入 SillyTavern 目录进行备份。"; return 1; }; local has_files=false; for item in "${paths_to_backup[@]}"; do if [ -e "$item" ]; then has_files=true; break; fi; done; if ! $has_files; then fn_print_error "未能收集到任何有效的数据文件进行备份。"; cd "$HOME"; return 1; fi; local exclude_params=(-x "*/_cache/*" -x "*.log" -x "*/backups/*"); if zip -rq "$backup_zip_path" "${paths_to_backup[@]}" "${exclude_params[@]}"; then fn_print_success "核心数据备份成功: ${backup_name}"; cd "$HOME"; echo "$backup_zip_path"; return 0; else fn_print_error "创建 .zip 备份失败！"; cd "$HOME"; return 1; fi; }
+fn_create_data_zip_backup() {
+    fn_print_warning "正在创建核心数据备份 (.zip)..." >&2
+    if [ ! -d "$ST_DIR" ]; then fn_print_error "SillyTavern 目录不存在，无法备份。" >&2; return 1; fi
+    local paths_to_backup=("./data" "./public/scripts/extensions/third-party" "./plugins" "./config.yaml")
+    mkdir -p "$BACKUP_ROOT_DIR"
+    local timestamp; timestamp=$(date +"%Y-%m-%d_%H-%M")
+    local backup_name="ST_核心数据_${timestamp}.zip"
+    local backup_zip_path="${BACKUP_ROOT_DIR}/${backup_name}"
+    cd "$ST_DIR" || { fn_print_error "无法进入 SillyTavern 目录进行备份。" >&2; return 1; }
+    local has_files=false
+    for item in "${paths_to_backup[@]}"; do if [ -e "$item" ]; then has_files=true; break; fi; done
+    if ! $has_files; then fn_print_error "未能收集到任何有效的数据文件进行备份。" >&2; cd "$HOME"; return 1; fi
+    local exclude_params=(-x "*/_cache/*" -x "*.log" -x "*/backups/*")
+    if zip -rq "$backup_zip_path" "${paths_to_backup[@]}" "${exclude_params[@]}"; then
+        fn_print_success "核心数据备份成功: ${backup_name}" >&2
+        cd "$HOME"
+        echo "$backup_zip_path"
+        return 0
+    else
+        fn_print_error "创建 .zip 备份失败！" >&2
+        cd "$HOME"
+        return 1
+    fi
+}
 main_install() {
     local auto_start=true; if [[ "$1" == "no-start" ]]; then auto_start=false; fi; clear; fn_print_header "SillyTavern 部署向导"
     if [[ "$auto_start" == "true" ]]; then while true; do if ! fn_update_source_with_retry; then read -p $'\n'"${RED}软件源配置失败。是否重试？(直接回车=是, 输入n=否): ${NC}" retry_choice; if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then fn_print_error_exit "用户取消操作。"; fi; else break; fi; done; fn_print_header "2/5: 安装核心依赖"; echo -e "${YELLOW}正在安装核心依赖...${NC}"; yes | pkg upgrade -y; yes | pkg install git nodejs-lts rsync zip unzip termux-api coreutils gawk bc rclone || fn_print_error_exit "核心依赖安装失败！"; fn_print_success "核心依赖安装完毕。"; fi
@@ -524,7 +550,7 @@ if [[ "$1" == "--updated" ]]; then clear; fn_print_success "助手已成功更�
 while true; do
     clear; echo -e "${CYAN}${BOLD}"; cat << "EOF"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v2.2.2    ║
+    ║      SillyTavern 助手 v2.2.3    ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
