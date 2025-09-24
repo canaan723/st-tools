@@ -281,14 +281,24 @@ menu_git_config_management() {
 }
 
 menu_git_sync() {
-    # 【优化】统一依赖检查逻辑
+    clear
+    fn_print_header "数据同步 (Git 方案)"
+
+    if [ ! -f "$ST_DIR/start.sh" ]; then
+        fn_print_warning "SillyTavern 尚未安装，无法使用数据同步功能。"
+        fn_print_warning "请先返回主菜单选择 [首次部署]。"
+        fn_press_any_key
+        return
+    fi
+
     if ! git_sync_check_deps; then return; fi
     if ! git_sync_ensure_identity; then return; fi
 
     while true; do 
-        clear; fn_print_header "数据同步 (Git 方案)"
+        clear
+        fn_print_header "数据同步 (Git 方案)"
+
         if [ -f "$GIT_SYNC_CONFIG_FILE" ]; then
-            # shellcheck source=/dev/null
             source "$GIT_SYNC_CONFIG_FILE"
             if [ -n "$REPO_URL" ]; then
                 local current_repo_name
