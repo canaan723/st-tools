@@ -241,8 +241,13 @@ git_sync_backup_to_cloud() {
         
         cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
         
+        # 【核心修正】只在同步进来的子目录中查找并重命名 .git 文件夹
         fn_print_warning "正在转换扩展仓库以进行完整备份..."
-        find . -type d -name ".git" -execdir mv .git _git_ \; 2>/dev/null
+        for item in "${paths_to_sync[@]}"; do
+            if [[ -d "$item" && "$item" != "config.yaml" ]]; then
+                find "$item" -type d -name ".git" -execdir mv .git _git_ \; 2>/dev/null
+            fi
+        done
         
         git add .; if git diff-index --quiet HEAD; then fn_print_success "数据与云端一致，无需上传。"; backup_success=true; rm -rf "$temp_dir"; break; fi
         
@@ -255,6 +260,7 @@ git_sync_backup_to_cloud() {
     done
     if ! $backup_success; then fn_print_error "已尝试所有可用线路，但备份均失败。"; fi; fn_press_any_key
 }
+
 git_sync_restore_from_cloud() {
     clear; fn_print_header "Git从云端恢复数据 (下载)"; if [ ! -f "$GIT_SYNC_CONFIG_FILE" ]; then fn_print_warning "请先在菜单 [1] 中配置Git同步服务。"; fn_press_any_key; return; fi
     fn_print_warning "此操作将用云端数据【覆盖】本地数据！"; read -p "是否在恢复前，先对当前本地数据进行一次备份？(强烈推荐) [Y/n]: " backup_confirm
@@ -994,18 +1000,13 @@ while true; do
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
     ╔═════════════════════════════════╗
-    ║       SillyTavern 助手 v2.1     ║
+    ║       SillyTavern 助手 v2.0     ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
     update_notice=""
     if [ -f "$UPDATE_FLAG_FILE" ]; then
         update_notice=" ${YELLOW}[!] 有更新${NC}"
-    fi
-
-    proxy_status="${RED}未配置${NC}"
-    if [ -f "$PROXY_CONFIG_FILE" ]; then
-        proxy_status="${GREEN}127.0.0.1:$(cat "$PROXY_CONFIG_FILE")${NC}"
     fi
 
     echo -e "${NC}\n    选择一个操作来开始：\n"
@@ -1015,7 +1016,7 @@ EOF
     echo -e "      [4] ${YELLOW}${BOLD}首次部署 (全新安装)${NC}\n"
     echo -e "      [5] 更新 ST 主程序    [6] 更新助手脚本${update_notice}"
     echo -e "      [7] 管理助手自启      [8] 查看帮助文档"
-    echo -e "      [9] 配置网络代理 (当前: ${proxy_status})\n"
+    echo -e "      [9] 配置网络代理\n"
     echo -e "      ${RED}[0] 退出助手${NC}\n"
     read -p "    请输入选项数字: " choice
 
