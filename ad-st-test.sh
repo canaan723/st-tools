@@ -466,14 +466,17 @@ menu_advanced_sync_settings() {
                 sleep 1
                 ;;
             2)
-                read -p "请输入本地用户文件夹名 (例如 default-user): " local_u
-                read -p "请输入要映射到的云端用户文件夹名 (例如 a): " remote_u
+                read -p "请输入本地用户文件夹名 [直接回车默认为 default-user]: " local_u
+                local_u=${local_u:-default-user}
+                read -p "请输入要映射到的云端用户文件夹名 [直接回车默认为 default-user]: " remote_u
+                remote_u=${remote_u:-default-user}
+
                 if [ -n "$local_u" ] && [ -n "$remote_u" ]; then
                     fn_update_config_value "USER_MAP" "${local_u}:${remote_u}" "$SYNC_RULES_CONFIG_FILE"
                     fn_print_success "用户映射已设置为: ${local_u} -> ${remote_u}"
                 else
                     fn_update_config_value "USER_MAP" "" "$SYNC_RULES_CONFIG_FILE"
-                    fn_print_warning "输入为空，已清除用户映射设置。"
+                    fn_print_warning "输入无效，已清除用户映射设置。"
                 fi
                 sleep 1.5
                 ;;
