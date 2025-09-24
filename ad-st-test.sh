@@ -1,13 +1,12 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v2.2.1 (社区修正版)
+# SillyTavern 助手 v2.2.2 (社区修正版)
 # 作者: Qingjue | 小红书号: 826702880
-# 终极备份重构与修复 (感谢用户持续的专业反馈):
-# 1. 【新增】在S3/WebDAV菜单中增加了独立的“打包备份到云端”功能，为用户提供最稳定的备份选择。
-# 2. 【修复】修正了S3配置流程，增加了“提供商(Provider)”输入项，从根源解决502服务端错误。
-# 3. 【修复】严格检查rclone命令的退出码，彻底修复了备份失败后“谎报成功”的严重BUG。
-# 4. 【修复】全面检查并修正了所有菜单中残留的“\n”显示问题。
-# 5. 固化了v2.2.0版本中的所有功能和修复。
+# 核心体验重构 (感谢用户持续的专业反馈):
+# 1. 【重构】彻底重构了S3/WebDAV的菜单逻辑，采用“任务向导”式设计，大幅提升了清晰度和易用性。
+# 2. 【新增】增加了关键的“从打包备份恢复”功能，补全了备份流程的闭环。
+# 3. 【优化】将S3/WebDAV的菜单逻辑抽象为通用函数，大幅减少了代码冗余，提升了可维护性。
+# 4. 固化了v2.2.1版本中的所有功能和修复。
 
 # =========================================================================
 #   脚本环境与色彩定义
@@ -295,7 +294,7 @@ EOF
         fn_print_success "数据成功备份到云端！"
         mapfile -t all_backups < <(rclone lsf "$backups_root" --dirs-only 2>/dev/null | sort)
         if [ "${#all_backups[@]}" -gt $BACKUP_LIMIT ]; then
-            fn_print_warning "正在清理旧备份..."
+            fn_print_warning "正在清理旧的增量备份..."
             local backups_to_delete_count=$(( ${#all_backups[@]} - BACKUP_LIMIT )); fn_print_warning "备份数量超过上限(${BACKUP_LIMIT})，将删除 ${backups_to_delete_count} 个最旧的备份。"
             for ((i=0; i<backups_to_delete_count; i++)); do local old_backup_to_delete="${all_backups[$i]}"; echo "  - 删除: ${old_backup_to_delete}"; rclone purge "${backups_root}/${old_backup_to_delete}"; done
             fn_print_success "清理完成。"
@@ -317,20 +316,33 @@ rclone_zip_backup_logic() {
             for ((i=0; i<zips_to_delete_count; i++)); do local old_zip="${all_zip_backups[$i]}"; echo "  - 删除: ${old_zip}"; rclone deletefile "${zip_backup_root}${old_zip}"; done
             fn_print_success "清理完成。"
         fi
-    else fn_print_error "压缩包上传失败！"; fi
+    else fn_print_error "压缩包上传失败！"; rm -f "$local_zip_path"; fi
     fn_press_any_key
 }
-rclone_restore_logic() {
-    local config_file="$1"; local type_name="$2"; clear; fn_print_header "从云端恢复数据 ($type_name)"; if [ ! -f "$config_file" ]; then fn_print_error "请先在菜单 [1] 中配置$type_name同步服务。"; fn_press_any_key; return; fi
+rclone_incremental_restore_logic() {
+    local config_file="$1"; local type_name="$2"; clear; fn_print_header "从增量备份恢复 ($type_name)"; if [ ! -f "$config_file" ]; then fn_print_error "请先配置$type_name同步服务。"; fn_press_any_key; return; fi
     # shellcheck source=/dev/null
-    source "$config_file"; fn_print_warning "正在获取云端备份列表..."; mapfile -t backup_list < <(rclone lsf "${RCLONE_REMOTE_NAME}:${RCLONE_BUCKET_NAME}/backups" --dirs-only 2>/dev/null | sort -r)
-    if [ ${#backup_list[@]} -eq 0 ]; then fn_print_error "未在云端找到任何备份。"; fn_press_any_key; return; fi
+    source "$config_file"; fn_print_warning "正在获取云端增量备份列表..."; mapfile -t backup_list < <(rclone lsf "${RCLONE_REMOTE_NAME}:${RCLONE_BUCKET_NAME}/backups" --dirs-only 2>/dev/null | sort -r)
+    if [ ${#backup_list[@]} -eq 0 ]; then fn_print_error "未在云端找到任何增量备份。"; fn_press_any_key; return; fi
     echo "请选择要恢复的备份版本 (按时间倒序):"; for i in "${!backup_list[@]}"; do printf "  [%-2d] %s\n" "$((i + 1))" "${backup_list[$i]%/}"; done
     read -p "请输入选项 (其他键取消): " choice; if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#backup_list[@]}" ]; then fn_print_warning "操作已取消。"; fn_press_any_key; return; fi
     local selected_backup="${backup_list[$((choice-1))]}"; fn_print_warning "此操作将使用备份 [${selected_backup%/}] 【覆盖】本地数据！"; read -p "确认要恢复吗？[y/N]: " confirm; if [[ ! "$confirm" =~ ^[yY]$ ]]; then fn_print_warning "操作已取消。"; fn_press_any_key; return; fi
     local remote_path="${RCLONE_REMOTE_NAME}:${RCLONE_BUCKET_NAME}/backups/${selected_backup}"; fn_print_warning "正在下载并覆盖本地数据..."
     if rclone sync "$remote_path" "$ST_DIR" --progress; then fn_print_success "数据已从云端成功恢复！"; else fn_print_error "恢复操作失败！"; fi
     fn_press_any_key
+}
+rclone_zip_restore_logic() {
+    local config_file="$1"; local type_name="$2"; clear; fn_print_header "从打包备份恢复 ($type_name)"; if [ ! -f "$config_file" ]; then fn_print_error "请先配置$type_name同步服务。"; fn_press_any_key; return; fi
+    # shellcheck source=/dev/null
+    source "$config_file"; local zip_backup_root="${RCLONE_REMOTE_NAME}:${RCLONE_BUCKET_NAME}/zip_backups/"; fn_print_warning "正在获取云端打包备份列表..."; mapfile -t backup_list < <(rclone lsf "$zip_backup_root" 2>/dev/null | grep '\.zip$' | sort -r)
+    if [ ${#backup_list[@]} -eq 0 ]; then fn_print_error "未在云端找到任何打包备份 (.zip文件)。"; fn_press_any_key; return; fi
+    echo "请选择要恢复的打包备份 (按时间倒序):"; for i in "${!backup_list[@]}"; do printf "  [%-2d] %s\n" "$((i + 1))" "${backup_list[$i]}"; done
+    read -p "请输入选项 (其他键取消): " choice; if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#backup_list[@]}" ]; then fn_print_warning "操作已取消。"; fn_press_any_key; return; fi
+    local selected_zip="${backup_list[$((choice-1))]}"; local temp_zip_path; temp_zip_path=$(mktemp --suffix=.zip); fn_print_warning "正在从云端下载: $selected_zip..."
+    if ! rclone copyto "${zip_backup_root}${selected_zip}" "$temp_zip_path" --progress; then fn_print_error "下载压缩包失败！"; rm -f "$temp_zip_path"; fn_press_any_key; return; fi
+    fn_print_warning "此操作将使用压缩包 [${selected_zip}] 的内容【覆盖】本地数据！"; read -p "确认要恢复吗？[y/N]: " confirm; if [[ ! "$confirm" =~ ^[yY]$ ]]; then fn_print_warning "操作已取消。"; rm -f "$temp_zip_path"; fn_press_any_key; return; fi
+    fn_print_warning "正在解压并覆盖本地数据..."; if unzip -o "$temp_zip_path" -d "$ST_DIR" >/dev/null 2>&1; then fn_print_success "数据已从打包备份中成功恢复！"; else fn_print_error "解压覆盖失败！"; fi
+    rm -f "$temp_zip_path"; fn_press_any_key
 }
 
 # =========================================================================
@@ -357,18 +369,7 @@ s3_clear_config() {
             source "$S3_SYNC_CONFIG_FILE"; rclone config delete "$RCLONE_REMOTE_NAME"; rm -f "$S3_SYNC_CONFIG_FILE"; fn_print_success "Rclone(S3)同步配置已清除。"; else fn_print_warning "操作已取消。"; fi
     else fn_print_warning "未找到任何Rclone(S3)同步配置。"; fi; fn_press_any_key
 }
-menu_s3_sync() {
-    if ! rclone_check_deps; then fn_press_any_key; return; fi
-    while true; do clear; fn_print_header "数据同步 (Rclone/S3 方案)"
-    echo -e "      [1] ${CYAN}配置S3同步服务${NC}"
-    echo -e "      [2] ${GREEN}增量备份到云端 (推荐)${NC}"
-    echo -e "      [3] ${GREEN}打包备份到云端 (最稳定)${NC}"
-    echo -e "      [4] ${YELLOW}从云端恢复 (增量备份)${NC}"
-    echo -e "      [5] ${RED}清除S3同步配置${NC}"
-    echo -e "      [0] ${CYAN}返回上一级${NC}\n"
-    read -p "    请输入选项: " choice
-    case $choice in 1) s3_configure ;; 2) rclone_incremental_backup_logic "$S3_SYNC_CONFIG_FILE" "S3" ;; 3) rclone_zip_backup_logic "$S3_SYNC_CONFIG_FILE" "S3" ;; 4) rclone_restore_logic "$S3_SYNC_CONFIG_FILE" "S3" ;; 5) s3_clear_config ;; 0) break ;; *) fn_print_error "无效输入。"; sleep 1 ;; esac; done
-}
+menu_s3_sync() { menu_rclone_logic "S3" "$S3_SYNC_CONFIG_FILE" "s3_configure" "s3_clear_config"; }
 
 # =========================================================================
 #   Rclone (WebDAV) 同步功能模块
@@ -393,17 +394,56 @@ webdav_clear_config() {
             source "$WEBDAV_SYNC_CONFIG_FILE"; rclone config delete "$RCLONE_REMOTE_NAME"; rm -f "$WEBDAV_SYNC_CONFIG_FILE"; fn_print_success "Rclone(WebDAV)同步配置已清除。"; else fn_print_warning "操作已取消。"; fi
     else fn_print_warning "未找到任何Rclone(WebDAV)同步配置。"; fi; fn_press_any_key
 }
-menu_webdav_sync() {
+menu_webdav_sync() { menu_rclone_logic "WebDAV" "$WEBDAV_SYNC_CONFIG_FILE" "webdav_configure" "webdav_clear_config"; }
+
+# =========================================================================
+#   Rclone 主菜单逻辑 (通用框架)
+# =========================================================================
+
+menu_rclone_logic() {
+    local type_name="$1"; local config_file="$2"; local configure_func="$3"; local clear_config_func="$4"
     if ! rclone_check_deps; then fn_press_any_key; return; fi
-    while true; do clear; fn_print_header "数据同步 (WebDAV 方案)"
-    echo -e "      [1] ${CYAN}配置WebDAV同步服务${NC}"
-    echo -e "      [2] ${GREEN}增量备份到云端 (推荐)${NC}"
-    echo -e "      [3] ${GREEN}打包备份到云端 (最稳定)${NC}"
-    echo -e "      [4] ${YELLOW}从云端恢复 (增量备份)${NC}"
-    echo -e "      [5] ${RED}清除WebDAV同步配置${NC}"
-    echo -e "      [0] ${CYAN}返回上一级${NC}\n"
-    read -p "    请输入选项: " choice
-    case $choice in 1) webdav_configure ;; 2) rclone_incremental_backup_logic "$WEBDAV_SYNC_CONFIG_FILE" "WebDAV" ;; 3) rclone_zip_backup_logic "$WEBDAV_SYNC_CONFIG_FILE" "WebDAV" ;; 4) rclone_restore_logic "$WEBDAV_SYNC_CONFIG_FILE" "WebDAV" ;; 5) webdav_clear_config ;; 0) break ;; *) fn_print_error "无效输入。"; sleep 1 ;; esac; done
+    while true; do clear; fn_print_header "数据同步 (Rclone/$type_name 方案)"
+        echo -e "      [1] ${GREEN}备份到云端${NC}"
+        echo -e "      [2] ${YELLOW}从云端恢复${NC}"
+        echo -e "      [3] ${CYAN}管理此方案配置${NC}"
+        echo -e "      [0] ${CYAN}返回上一级${NC}\n"
+        read -p "    请输入选项: " choice
+        case $choice in
+            1)  clear; fn_print_header "请选择备份方式"
+                echo -e "      [1] ${GREEN}增量备份 (推荐，速度快)${NC}"
+                echo -e "      [2] ${GREEN}打包备份 (最稳定，兼容性好)${NC}"
+                echo -e "      [0] ${CYAN}取消${NC}\n"
+                read -p "    请输入选项: " backup_choice
+                case $backup_choice in
+                    1) rclone_incremental_backup_logic "$config_file" "$type_name" ;;
+                    2) rclone_zip_backup_logic "$config_file" "$type_name" ;;
+                    *) ;;
+                esac ;;
+            2)  clear; fn_print_header "请选择要恢复的备份类型"
+                echo -e "      [1] ${YELLOW}从增量备份恢复${NC}"
+                echo -e "      [2] ${YELLOW}从打包备份恢复${NC}"
+                echo -e "      [0] ${CYAN}取消${NC}\n"
+                read -p "    请输入选项: " restore_choice
+                case $restore_choice in
+                    1) rclone_incremental_restore_logic "$config_file" "$type_name" ;;
+                    2) rclone_zip_restore_logic "$config_file" "$type_name" ;;
+                    *) ;;
+                esac ;;
+            3)  clear; fn_print_header "管理 $type_name 方案"
+                echo -e "      [1] ${CYAN}重新配置${NC}"
+                echo -e "      [2] ${RED}清除配置${NC}"
+                echo -e "      [0] ${CYAN}返回${NC}\n"
+                read -p "    请输入选项: " manage_choice
+                case $manage_choice in
+                    1) "$configure_func" ;;
+                    2) "$clear_config_func" ;;
+                    *) ;;
+                esac ;;
+            0) break ;;
+            *) fn_print_error "无效输入。"; sleep 1 ;;
+        esac
+    done
 }
 
 # =========================================================================
@@ -484,7 +524,7 @@ if [[ "$1" == "--updated" ]]; then clear; fn_print_success "助手已成功更�
 while true; do
     clear; echo -e "${CYAN}${BOLD}"; cat << "EOF"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v2.2.1    ║
+    ║      SillyTavern 助手 v2.2.2    ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
