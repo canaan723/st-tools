@@ -290,9 +290,17 @@ git_sync_restore_from_cloud() {
         # shellcheck source=/dev/null
         source "$GIT_SYNC_CONFIG_FILE"; local repo_path; repo_path=$(echo "$REPO_URL" | sed 's|https://github.com/||'); local private_repo_url; private_repo_url=$(echo "$pull_url" | sed "s|/SillyTavern/SillyTavern.git|/${repo_path}|"); local pull_url_with_auth; pull_url_with_auth=$(echo "$private_repo_url" | sed "s|https://|https://${REPO_TOKEN}@|")
         if ! git clone --depth 1 "$pull_url_with_auth" "$temp_dir"; then fn_print_error "下载云端数据失败！正在切换下一条线路..."; rm -rf "$temp_dir"; continue; fi
-        if [ ! -d "$temp_dir/data" ] || [ -z "$(ls -A "$temp_dir/data")" ]; then fn_print_error "下载的数据源无效或为空，恢复操作已中止！"; rm -rf "$temp_dir"; fn_press_any_key; return; fi
-        fn_print_warning "正在将云端数据同步到本地..."; cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
-        local paths_to_sync=("data" "public/scripts/extensions/third-party" "plugins" "config.yaml"); for item in "${paths_to_sync[@]}"; do if [ -e "$item" ]; then rsync -av --delete "./$item" "$ST_DIR/"; fi; done
+        if [ ! -d "$temp_dir/data" ] && [ -z "$(ls -A "$temp_dir/data")" ]; then fn_print_error "下载的数据源无效或为空，恢复操作已中止！"; rm -rf "$temp_dir"; fn_press_any_key; return; fi
+        
+        fn_print_warning "正在将云端数据同步到本地..."; 
+        cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
+        local paths_to_sync=("data" "public/scripts/extensions/third-party" "plugins" "config.yaml")
+        for item in "${paths_to_sync[@]}"; do 
+            if [ -e "$item" ]; then 
+                # 【核心修正】添加 --relative 参数以保持正确的目录结构
+                rsync -av --relative --delete "./$item" "$ST_DIR/"
+            fi
+        done
         
         fn_print_warning "正在恢复扩展仓库的Git信息..."
         for item in "${paths_to_sync[@]}"; do
@@ -305,6 +313,7 @@ git_sync_restore_from_cloud() {
     done
     if ! $restore_success; then fn_print_error "已尝试所有可用线路，但恢复均失败。"; fi; fn_press_any_key
 }
+
 git_sync_clear_config() { if [ -f "$GIT_SYNC_CONFIG_FILE" ]; then read -p "确认要清除已保存的Git同步配置吗？(y/n): " confirm; if [[ "$confirm" =~ ^[yY]$ ]]; then rm -f "$GIT_SYNC_CONFIG_FILE"; fn_print_success "Git同步配置已清除。"; else fn_print_warning "操作已取消。"; fi; else fn_print_warning "未找到任何Git同步配置。"; fi; fn_press_any_key; }
 
 menu_git_config_management() {
