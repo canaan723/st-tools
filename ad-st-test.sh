@@ -2,8 +2,8 @@
 
 # SillyTavern 助手 v2.1.3 (社区修正版)
 # 作者: Qingjue | 小红书号: 826702880
-# 语法修复：
-# 1. 【修复】修正了 check_for_updates_on_start 函数中的致命语法错误 ( &; )，该错误导致脚本无法启动。
+# 关键BUG修复：
+# 1. 【修复】修正了 rclone config create 命令的错误格式，该错误导致Rclone配置永远失败。
 # 2. 固化了v2.1.2版本中的所有BUG修复和逻辑优化。
 
 # =========================================================================
@@ -272,7 +272,8 @@ rclone_configure() {
     while true; do read -p "请输入 Bucket (存储桶) 名称: " bucket; [[ -n "$bucket" ]] && break || fn_print_error "Bucket 名称不能为空！"; done
     read -p "请输入 Region (地域，可留空): " region
     fn_print_warning "正在创建Rclone配置...";
-    rclone config create name="$remote_name" type="s3" provider="$provider" access_key_id="$access_key" secret_access_key="$secret_key" endpoint="$endpoint" ${region:+region="$region"}
+    # 【已修复】使用正确的位置参数格式调用 rclone config create
+    rclone config create "$remote_name" s3 provider="$provider" access_key_id="$access_key" secret_access_key="$secret_key" endpoint="$endpoint" ${region:+region="$region"}
     if [ $? -eq 0 ]; then echo "RCLONE_REMOTE_NAME=\"$remote_name\"" > "$RCLONE_SYNC_CONFIG_FILE"; echo "RCLONE_BUCKET_NAME=\"$bucket\"" >> "$RCLONE_SYNC_CONFIG_FILE"; fn_print_success "Rclone同步服务配置已保存！"; else fn_print_error "Rclone配置创建失败！请检查输入信息。"; fi
     fn_press_any_key
 }
@@ -392,7 +393,7 @@ if [[ "$1" == "--updated" ]]; then clear; fn_print_success "助手已成功更�
 while true; do
     clear; echo -e "${CYAN}${BOLD}"; cat << "EOF"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v2.1.2    ║
+    ║      SillyTavern 助手 v2.1.3    ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
