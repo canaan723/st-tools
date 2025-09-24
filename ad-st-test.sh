@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v2.6.1
+# SillyTavern 助手 v2.0
 # 作者: Qingjue | 小红书号: 826702880
 
 # =========================================================================
@@ -25,12 +25,10 @@ SCRIPT_URL="https://gitee.com/canaan723/st-tools/raw/main/ad-st.sh"
 UPDATE_FLAG_FILE="/data/data/com.termux/files/usr/tmp/.st_assistant_update_flag"
 CACHED_MIRRORS=()
 
-# 新的标准化配置目录
 CONFIG_DIR="$HOME/.config/ad-st"
 CONFIG_FILE="$CONFIG_DIR/backup_prefs.conf"
 GIT_SYNC_CONFIG_FILE="$CONFIG_DIR/git_sync.conf"
 
-# 用于下载(pull/clone)的镜像列表
 MIRROR_LIST=(
     "https://github.com/SillyTavern/SillyTavern.git"
     "https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
@@ -189,15 +187,8 @@ fn_update_source_with_retry() {
 #   Git 同步功能模块
 # =========================================================================
 
-git_sync_check_deps() { if ! fn_check_command "git" || ! fn_check_command "rsync"; then fn_print_error "缺少核心工具 git 或 rsync。"; fn_print_warning "请先运行 [首次部署] 来安装所有必需的依赖项。"; return 1; fi; return 0; }
+git_sync_check_deps() { if ! fn_check_command "git" || ! fn_check_command "rsync"; then fn_print_warning "Git尚未安装，请先运行 [首次部署]。"; fn_press_any_key; return 1; fi; return 0; }
 git_sync_ensure_identity() {
-    # 【修复】在执行任何git操作前，先检查git命令是否存在
-    if ! fn_check_command "git"; then
-        fn_print_error "Git尚未安装，无法配置身份。"
-        fn_print_warning "请先运行 [首次部署] 来安装所有必需的依赖项。"
-        return 1
-    fi
-
     if [ -z "$(git config --global --get user.name)" ] || [ -z "$(git config --global --get user.email)" ]; then
         clear; fn_print_header "首次使用Git同步：配置身份"
         local user_name user_email
@@ -237,7 +228,7 @@ git_sync_find_pushable_mirror() {
     if [ ${#successful_urls[@]} -gt 0 ]; then fn_print_success "测试完成，找到 ${#successful_urls[@]} 条可用上传线路。" >&2; printf '%s\n' "${successful_urls[@]}"; else fn_print_error "所有上传线路均测试失败。" >&2; return 1; fi
 }
 git_sync_backup_to_cloud() {
-    clear; fn_print_header "Git备份数据到云端 (上传)"; if ! git_sync_check_deps; then fn_press_any_key; return; fi; if [ ! -f "$GIT_SYNC_CONFIG_FILE" ]; then fn_print_error "请先在菜单 [1] 中配置Git同步服务。"; fn_press_any_key; return; fi
+    clear; fn_print_header "Git备份数据到云端 (上传)"; if [ ! -f "$GIT_SYNC_CONFIG_FILE" ]; then fn_print_warning "请先在菜单 [1] 中配置Git同步服务。"; fn_press_any_key; return; fi
     mapfile -t push_urls < <(git_sync_find_pushable_mirror); if [ ${#push_urls[@]} -eq 0 ]; then fn_print_error "未能找到任何支持上传的线路。"; fn_press_any_key; return; fi
     local backup_success=false
     for push_url in "${push_urls[@]}"; do
@@ -253,7 +244,7 @@ git_sync_backup_to_cloud() {
     if ! $backup_success; then fn_print_error "已尝试所有可用线路，但备份均失败。"; fi; fn_press_any_key
 }
 git_sync_restore_from_cloud() {
-    clear; fn_print_header "Git从云端恢复数据 (下载)"; if ! git_sync_check_deps; then fn_press_any_key; return; fi; if [ ! -f "$GIT_SYNC_CONFIG_FILE" ]; then fn_print_error "请先在菜单 [1] 中配置Git同步服务。"; fn_press_any_key; return; fi
+    clear; fn_print_header "Git从云端恢复数据 (下载)"; if [ ! -f "$GIT_SYNC_CONFIG_FILE" ]; then fn_print_warning "请先在菜单 [1] 中配置Git同步服务。"; fn_press_any_key; return; fi
     fn_print_warning "此操作将用云端数据【覆盖】本地数据！"; read -p "是否在恢复前，先对当前本地数据进行一次备份？(强烈推荐) [Y/n]: " backup_confirm
     if [[ "${backup_confirm:-y}" =~ ^[Yy]$ ]]; then if ! fn_create_data_zip_backup >/dev/null; then fn_print_error "本地备份失败，恢复操作已中止。"; fn_press_any_key; return; fi; fi
     read -p "确认要从云端恢复数据吗？[y/N]: " restore_confirm; if [[ ! "$restore_confirm" =~ ^[yY]$ ]]; then fn_print_warning "操作已取消。"; fn_press_any_key; return; fi
@@ -290,7 +281,10 @@ menu_git_config_management() {
 }
 
 menu_git_sync() {
-    if ! git_sync_ensure_identity; then fn_press_any_key; return; fi
+    # 【优化】统一依赖检查逻辑
+    if ! git_sync_check_deps; then return; fi
+    if ! git_sync_ensure_identity; then return; fi
+
     while true; do 
         clear; fn_print_header "数据同步 (Git 方案)"
         if [ -f "$GIT_SYNC_CONFIG_FILE" ]; then
@@ -732,7 +726,6 @@ run_backup_interactive() {
 
     mapfile -t all_backups < <(find "$BACKUP_ROOT_DIR" -maxdepth 1 -name "*.zip" -printf "%T@ %p\n" | sort -nr | cut -d' ' -f2-)
     fn_print_success "备份成功：${backup_name}.zip (当前备份数: ${#all_backups[@]}/${BACKUP_LIMIT})"
-    # 【优化】明确显示备份文件的完整存储路径
     echo -e "  ${CYAN}保存路径: ${backup_zip_path}${NC}"
     printf "%s\n" "${paths_to_backup[@]}" >"$CONFIG_FILE"
 
@@ -899,7 +892,7 @@ while true; do
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v2.6.1    ║
+    ║       SillyTavern 助手 v2.0     ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
