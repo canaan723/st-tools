@@ -1,11 +1,12 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v2.1.8 (社区修正版)
+# SillyTavern 助手 v2.1.9 (社区修正版)
 # 作者: Qingjue | 小红书号: 826702880
-# 新增功能与修复：
-# 1. 【新增】增加了 WebDAV 作为独立的第三方同步方案，并实现了与S3方案同等级的版本化增量备份功能。
-# 2. 【修复】修正了同步菜单选择提示符前会错误地显示 "\n" 字符的BUG。
-# 3. 固化了v2.1.7版本中的所有BUG修复和逻辑优化。
+# 关键BUG修复与用户体验优化 (感谢用户精准反馈):
+# 1. 【修复】重写了Rclone备份命令，使用推荐的 --filter-from 规则，解决了因规则冲突导致上传0字节并谎报成功的致命BUG。
+# 2. 【优化】为WebDAV配置中的“根目录名”增加了默认值，防止用户留空导致路径问题。
+# 3. 【优化】调整了“清理旧备份”的提示逻辑，仅在实际需要清理时才显示，避免首次备份时造成困惑。
+# 4. 固化了v2.1.8版本中的所有功能和修复。
 
 # =========================================================================
 #   脚本环境与色彩定义
@@ -263,24 +264,6 @@ rclone_ensure_password() {
         fn_print_success "主密码设置完成！"; sleep 1
     fi
 }
-
-# =========================================================================
-#   Rclone (S3) 同步功能模块
-# =========================================================================
-
-s3_configure() {
-    clear; fn_print_header "配置 Rclone (S3) 同步服务"; rclone_ensure_password
-    local remote_name="st-s3-sync"; local access_key secret_key endpoint bucket region
-    while true; do read -p "请输入 Access Key ID: " access_key; [[ -n "$access_key" ]] && break || fn_print_error "Access Key ID 不能为空！"; done
-    while true; do read -p "请输入 Secret Access Key: " secret_key; [[ -n "$secret_key" ]] && break || fn_print_error "Secret Access Key 不能为空！"; done
-    while true; do read -p "请输入 Endpoint URL: " endpoint; [[ -n "$endpoint" ]] && break || fn_print_error "Endpoint 不能为空！"; done
-    while true; do read -p "请输入 Bucket (存储桶) 名称: " bucket; [[ -n "$bucket" ]] && break || fn_print_error "Bucket 名称不能为空！"; done
-    read -p "请输入 Region (地域，可留空): " region
-    fn_print_warning "正在创建Rclone配置...";
-    rclone config create "$remote_name" s3 access_key_id="$access_key" secret_access_key="$secret_key" endpoint="$endpoint" ${region:+region="$region"}
-    if [ $? -eq 0 ]; then echo "RCLONE_REMOTE_NAME=\"$remote_name\"" > "$S3_SYNC_CONFIG_FILE"; echo "RCLONE_BUCKET_NAME=\"$bucket\"" >> "$S3_SYNC_CONFIG_FILE"; fn_print_success "Rclone (S3) 同步服务配置已保存！"; else fn_print_error "Rclone配置创建失败！请检查输入信息。"; fi
-    fn_press_any_key
-}
 rclone_backup_logic() {
     local config_file="$1"; local type_name="$2"; clear; fn_print_header "Rclone备份数据到云端 ($type_name)"
     if [ ! -f "$config_file" ]; then fn_print_error "请先在菜单 [1] 中配置$type_name同步服务。"; fn_press_any_key; return; fi
@@ -296,12 +279,17 @@ rclone_backup_logic() {
 + /public/scripts/extensions/third-party/**
 + /plugins/**
 + /config.yaml
+- /_cache/**
+- *.log
+- /backups/**
 - *
 EOF
     fn_print_warning "正在同步本地数据变更 (增量上传)..."
-    if rclone sync "$ST_DIR" "$new_backup_path" --include-from "$temp_filter_file" --exclude "**/_cache/**" --exclude "*.log" --exclude "**/backups/**" --progress; then
-        fn_print_success "数据成功备份到云端！"; fn_print_warning "正在清理旧备份..."
-        mapfile -t all_backups < <(rclone lsf "$backups_root" --dirs-only 2>/dev/null | sort); if [ "${#all_backups[@]}" -gt $BACKUP_LIMIT ]; then
+    if rclone sync "$ST_DIR" "$new_backup_path" --filter-from "$temp_filter_file" --progress; then
+        fn_print_success "数据成功备份到云端！"
+        mapfile -t all_backups < <(rclone lsf "$backups_root" --dirs-only 2>/dev/null | sort)
+        if [ "${#all_backups[@]}" -gt $BACKUP_LIMIT ]; then
+            fn_print_warning "正在清理旧备份..."
             local backups_to_delete_count=$(( ${#all_backups[@]} - BACKUP_LIMIT )); fn_print_warning "备份数量超过上限(${BACKUP_LIMIT})，将删除 ${backups_to_delete_count} 个最旧的备份。"
             for ((i=0; i<backups_to_delete_count; i++)); do local old_backup_to_delete="${all_backups[$i]}"; echo "  - 删除: ${old_backup_to_delete}"; rclone purge "${backups_root}/${old_backup_to_delete}"; done
             fn_print_success "清理完成。"
@@ -319,6 +307,24 @@ rclone_restore_logic() {
     local selected_backup="${backup_list[$((choice-1))]}"; fn_print_warning "此操作将使用备份 [${selected_backup%/}] 【覆盖】本地数据！"; read -p "确认要恢复吗？[y/N]: " confirm; if [[ ! "$confirm" =~ ^[yY]$ ]]; then fn_print_warning "操作已取消。"; fn_press_any_key; return; fi
     local remote_path="${RCLONE_REMOTE_NAME}:${RCLONE_BUCKET_NAME}/backups/${selected_backup}"; fn_print_warning "正在下载并覆盖本地数据..."
     if rclone sync "$remote_path" "$ST_DIR" --progress; then fn_print_success "数据已从云端成功恢复！"; else fn_print_error "恢复操作失败！"; fi
+    fn_press_any_key
+}
+
+# =========================================================================
+#   Rclone (S3) 同步功能模块
+# =========================================================================
+
+s3_configure() {
+    clear; fn_print_header "配置 Rclone (S3) 同步服务"; rclone_ensure_password
+    local remote_name="st-s3-sync"; local access_key secret_key endpoint bucket region
+    while true; do read -p "请输入 Access Key ID: " access_key; [[ -n "$access_key" ]] && break || fn_print_error "Access Key ID 不能为空！"; done
+    while true; do read -p "请输入 Secret Access Key: " secret_key; [[ -n "$secret_key" ]] && break || fn_print_error "Secret Access Key 不能为空！"; done
+    while true; do read -p "请输入 Endpoint URL: " endpoint; [[ -n "$endpoint" ]] && break || fn_print_error "Endpoint 不能为空！"; done
+    while true; do read -p "请输入 Bucket (存储桶) 名称: " bucket; [[ -n "$bucket" ]] && break || fn_print_error "Bucket 名称不能为空！"; done
+    read -p "请输入 Region (地域，可留空): " region
+    fn_print_warning "正在创建Rclone配置...";
+    rclone config create "$remote_name" s3 access_key_id="$access_key" secret_access_key="$secret_key" endpoint="$endpoint" ${region:+region="$region"}
+    if [ $? -eq 0 ]; then echo "RCLONE_REMOTE_NAME=\"$remote_name\"" > "$S3_SYNC_CONFIG_FILE"; echo "RCLONE_BUCKET_NAME=\"$bucket\"" >> "$S3_SYNC_CONFIG_FILE"; fn_print_success "Rclone (S3) 同步服务配置已保存！"; else fn_print_error "Rclone配置创建失败！请检查输入信息。"; fi
     fn_press_any_key
 }
 s3_clear_config() {
@@ -342,7 +348,7 @@ webdav_configure() {
     while true; do read -p "请输入 WebDAV URL: " url; [[ -n "$url" ]] && break || fn_print_error "URL 不能为空！"; done
     while true; do read -p "请输入 WebDAV 用户名: " user; [[ -n "$user" ]] && break || fn_print_error "用户名不能为空！"; done
     while true; do read -p "请输入 WebDAV 密码: " pass; [[ -n "$pass" ]] && break || fn_print_error "密码不能为空！"; done
-    read -p "请输入一个用于存放备份的根目录名 (例如 'SillyTavernBackups'): " bucket
+    read -p "请输入一个用于存放备份的根目录名 (留空默认为 'SillyTavernBackups'): " bucket
     if [[ -z "$bucket" ]]; then bucket="SillyTavernBackups"; fi
     fn_print_warning "正在创建Rclone配置..."; local obscured_pass; obscured_pass=$(echo "$pass" | rclone obscure -)
     rclone config create "$remote_name" webdav url="$url" user="$user" pass="$obscured_pass"
@@ -438,7 +444,7 @@ if [[ "$1" == "--updated" ]]; then clear; fn_print_success "助手已成功更�
 while true; do
     clear; echo -e "${CYAN}${BOLD}"; cat << "EOF"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v2.1.8    ║
+    ║      SillyTavern 助手 v2.1.9    ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
