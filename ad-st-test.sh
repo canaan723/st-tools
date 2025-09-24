@@ -236,12 +236,29 @@ git_sync_backup_to_cloud() {
     for push_url in "${push_urls[@]}"; do
         local chosen_host; chosen_host=$(echo "$push_url" | sed -e 's|https://.*@||' -e 's|/.*$||'); fn_print_warning "正在尝试使用线路 [${chosen_host}] 进行备份..."; local temp_dir; temp_dir=$(mktemp -d); cd "$HOME" || { fn_print_error "无法进入家目录！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
         if ! git clone --depth 1 "$push_url" "$temp_dir"; then fn_print_error "克隆云端仓库失败！正在切换下一条线路..."; rm -rf "$temp_dir"; continue; fi
-        fn_print_warning "正在同步本地数据到临时区..."; cd "$ST_DIR" || { fn_print_error "SillyTavern目录不存在！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
-        local paths_to_sync=("data" "public/scripts/extensions/third-party" "plugins" "config.yaml"); for item in "${paths_to_sync[@]}"; do if [ -e "$item" ]; then rsync -av --delete --exclude='*/backups/*' --exclude='*.log' --exclude='*/_cache/*' "./$item" "$temp_dir/"; fi; done
         
+        local paths_to_sync=("data" "public/scripts/extensions/third-party" "plugins" "config.yaml")
+        
+        # 【核心修正】进入临时仓库，先删除旧目录，避免gitlink问题
         cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
+        fn_print_warning "正在清理云端旧数据..."
+        for item in "${paths_to_sync[@]}"; do
+            [ -e "$item" ] && rm -rf "$item"
+        done
+
+        # 返回ST目录，执行rsync复制
+        fn_print_warning "正在同步本地数据到临时区..."
+        cd "$ST_DIR" || { fn_print_error "SillyTavern目录不存在！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
+        for item in "${paths_to_sync[@]}"; do 
+            if [ -e "$item" ]; then 
+                # 使用 rsync -a --relative 将带路径的目录复制过去
+                rsync -a --relative "./$item" "$temp_dir/"
+            fi
+        done
+
+        # 再次进入临时仓库，执行后续操作
+        cd "$temp_dir" || { fn_print_error "再次进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
         
-        # 【核心修正】只在同步进来的子目录中查找并重命名 .git 文件夹
         fn_print_warning "正在转换扩展仓库以进行完整备份..."
         for item in "${paths_to_sync[@]}"; do
             if [[ -d "$item" && "$item" != "config.yaml" ]]; then
