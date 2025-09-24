@@ -1,11 +1,10 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v2.5.0
+# SillyTavern 助手 v2.6.0
 # 作者: Qingjue | 小红书号: 826702880
-# 更新日志 (v2.5.0):
-# - 优化菜单结构，简化本地备份流程。
-# - Git同步菜单增加当前仓库状态显示。
-# - Git配置与清除功能整合到三级菜单，界面更整洁。
+# 更新日志 (v2.6.0):
+# - 【优化】遵循XDG规范，将所有配置文件统一迁移至 ~/.config/ad-st/ 目录。
+# - 【新增】首次运行时，自动迁移旧的根目录配置文件到新位置。
 
 # =========================================================================
 #   脚本环境与色彩定义
@@ -26,13 +25,16 @@ REPO_BRANCH="release"
 BACKUP_LIMIT=10
 SCRIPT_SELF_PATH=$(readlink -f "$0")
 SCRIPT_URL="https://gitee.com/canaan723/st-tools/raw/main/ad-st.sh"
-CONFIG_FILE="$HOME/.st_assistant.conf"
-GIT_SYNC_CONFIG_FILE="$HOME/.st_sync.conf"
 UPDATE_FLAG_FILE="/data/data/com.termux/files/usr/tmp/.st_assistant_update_flag"
 CACHED_MIRRORS=()
 
+# 新的标准化配置目录
+CONFIG_DIR="$HOME/.config/ad-st"
+CONFIG_FILE="$CONFIG_DIR/backup_prefs.conf"
+GIT_SYNC_CONFIG_FILE="$CONFIG_DIR/git_sync.conf"
+
 # 用于下载(pull/clone)的镜像列表
-PULL_MIRROR_LIST=(
+MIRROR_LIST=(
     "https://github.com/SillyTavern/SillyTavern.git"
     "https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
     "https://git.723123.xyz/gh/SillyTavern/SillyTavern.git"
@@ -69,7 +71,7 @@ fn_find_fastest_mirror() {
     local github_url="https://github.com/SillyTavern/SillyTavern.git"
     local sorted_successful_mirrors=()
     
-    if [[ " ${PULL_MIRROR_LIST[*]} " =~ " ${github_url} " ]]; then
+    if [[ " ${MIRROR_LIST[*]} " =~ " ${github_url} " ]]; then
         echo -e "  - 优先测试: GitHub 官方源..." >&2
         if timeout 10s git ls-remote "$github_url" HEAD >/dev/null 2>&1; then
             fn_print_success "GitHub 官方源直连可用！将优先使用。" >&2
@@ -83,7 +85,7 @@ fn_find_fastest_mirror() {
     fi
 
     local other_mirrors=()
-    for mirror in "${PULL_MIRROR_LIST[@]}"; do
+    for mirror in "${MIRROR_LIST[@]}"; do
         [[ "$mirror" != "$github_url" ]] && other_mirrors+=("$mirror")
     done
 
@@ -215,11 +217,11 @@ git_sync_find_pushable_mirror() {
     # shellcheck source=/dev/null
     source "$GIT_SYNC_CONFIG_FILE"; if [[ -z "$REPO_URL" || -z "$REPO_TOKEN" ]]; then fn_print_error "Git同步配置不完整或不存在。" >&2; return 1; fi
     fn_print_warning "正在自动测试支持数据上传的加速线路..."; local repo_path; repo_path=$(echo "$REPO_URL" | sed 's|https://github.com/||'); local github_public_url="https://github.com/SillyTavern/SillyTavern.git"; local successful_urls=()
-    if [[ " ${PULL_MIRROR_LIST[*]} " =~ " ${github_public_url} " ]]; then
+    if [[ " ${MIRROR_LIST[*]} " =~ " ${github_public_url} " ]]; then
         local official_url="https://${REPO_TOKEN}@github.com/${repo_path}"; echo -e "  - 优先测试: 官方 GitHub ..." >&2
         if git_sync_test_one_mirror_push "$official_url"; then echo -e "    ${GREEN}[成功]${NC}" >&2; successful_urls+=("$official_url"); printf '%s\n' "${successful_urls[@]}"; return 0; else echo -e "    ${RED}[失败]${NC}" >&2; fi
     fi
-    local other_mirrors=(); for mirror_url in "${PULL_MIRROR_LIST[@]}"; do [[ "$mirror_url" != "$github_public_url" ]] && other_mirrors+=("$mirror_url"); done
+    local other_mirrors=(); for mirror_url in "${MIRROR_LIST[@]}"; do [[ "$mirror_url" != "$github_public_url" ]] && other_mirrors+=("$mirror_url"); done
     if [ ${#other_mirrors[@]} -gt 0 ]; then
         echo -e "${YELLOW}已启动并行测试，将完整测试所有镜像...${NC}" >&2; local results_file; results_file=$(mktemp); local pids=()
         for mirror_url in "${other_mirrors[@]}"; do
@@ -290,9 +292,11 @@ menu_git_sync() {
         if [ -f "$GIT_SYNC_CONFIG_FILE" ]; then
             # shellcheck source=/dev/null
             source "$GIT_SYNC_CONFIG_FILE"
-            local current_repo_name
-            current_repo_name=$(basename "$REPO_URL" .git)
-            echo -e "      ${YELLOW}当前仓库: ${current_repo_name}${NC}\n"
+            if [ -n "$REPO_URL" ]; then
+                local current_repo_name
+                current_repo_name=$(basename "$REPO_URL" .git)
+                echo -e "      ${YELLOW}当前仓库: ${current_repo_name}${NC}\n"
+            fi
         fi
         echo -e "      [1] ${CYAN}管理同步配置${NC}\n      [2] ${GREEN}备份到云端 (上传)${NC}\n      [3] ${YELLOW}从云端恢复 (下载)${NC}\n      [0] ${CYAN}返回主菜单${NC}\n"
         read -p "    请输入选项: " choice
@@ -839,9 +843,41 @@ main_open_docs() {
     fn_press_any_key
 }
 
+fn_migrate_configs() {
+    local migration_needed=false
+    # 定义旧的配置文件路径
+    local OLD_CONFIG_FILE="$HOME/.st_assistant.conf"
+    local OLD_GIT_SYNC_CONFIG_FILE="$HOME/.st_sync.conf"
+
+    # 确保新目录存在
+    mkdir -p "$CONFIG_DIR"
+
+    # 迁移备份偏好设置
+    if [ -f "$OLD_CONFIG_FILE" ] && [ ! -f "$CONFIG_FILE" ]; then
+        mv "$OLD_CONFIG_FILE" "$CONFIG_FILE"
+        fn_print_warning "已将旧的备份配置文件迁移至新位置。"
+        migration_needed=true
+    fi
+
+    # 迁移Git同步设置
+    if [ -f "$OLD_GIT_SYNC_CONFIG_FILE" ] && [ ! -f "$GIT_SYNC_CONFIG_FILE" ]; then
+        mv "$OLD_GIT_SYNC_CONFIG_FILE" "$GIT_SYNC_CONFIG_FILE"
+        fn_print_warning "已将旧的Git同步配置文件迁移至新位置。"
+        migration_needed=true
+    fi
+    
+    if $migration_needed; then
+        fn_print_success "配置文件迁移完成！"
+        sleep 2
+    fi
+}
+
 # =========================================================================
 #   主菜单与脚本入口
 # =========================================================================
+
+# 脚本启动时执行一次性任务
+fn_migrate_configs
 
 if [[ "$1" != "--no-check" && "$1" != "--updated" ]]; then
     check_for_updates_on_start
@@ -857,7 +893,7 @@ while true; do
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v2.5.0    ║
+    ║      SillyTavern 助手 v2.6.0    ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
