@@ -1,12 +1,10 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v2.3.0 (社区修正版)
+# SillyTavern 助手 v2.3.1 (社区修正版)
 # 作者: Qingjue | 小红书号: 826702880
-# 回归本质，聚焦稳定 (感谢用户持续的专业反馈):
-# 1. 【移除】根据用户决定性反馈，彻底移除了复杂且不稳定的“增量备份/恢复”功能。
-# 2. 【修复】将rclone的上传命令从`copyto`修正为`copy`，从根源上解决了打包备份在S3/WebDAV等所有后端上的路径创建失败问题。
-# 3. 【简化】所有云同步方案现在统一使用最稳定可靠的“打包备份”模式，菜单逻辑大幅简化，不再提供易混淆的选项。
-# 4. 固化了v2.2.3版本中的所有功能和修复。
+# 健壮性修复 (感谢用户持续的专业反馈):
+# 1. 【修复】采用“显式目录创建”模式。在上传打包备份前，强制使用`rclone mkdir`确保云端目录存在，彻底解决了因rclone无法自动创建父目录而导致的上传失败问题。
+# 2. 固化了v2.3.0版本中的所有功能和修复。
 
 # =========================================================================
 #   脚本环境与色彩定义
@@ -270,7 +268,18 @@ rclone_zip_backup_logic() {
     local local_zip_path; local_zip_path=$(fn_create_data_zip_backup)
     if [ -z "$local_zip_path" ]; then fn_print_error "创建本地压缩包失败，无法上传。"; fn_press_any_key; return; fi
     # shellcheck source=/dev/null
-    source "$config_file"; local zip_backup_root="${RCLONE_REMOTE_NAME}:${RCLONE_BUCKET_NAME}/zip_backups/"; fn_print_warning "正在上传压缩包到云端..."
+    source "$config_file"; local zip_backup_root="${RCLONE_REMOTE_NAME}:${RCLONE_BUCKET_NAME}/zip_backups/"
+    
+    fn_print_warning "正在确保云端备份目录存在..."
+    if ! rclone mkdir "${zip_backup_root}"; then
+        fn_print_error "无法在云端创建备份目录！"
+        fn_print_warning "请检查您的存储桶/路径配置以及权限。"
+        rm -f "$local_zip_path"
+        fn_press_any_key
+        return
+    fi
+
+    fn_print_warning "正在上传压缩包到云端..."
     if rclone copy "$local_zip_path" "${zip_backup_root}" --progress; then
         fn_print_success "压缩包成功上传到云端！"; rm -f "$local_zip_path"
         mapfile -t all_zip_backups < <(rclone lsf "$zip_backup_root" 2>/dev/null | grep '\.zip$' | sort); if [ "${#all_zip_backups[@]}" -gt $BACKUP_LIMIT ]; then
@@ -480,7 +489,7 @@ if [[ "$1" == "--updated" ]]; then clear; fn_print_success "助手已成功更�
 while true; do
     clear; echo -e "${CYAN}${BOLD}"; cat << "EOF"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v2.3.0    ║
+    ║      SillyTavern 助手 v2.3.1    ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
