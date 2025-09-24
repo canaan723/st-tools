@@ -28,9 +28,10 @@ CACHED_MIRRORS=()
 CONFIG_DIR="$HOME/.config/ad-st"
 CONFIG_FILE="$CONFIG_DIR/backup_prefs.conf"
 GIT_SYNC_CONFIG_FILE="$CONFIG_DIR/git_sync.conf"
+PROXY_CONFIG_FILE="$CONFIG_DIR/proxy.conf"
 
 MIRROR_LIST=(
-   # "https://github.com/SillyTavern/SillyTavern.git"
+    "https://github.com/SillyTavern/SillyTavern.git"
     "https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
     "https://git.723123.xyz/gh/SillyTavern/SillyTavern.git"
     "https://xget.xi-xu.me/gh/SillyTavern/SillyTavern.git"
@@ -49,7 +50,8 @@ MIRROR_LIST=(
 
 fn_print_header() { echo -e "\n${CYAN}═══ ${BOLD}$1 ${NC}═══${NC}"; }
 fn_print_success() { echo -e "${GREEN}✓ ${BOLD}$1${NC}"; }
-fn_print_warning() { echo -e "${YELLOW}⚠ $1${NC}"; }
+# 【BUG修复】将fn_print_warning的输出重定向到stderr，避免污染stdout
+fn_print_warning() { echo -e "${YELLOW}⚠ $1${NC}" >&2; }
 fn_print_error() { echo -e "${RED}✗ $1${NC}" >&2; }
 fn_print_error_exit() { echo -e "\n${RED}✗ ${BOLD}$1${NC}\n${RED}流程已终止。${NC}" >&2; fn_press_any_key; exit 1; }
 fn_press_any_key() { echo -e "\n${CYAN}请按任意键返回...${NC}"; read -n 1 -s; }
@@ -62,7 +64,7 @@ fn_find_fastest_mirror() {
         return 0
     fi
 
-    fn_print_warning "开始测试 Git 镜像连通性与速度 (用于下载)..." >&2
+    fn_print_warning "开始测试 Git 镜像连通性与速度 (用于下载)..."
     local github_url="https://github.com/SillyTavern/SillyTavern.git"
     local sorted_successful_mirrors=()
     
@@ -75,7 +77,7 @@ fn_find_fastest_mirror() {
             printf '%s\n' "${CACHED_MIRRORS[@]}"
             return 0
         else
-            fn_print_error "GitHub 官方源连接超时，将测试其他镜像..." >&2
+            fn_print_error "GitHub 官方源连接超时，将测试其他镜像..."
         fi
     fi
 
@@ -85,7 +87,7 @@ fn_find_fastest_mirror() {
     done
 
     if [ ${#other_mirrors[@]} -eq 0 ]; then
-        fn_print_error "没有其他可用的镜像进行测试。" >&2
+        fn_print_error "没有其他可用的镜像进行测试。"
         return 1
     fi
 
@@ -119,7 +121,7 @@ fn_find_fastest_mirror() {
         CACHED_MIRRORS=("${sorted_successful_mirrors[@]}")
         printf '%s\n' "${CACHED_MIRRORS[@]}"
     else
-        fn_print_error "所有线路均测试失败。" >&2
+        fn_print_error "所有线路均测试失败。"
         return 1
     fi
 }
@@ -210,7 +212,7 @@ git_sync_test_one_mirror_push() {
 }
 git_sync_find_pushable_mirror() {
     # shellcheck source=/dev/null
-    source "$GIT_SYNC_CONFIG_FILE"; if [[ -z "$REPO_URL" || -z "$REPO_TOKEN" ]]; then fn_print_error "Git同步配置不完整或不存在。" >&2; return 1; fi
+    source "$GIT_SYNC_CONFIG_FILE"; if [[ -z "$REPO_URL" || -z "$REPO_TOKEN" ]]; then fn_print_error "Git同步配置不完整或不存在。"; return 1; fi
     fn_print_warning "正在自动测试支持数据上传的加速线路..."; local repo_path; repo_path=$(echo "$REPO_URL" | sed 's|https://github.com/||'); local github_public_url="https://github.com/SillyTavern/SillyTavern.git"; local successful_urls=()
     if [[ " ${MIRROR_LIST[*]} " =~ " ${github_public_url} " ]]; then
         local official_url="https://${REPO_TOKEN}@github.com/${repo_path}"; echo -e "  - 优先测试: 官方 GitHub ..." >&2
@@ -225,7 +227,7 @@ git_sync_find_pushable_mirror() {
         done
         wait "${pids[@]}"; if [ -s "$results_file" ]; then mapfile -t other_successful_urls < "$results_file"; successful_urls+=("${other_successful_urls[@]}"); fi; rm -f "$results_file"
     fi
-    if [ ${#successful_urls[@]} -gt 0 ]; then fn_print_success "测试完成，找到 ${#successful_urls[@]} 条可用上传线路。" >&2; printf '%s\n' "${successful_urls[@]}"; else fn_print_error "所有上传线路均测试失败。" >&2; return 1; fi
+    if [ ${#successful_urls[@]} -gt 0 ]; then fn_print_success "测试完成，找到 ${#successful_urls[@]} 条可用上传线路。" >&2; printf '%s\n' "${successful_urls[@]}"; else fn_print_error "所有上传线路均测试失败。"; return 1; fi
 }
 git_sync_backup_to_cloud() {
     clear; fn_print_header "Git备份数据到云端 (上传)"; if [ ! -f "$GIT_SYNC_CONFIG_FILE" ]; then fn_print_warning "请先在菜单 [1] 中配置Git同步服务。"; fn_press_any_key; return; fi
@@ -239,7 +241,6 @@ git_sync_backup_to_cloud() {
         
         cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
         
-        # 【核心修正】在提交前，临时重命名所有嵌套的 .git 目录
         fn_print_warning "正在转换扩展仓库以进行完整备份..."
         find . -type d -name ".git" -execdir mv .git _git_ \; 2>/dev/null
         
@@ -270,7 +271,6 @@ git_sync_restore_from_cloud() {
         fn_print_warning "正在将云端数据同步到本地..."; cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
         local paths_to_sync=("data" "public/scripts/extensions/third-party" "plugins" "config.yaml"); for item in "${paths_to_sync[@]}"; do if [ -e "$item" ]; then rsync -av --delete "./$item" "$ST_DIR/"; fi; done
         
-        # 【核心修正】恢复后，将所有 _git_ 目录的名字改回 .git
         fn_print_warning "正在恢复扩展仓库的Git信息..."
         for item in "${paths_to_sync[@]}"; do
             if [ -d "$ST_DIR/$item" ]; then
@@ -294,7 +294,6 @@ menu_git_config_management() {
         case $choice in
             1) 
                 git_sync_configure
-                # 配置完成后直接退出此菜单，返回到上传下载界面
                 break 
                 ;;
             2) git_sync_clear_config ;;
@@ -344,6 +343,77 @@ menu_git_sync() {
 }
 
 # =========================================================================
+#   【新增】网络代理功能模块
+# =========================================================================
+fn_apply_proxy() {
+    if [ -f "$PROXY_CONFIG_FILE" ]; then
+        local port
+        port=$(cat "$PROXY_CONFIG_FILE")
+        if [[ -n "$port" ]]; then
+            export http_proxy="http://127.0.0.1:$port"
+            export https_proxy="http://127.0.0.1:$port"
+            export all_proxy="http://127.0.0.1:$port"
+        fi
+    else
+        unset http_proxy https_proxy all_proxy
+    fi
+}
+
+fn_set_proxy() {
+    local current_port=""
+    if [ -f "$PROXY_CONFIG_FILE" ]; then
+        current_port=$(cat "$PROXY_CONFIG_FILE")
+    fi
+    
+    read -p "请输入代理端口号 [直接回车默认为 7890]: " port
+    port=${port:-7890}
+
+    if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -gt 0 ] && [ "$port" -lt 65536 ]; then
+        echo "$port" > "$PROXY_CONFIG_FILE"
+        fn_apply_proxy
+        fn_print_success "代理已设置为: 127.0.0.1:$port"
+    else
+        fn_print_error "无效的端口号！请输入1-65535之间的数字。"
+    fi
+    fn_press_any_key
+}
+
+fn_clear_proxy() {
+    if [ -f "$PROXY_CONFIG_FILE" ]; then
+        rm -f "$PROXY_CONFIG_FILE"
+        fn_apply_proxy
+        fn_print_success "网络代理配置已清除。"
+    else
+        fn_print_warning "当前未配置任何代理。"
+    fi
+    fn_press_any_key
+}
+
+main_manage_proxy() {
+    while true; do
+        clear
+        fn_print_header "管理网络代理"
+        
+        local proxy_status="${RED}未配置${NC}"
+        if [ -f "$PROXY_CONFIG_FILE" ]; then
+            proxy_status="${GREEN}127.0.0.1:$(cat "$PROXY_CONFIG_FILE")${NC}"
+        fi
+        echo -e "      当前状态: ${proxy_status}\n"
+
+        echo -e "      [1] ${CYAN}设置/修改代理${NC}"
+        echo -e "      [2] ${RED}清除代理${NC}"
+        echo -e "      [0] ${CYAN}返回主菜单${NC}\n"
+        read -p "    请输入选项: " choice
+        case $choice in
+            1) fn_set_proxy ;;
+            2) fn_clear_proxy ;;
+            0) break ;;
+            *) fn_print_error "无效输入。"; sleep 1 ;;
+        esac
+    done
+}
+
+# =========================================================================
 #   核心功能模块
 # =========================================================================
 
@@ -369,9 +439,9 @@ main_start() {
 }
 
 fn_create_data_zip_backup() {
-    fn_print_warning "正在创建核心数据备份 (.zip)..." >&2
+    fn_print_warning "正在创建核心数据备份 (.zip)..."
     if [ ! -d "$ST_DIR" ]; then
-        fn_print_error "SillyTavern 目录不存在，无法备份。" >&2
+        fn_print_error "SillyTavern 目录不存在，无法备份。"
         return 1
     fi
 
@@ -383,7 +453,7 @@ fn_create_data_zip_backup() {
     local backup_zip_path="${BACKUP_ROOT_DIR}/${backup_name}"
 
     cd "$ST_DIR" || {
-        fn_print_error "无法进入 SillyTavern 目录进行备份。" >&2
+        fn_print_error "无法进入 SillyTavern 目录进行备份。"
         return 1
     }
 
@@ -396,7 +466,7 @@ fn_create_data_zip_backup() {
     done
 
     if ! $has_files; then
-        fn_print_error "未能收集到任何有效的数据文件进行备份。" >&2
+        fn_print_error "未能收集到任何有效的数据文件进行备份。"
         cd "$HOME"
         return 1
     fi
@@ -408,7 +478,7 @@ fn_create_data_zip_backup() {
         echo "$backup_zip_path"
         return 0
     else
-        fn_print_error "创建 .zip 备份失败！" >&2
+        fn_print_error "创建 .zip 备份失败！"
         cd "$HOME"
         return 1
     fi
@@ -765,7 +835,7 @@ run_backup_interactive() {
     printf "%s\n" "${paths_to_backup[@]}" >"$CONFIG_FILE"
 
     if [ "${#all_backups[@]}" -gt $BACKUP_LIMIT ]; then
-        echo -e "${YELLOW}备份数量超过上限，正在清理旧备份...${NC}"
+        fn_print_warning "备份数量超过上限，正在清理旧备份..."
         local backups_to_delete=("${all_backups[@]:$BACKUP_LIMIT}")
         for old_backup in "${backups_to_delete[@]}"; do
             rm "$old_backup"
@@ -779,7 +849,7 @@ run_backup_interactive() {
 main_update_script() {
     clear
     fn_print_header "更新助手脚本"
-    echo -e "${YELLOW}正在从 Gitee 下载新版本...${NC}"
+    fn_print_warning "正在从 Gitee 下载新版本..."
     local temp_file
     temp_file=$(mktemp)
     if ! curl -L -o "$temp_file" "$SCRIPT_URL"; then
@@ -879,21 +949,17 @@ main_open_docs() {
 
 fn_migrate_configs() {
     local migration_needed=false
-    # 定义旧的配置文件路径
     local OLD_CONFIG_FILE="$HOME/.st_assistant.conf"
     local OLD_GIT_SYNC_CONFIG_FILE="$HOME/.st_sync.conf"
 
-    # 确保新目录存在
     mkdir -p "$CONFIG_DIR"
 
-    # 迁移备份偏好设置
     if [ -f "$OLD_CONFIG_FILE" ] && [ ! -f "$CONFIG_FILE" ]; then
         mv "$OLD_CONFIG_FILE" "$CONFIG_FILE"
         fn_print_warning "已将旧的备份配置文件迁移至新位置。"
         migration_needed=true
     fi
 
-    # 迁移Git同步设置
     if [ -f "$OLD_GIT_SYNC_CONFIG_FILE" ] && [ ! -f "$GIT_SYNC_CONFIG_FILE" ]; then
         mv "$OLD_GIT_SYNC_CONFIG_FILE" "$GIT_SYNC_CONFIG_FILE"
         fn_print_warning "已将旧的Git同步配置文件迁移至新位置。"
@@ -912,6 +978,7 @@ fn_migrate_configs() {
 
 # 脚本启动时执行一次性任务
 fn_migrate_configs
+fn_apply_proxy
 
 if [[ "$1" != "--no-check" && "$1" != "--updated" ]]; then
     check_for_updates_on_start
@@ -927,7 +994,7 @@ while true; do
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
     ╔═════════════════════════════════╗
-    ║       SillyTavern 助手 v2.0     ║
+    ║       SillyTavern 助手 v2.1     ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
@@ -936,13 +1003,19 @@ EOF
         update_notice=" ${YELLOW}[!] 有更新${NC}"
     fi
 
+    proxy_status="${RED}未配置${NC}"
+    if [ -f "$PROXY_CONFIG_FILE" ]; then
+        proxy_status="${GREEN}127.0.0.1:$(cat "$PROXY_CONFIG_FILE")${NC}"
+    fi
+
     echo -e "${NC}\n    选择一个操作来开始：\n"
     echo -e "      [1] ${GREEN}${BOLD}启动 SillyTavern${NC}"
     echo -e "      [2] ${CYAN}${BOLD}数据同步 (Git 云端)${NC}"
     echo -e "      [3] ${CYAN}${BOLD}创建本地备份${NC}"
     echo -e "      [4] ${YELLOW}${BOLD}首次部署 (全新安装)${NC}\n"
     echo -e "      [5] 更新 ST 主程序    [6] 更新助手脚本${update_notice}"
-    echo -e "      [7] 管理助手自启      [8] 查看帮助文档\n"
+    echo -e "      [7] 管理助手自启      [8] 查看帮助文档"
+    echo -e "      [9] 配置网络代理 (当前: ${proxy_status})\n"
     echo -e "      ${RED}[0] 退出助手${NC}\n"
     read -p "    请输入选项数字: " choice
 
@@ -955,6 +1028,7 @@ EOF
     6) main_update_script ;;
     7) main_manage_autostart ;;
     8) main_open_docs ;;
+    9) main_manage_proxy ;;
     0)
         echo -e "\n感谢使用，助手已退出。"
         rm -f "$UPDATE_FLAG_FILE"
