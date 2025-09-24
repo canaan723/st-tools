@@ -30,7 +30,7 @@ CONFIG_FILE="$CONFIG_DIR/backup_prefs.conf"
 GIT_SYNC_CONFIG_FILE="$CONFIG_DIR/git_sync.conf"
 
 MIRROR_LIST=(
-   # "https://github.com/SillyTavern/SillyTavern.git"
+    "https://github.com/SillyTavern/SillyTavern.git"
     "https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
     "https://git.723123.xyz/gh/SillyTavern/SillyTavern.git"
     "https://xget.xi-xu.me/gh/SillyTavern/SillyTavern.git"
@@ -220,7 +220,7 @@ git_sync_find_pushable_mirror() {
     if [ ${#other_mirrors[@]} -gt 0 ]; then
         echo -e "${YELLOW}已启动并行测试，将完整测试所有镜像...${NC}" >&2; local results_file; results_file=$(mktemp); local pids=()
         for mirror_url in "${other_mirrors[@]}"; do
-            ( local authed_push_url=""; local mirror_host; mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||'); if [[ "$mirror_url" == *"hub.gitmirror.com"* ]]; then authed_push_url="https://${REPO_TOKEN}@${mirror_host}/${repo_path}"; elif [[ "$mirror_url" == *"/gh/"* ]]; then authed_push_url="https://${REPO_TOKEN}@${mirror_host}/gh/${repo_path}"; elif [[ "$mirror_url" == *"/github.com/"* ]]; then authed_push_url="https://${REPO_TOKEN}@${mirror_host}/github.com/${repo_path}"; else exit 1; fi; if git_sync_test_one_mirror_push "$authed_push_url"; then echo "$authed_push_url" >> "$results_file"; echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${GREEN}[成功]${NC}" >&2; else echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${RED}[失败]${NC}" >&2; fi ) &
+            ( local authed_push_url=""; local mirror_host; mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||'); if [[ "$mirror_url" == *"hub.gitmirror.com"* ]]; then authed_push_url="https://${REPO_TOKEN}@${mirror_host}/${repo_path}"; elif [[ "$mirror_url" == *"/gh/"* ]]; then authed_push_url="https://${REPO_TOKEN}@${mirror_host}/gh/${repo_path}"; elif [[ "$mirror_url" == *"/github.com/"* ]]; then authed_push_url="https://ghproxy.com/${REPO_URL}"; else exit 1; fi; if git_sync_test_one_mirror_push "$authed_push_url"; then echo "$authed_push_url" >> "$results_file"; echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${GREEN}[成功]${NC}" >&2; else echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${RED}[失败]${NC}" >&2; fi ) &
             pids+=($!)
         done
         wait "${pids[@]}"; if [ -s "$results_file" ]; then mapfile -t other_successful_urls < "$results_file"; successful_urls+=("${other_successful_urls[@]}"); fi; rm -f "$results_file"
@@ -237,14 +237,14 @@ git_sync_backup_to_cloud() {
         fn_print_warning "正在同步本地数据到临时区..."; cd "$ST_DIR" || { fn_print_error "SillyTavern目录不存在！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
         local paths_to_sync=("data" "public/scripts/extensions/third-party" "plugins" "config.yaml"); for item in "${paths_to_sync[@]}"; do if [ -e "$item" ]; then rsync -av --delete --exclude='*/backups/*' --exclude='*.log' --exclude='*/_cache/*' "./$item" "$temp_dir/"; fi; done
         
-        # 【核心修改】在提交前，临时重命名所有嵌套的 .git 目录
+        cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
+        
+        # 【核心修正】在提交前，临时重命名所有嵌套的 .git 目录
         fn_print_warning "正在转换扩展仓库以进行完整备份..."
-        find "$temp_dir/data" -path "*/extensions/*/.git" -type d -execdir mv .git _git_ \; 2>/dev/null
-        find "$temp_dir/public/scripts/extensions/third-party" -path "*/*/.git" -type d -execdir mv .git _git_ \; 2>/dev/null
+        find . -type d -name ".git" -execdir mv .git _git_ \; 2>/dev/null
         
-        cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }; git add .; if git diff-index --quiet HEAD; then fn_print_success "数据与云端一致，无需上传。"; backup_success=true; rm -rf "$temp_dir"; break; fi
+        git add .; if git diff-index --quiet HEAD; then fn_print_success "数据与云端一致，无需上传。"; backup_success=true; rm -rf "$temp_dir"; break; fi
         
-        # 【修改】本地化提交信息
         fn_print_warning "正在提交数据变更..."; 
         local commit_message="来自Termux的同步: $(date +'%Y年%m月%d日 %H:%M:%S')"
         if ! git commit -m "$commit_message"; then fn_print_error "Git 提交失败！无法创建数据快照。"; rm -rf "$temp_dir"; fn_press_any_key; return; fi
@@ -270,10 +270,13 @@ git_sync_restore_from_cloud() {
         fn_print_warning "正在将云端数据同步到本地..."; cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
         local paths_to_sync=("data" "public/scripts/extensions/third-party" "plugins" "config.yaml"); for item in "${paths_to_sync[@]}"; do if [ -e "$item" ]; then rsync -av --delete "./$item" "$ST_DIR/"; fi; done
         
-        # 【核心修改】恢复后，将所有 _git_ 目录的名字改回 .git
+        # 【核心修正】恢复后，将所有 _git_ 目录的名字改回 .git
         fn_print_warning "正在恢复扩展仓库的Git信息..."
-        find "$ST_DIR/data" -path "*/extensions/*/_git_" -type d -execdir mv _git_ .git \; 2>/dev/null
-        find "$ST_DIR/public/scripts/extensions/third-party" -path "*/*/_git_" -type d -execdir mv _git_ .git \; 2>/dev/null
+        for item in "${paths_to_sync[@]}"; do
+            if [ -d "$ST_DIR/$item" ]; then
+                find "$ST_DIR/$item" -type d -name "_git_" -execdir mv _git_ .git \; 2>/dev/null
+            fi
+        done
 
         fn_print_success "数据已从云端成功恢复！"; restore_success=true; rm -rf "$temp_dir"; break
     done
@@ -291,7 +294,7 @@ menu_git_config_management() {
         case $choice in
             1) 
                 git_sync_configure
-                # 【修改】配置完成后直接退出此菜单，返回到上传下载界面
+                # 配置完成后直接退出此菜单，返回到上传下载界面
                 break 
                 ;;
             2) git_sync_clear_config ;;
@@ -924,7 +927,7 @@ while true; do
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
     ╔═════════════════════════════════╗
-    ║       SillyTavern 助手 v2.0回滚     ║
+    ║       SillyTavern 助手 v2.0     ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
