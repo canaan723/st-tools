@@ -236,8 +236,19 @@ git_sync_backup_to_cloud() {
         if ! git clone --depth 1 "$push_url" "$temp_dir"; then fn_print_error "克隆云端仓库失败！正在切换下一条线路..."; rm -rf "$temp_dir"; continue; fi
         fn_print_warning "正在同步本地数据到临时区..."; cd "$ST_DIR" || { fn_print_error "SillyTavern目录不存在！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
         local paths_to_sync=("data" "public/scripts/extensions/third-party" "plugins" "config.yaml"); for item in "${paths_to_sync[@]}"; do if [ -e "$item" ]; then rsync -av --delete --exclude='*/backups/*' --exclude='*.log' --exclude='*/_cache/*' "./$item" "$temp_dir/"; fi; done
+        
+        # 【核心修改】在提交前，临时重命名所有嵌套的 .git 目录
+        fn_print_warning "正在转换扩展仓库以进行完整备份..."
+        find "$temp_dir/data" -path "*/extensions/*/.git" -type d -execdir mv .git _git_ \; 2>/dev/null
+        find "$temp_dir/public/scripts/extensions/third-party" -path "*/*/.git" -type d -execdir mv .git _git_ \; 2>/dev/null
+        
         cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }; git add .; if git diff-index --quiet HEAD; then fn_print_success "数据与云端一致，无需上传。"; backup_success=true; rm -rf "$temp_dir"; break; fi
-        fn_print_warning "正在提交数据变更..."; if ! git commit -m "Sync from Termux on $(date -u)"; then fn_print_error "Git 提交失败！无法创建数据快照。"; rm -rf "$temp_dir"; fn_press_any_key; return; fi
+        
+        # 【修改】本地化提交信息
+        fn_print_warning "正在提交数据变更..."; 
+        local commit_message="来自Termux的同步: $(date +'%Y年%m月%d日 %H:%M:%S')"
+        if ! git commit -m "$commit_message"; then fn_print_error "Git 提交失败！无法创建数据快照。"; rm -rf "$temp_dir"; fn_press_any_key; return; fi
+        
         fn_print_warning "正在上传到云端..."; if ! git push; then fn_print_error "上传失败！正在切换下一条线路..."; rm -rf "$temp_dir"; continue; fi
         fn_print_success "数据成功备份到云端！"; backup_success=true; rm -rf "$temp_dir"; break
     done
@@ -258,6 +269,12 @@ git_sync_restore_from_cloud() {
         if [ ! -d "$temp_dir/data" ] || [ -z "$(ls -A "$temp_dir/data")" ]; then fn_print_error "下载的数据源无效或为空，恢复操作已中止！"; rm -rf "$temp_dir"; fn_press_any_key; return; fi
         fn_print_warning "正在将云端数据同步到本地..."; cd "$temp_dir" || { fn_print_error "进入临时目录失败！"; rm -rf "$temp_dir"; fn_press_any_key; return; }
         local paths_to_sync=("data" "public/scripts/extensions/third-party" "plugins" "config.yaml"); for item in "${paths_to_sync[@]}"; do if [ -e "$item" ]; then rsync -av --delete "./$item" "$ST_DIR/"; fi; done
+        
+        # 【核心修改】恢复后，将所有 _git_ 目录的名字改回 .git
+        fn_print_warning "正在恢复扩展仓库的Git信息..."
+        find "$ST_DIR/data" -path "*/extensions/*/_git_" -type d -execdir mv _git_ .git \; 2>/dev/null
+        find "$ST_DIR/public/scripts/extensions/third-party" -path "*/*/_git_" -type d -execdir mv _git_ .git \; 2>/dev/null
+
         fn_print_success "数据已从云端成功恢复！"; restore_success=true; rm -rf "$temp_dir"; break
     done
     if ! $restore_success; then fn_print_error "已尝试所有可用线路，但恢复均失败。"; fi; fn_press_any_key
@@ -272,7 +289,11 @@ menu_git_config_management() {
         echo -e "      [0] ${CYAN}返回上一级${NC}\n"
         read -p "    请输入选项: " choice
         case $choice in
-            1) git_sync_configure ;;
+            1) 
+                git_sync_configure
+                # 【修改】配置完成后直接退出此菜单，返回到上传下载界面
+                break 
+                ;;
             2) git_sync_clear_config ;;
             0) break ;;
             *) fn_print_error "无效输入。"; sleep 1 ;;
@@ -299,6 +320,7 @@ menu_git_sync() {
         fn_print_header "数据同步 (Git 方案)"
 
         if [ -f "$GIT_SYNC_CONFIG_FILE" ]; then
+            # shellcheck source=/dev/null
             source "$GIT_SYNC_CONFIG_FILE"
             if [ -n "$REPO_URL" ]; then
                 local current_repo_name
