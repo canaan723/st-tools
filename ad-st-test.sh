@@ -30,7 +30,7 @@ CONFIG_FILE="$CONFIG_DIR/backup_prefs.conf"
 GIT_SYNC_CONFIG_FILE="$CONFIG_DIR/git_sync.conf"
 
 MIRROR_LIST=(
-    "https://github.com/SillyTavern/SillyTavern.git"
+   # "https://github.com/SillyTavern/SillyTavern.git"
     "https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
     "https://git.723123.xyz/gh/SillyTavern/SillyTavern.git"
     "https://xget.xi-xu.me/gh/SillyTavern/SillyTavern.git"
