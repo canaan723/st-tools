@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v2.2.9
+# SillyTavern 助手 v2.3.0
 # 作者: Qingjue | 小红书号: 826702880
 
 # =========================================================================
@@ -226,24 +226,79 @@ git_sync_test_one_mirror_push() {
     ( cd "$temp_repo_dir" || return 1; git init -q; git config user.name "test"; git config user.email "test@example.com"; touch testfile.txt; git add testfile.txt; git commit -m "Sync test commit" -q; git remote add origin "$authed_url"; if timeout 15s git push origin "HEAD:refs/tags/$test_tag" >/dev/null 2>&1; then timeout 15s git push origin --delete "refs/tags/$test_tag" >/dev/null 2>&1; return 0; else return 1; fi )
     local exit_code=$?; rm -rf "$temp_repo_dir"; return $exit_code
 }
+
+# 【V2.3.0 新增】用于正确构造推送URL的辅助函数
+fn_construct_authed_push_url() {
+    local mirror_base_url="$1"
+    local repo_path; repo_path=$(echo "$REPO_URL" | sed 's|https://github.com/||')
+    
+    case "$mirror_base_url" in
+        *"github.com"*) echo "https://${REPO_TOKEN}@github.com/${repo_path}" ;;
+        *"hub.gitmirror.com"*) echo "https://${REPO_TOKEN}@hub.gitmirror.com/${repo_path}" ;;
+        *"/gh") local domain; domain=$(echo "$mirror_base_url" | sed -e 's|https://||' -e 's|/.*$||'); echo "https://${REPO_TOKEN}@${domain}/gh/${repo_path}" ;;
+        *"gh-proxy.com"*|*"gh.llkk.cc"*|*"tvv.tw"*|*"proxy.pipers.cn"*|*"gh.catmak.name"*|*"gh-proxy.net"*) echo "${mirror_base_url}/https://${REPO_TOKEN}@github.com/${repo_path}";;
+        *) return 1 ;;
+    esac
+}
+
+# 【V2.3.0 修正】重构上传测速逻辑
 git_sync_find_pushable_mirror() {
     # shellcheck source=/dev/null
     source "$GIT_SYNC_CONFIG_FILE"; if [[ -z "$REPO_URL" || -z "$REPO_TOKEN" ]]; then fn_print_error "Git同步配置不完整或不存在。"; return 1; fi
-    fn_print_warning "正在自动测试支持数据上传的加速线路..."; local repo_path; repo_path=$(echo "$REPO_URL" | sed 's|https://github.com/||'); local github_public_url="https://github.com/SillyTavern/SillyTavern.git"; local successful_urls=()
+    fn_print_warning "正在自动测试支持数据上传的加速线路..."; 
+    local github_public_url="https://github.com/SillyTavern/SillyTavern.git"; 
+    local successful_urls=()
+    
     if [[ " ${MIRROR_LIST[*]} " =~ " ${github_public_url} " ]]; then
-        local official_url="https://${REPO_TOKEN}@github.com/${repo_path}"; echo -e "  - 优先测试: 官方 GitHub ..." >&2
-        if git_sync_test_one_mirror_push "$official_url"; then echo -e "    ${GREEN}[成功]${NC}" >&2; successful_urls+=("$official_url"); printf '%s\n' "${successful_urls[@]}"; return 0; else echo -e "    ${RED}[失败]${NC}" >&2; fi
+        local official_url; official_url=$(fn_construct_authed_push_url "https://github.com")
+        echo -e "  - 优先测试: 官方 GitHub ..." >&2
+        if git_sync_test_one_mirror_push "$official_url"; then 
+            echo -e "    ${GREEN}[成功]${NC}" >&2
+            successful_urls+=("$official_url")
+            printf '%s\n' "${successful_urls[@]}"
+            return 0
+        else 
+            echo -e "    ${RED}[失败]${NC}" >&2
+        fi
     fi
-    local other_mirrors=(); for mirror_url in "${MIRROR_LIST[@]}"; do [[ "$mirror_url" != "$github_public_url" ]] && other_mirrors+=("$mirror_url"); done
+    
+    local other_mirrors=(); 
+    for mirror_url in "${MIRROR_LIST[@]}"; do 
+        [[ "$mirror_url" != "$github_public_url" ]] && other_mirrors+=("$mirror_url")
+    done
+    
     if [ ${#other_mirrors[@]} -gt 0 ]; then
-        echo -e "${YELLOW}已启动并行测试，将完整测试所有镜像...${NC}" >&2; local results_file; results_file=$(mktemp); local pids=()
+        echo -e "${YELLOW}已启动并行测试，将完整测试所有镜像...${NC}" >&2
+        local results_file; results_file=$(mktemp)
+        local pids=()
         for mirror_url in "${other_mirrors[@]}"; do
-            ( local authed_push_url=""; local mirror_host; mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||'); if [[ "$mirror_url" == *"hub.gitmirror.com"* ]]; then authed_push_url="https://${REPO_TOKEN}@${mirror_host}/${repo_path}"; elif [[ "$mirror_url" == *"/gh/"* ]]; then authed_push_url="https://${REPO_TOKEN}@${mirror_host}/gh/${repo_path}"; elif [[ "$mirror_url" == *"/github.com/"* ]]; then authed_push_url="https://ghproxy.com/${REPO_URL}"; else exit 1; fi; if git_sync_test_one_mirror_push "$authed_push_url"; then echo "$authed_push_url" >> "$results_file"; echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${GREEN}[成功]${NC}" >&2; else echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${RED}[失败]${NC}" >&2; fi ) &
+            ( 
+                local authed_push_url; authed_push_url=$(fn_construct_authed_push_url "$mirror_url") || exit 1
+                local mirror_host; mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
+                if git_sync_test_one_mirror_push "$authed_push_url"; then 
+                    echo "$authed_push_url" >> "$results_file"
+                    echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${GREEN}[成功]${NC}" >&2
+                else 
+                    echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${RED}[失败]${NC}" >&2
+                fi 
+            ) &
             pids+=($!)
         done
-        wait "${pids[@]}"; if [ -s "$results_file" ]; then mapfile -t other_successful_urls < "$results_file"; successful_urls+=("${other_successful_urls[@]}"); fi; rm -f "$results_file"
+        wait "${pids[@]}"
+        if [ -s "$results_file" ]; then 
+            mapfile -t other_successful_urls < "$results_file"
+            successful_urls+=("${other_successful_urls[@]}")
+        fi
+        rm -f "$results_file"
     fi
-    if [ ${#successful_urls[@]} -gt 0 ]; then fn_print_success "测试完成，找到 ${#successful_urls[@]} 条可用上传线路。" >&2; printf '%s\n' "${successful_urls[@]}"; else fn_print_error "所有上传线路均测试失败。"; return 1; fi
+    
+    if [ ${#successful_urls[@]} -gt 0 ]; then 
+        fn_print_success "测试完成，找到 ${#successful_urls[@]} 条可用上传线路。" >&2
+        printf '%s\n' "${successful_urls[@]}"
+    else 
+        fn_print_error "所有上传线路均测试失败。"
+        return 1
+    fi
 }
 
 git_sync_backup_to_cloud() {
@@ -267,7 +322,6 @@ git_sync_backup_to_cloud() {
             cd "$temp_dir" || exit 1
             fn_print_warning "正在同步本地数据到临时区..."
 
-            # 【V2.2.9 核心修正】使用数组定义 rsync 参数
             local rsync_exclude_args=("--exclude=extensions/" "--exclude=backups/" "--exclude=*.log")
 
             if [ -n "$USER_MAP" ] && [[ "$USER_MAP" == *":"* ]]; then
@@ -371,7 +425,6 @@ git_sync_restore_from_cloud() {
 
         fn_print_warning "正在将云端数据同步到本地..."
         
-        # 【V2.2.9 核心修正】使用数组定义 rsync 参数
         local rsync_exclude_args=("--exclude=extensions/" "--exclude=backups/" "--exclude=*.log")
 
         if [ -n "$USER_MAP" ] && [[ "$USER_MAP" == *":"* ]]; then
@@ -951,7 +1004,7 @@ while true; do
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
     ╔═════════════════════════════════╗
-    ║       SillyTavern 助手 v2.2.9     ║
+    ║       SillyTavern 助手 v2.3.0     ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
