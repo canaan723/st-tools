@@ -352,7 +352,7 @@ git_sync_restore_from_cloud() {
     read -p "确认要从云端恢复数据吗？[Y/n]: " restore_confirm
     if [[ "$restore_confirm" =~ ^[nN]$ ]]; then fn_print_warning "操作已取消。"; fn_press_any_key; return; fi
     
-    local SYNC_CONFIG_YAML="false"; local USER_MAP=""; local EXCLUDE_USERS=""
+    local SYNC_CONFIG_YAML="false"; local USER_MAP="";
     if [ -f "$SYNC_RULES_CONFIG_FILE" ]; then source "$SYNC_RULES_CONFIG_FILE"; fi
 
     mapfile -t pull_urls < <(fn_find_fastest_mirror); if [ ${#pull_urls[@]} -eq 0 ]; then fn_print_error "未能找到任何支持下载的线路。"; fn_press_any_key; return; fi
@@ -392,13 +392,7 @@ git_sync_restore_from_cloud() {
         else
             fn_print_warning "应用镜像同步规则: 恢复所有云端用户文件夹"
             local remote_users_all; remote_users_all=($(fn_get_user_folders "$temp_dir/data"))
-            local final_remote_users=()
-            if [ -n "$EXCLUDE_USERS" ]; then
-                fn_print_warning "应用排除规则: 将不会从云端恢复以下用户: $EXCLUDE_USERS"
-                for r_user in "${remote_users_all[@]}"; do if ! [[ " $EXCLUDE_USERS " =~ " $r_user " ]]; then final_remote_users+=("$r_user"); fi; done
-            else
-                final_remote_users=("${remote_users_all[@]}")
-            fi
+            local final_remote_users=("${remote_users_all[@]}")
             
             local local_users; local_users=($(fn_get_user_folders "$ST_DIR/data"))
             for l_user in "${local_users[@]}"; do if ! [[ " ${final_remote_users[*]} " =~ " ${l_user} " ]]; then fn_print_warning "清理本地多余的用户: $l_user"; rm -rf "$ST_DIR/data/$l_user"; fi; done
@@ -471,21 +465,19 @@ menu_advanced_sync_settings() {
     }
     while true; do
         clear; fn_print_header "高级同步设置"
-        local SYNC_CONFIG_YAML="false"; local USER_MAP=""; local EXCLUDE_USERS=""; if [ -f "$SYNC_RULES_CONFIG_FILE" ]; then source "$SYNC_RULES_CONFIG_FILE"; fi
+        local SYNC_CONFIG_YAML="false"; local USER_MAP=""; if [ -f "$SYNC_RULES_CONFIG_FILE" ]; then source "$SYNC_RULES_CONFIG_FILE"; fi
 
         local sync_config_status="${RED}关闭${NC}"; [[ "$SYNC_CONFIG_YAML" == "true" ]] && sync_config_status="${GREEN}开启${NC}"
         echo -e "  [1] 同步 config.yaml         : ${sync_config_status}"
         local user_map_status="${RED}未设置${NC}"; if [ -n "$USER_MAP" ]; then local local_user="${USER_MAP%%:*}"; local remote_user="${USER_MAP##*:}" ; user_map_status="${GREEN}本地 ${local_user} -> 云端 ${remote_user}${NC}"; fi
         echo -e "  [2] 设置用户数据映射        : ${user_map_status}"
-        local exclude_users_status="${RED}未设置${NC}"; [ -n "$EXCLUDE_USERS" ] && exclude_users_status="${YELLOW}${EXCLUDE_USERS}${NC}"
-        echo -e "  [3] 下载时排除的云端用户    : ${exclude_users_status}"
-        echo -e "\n  [4] ${RED}重置所有高级设置${NC}"; echo -e "  [0] ${CYAN}返回上一级${NC}\n"
+        
+        echo -e "\n  [3] ${RED}重置所有高级设置${NC}"; echo -e "  [0] ${CYAN}返回上一级${NC}\n"
         read -p "    请输入选项: " choice
         case $choice in
             1) local new_status="false"; [[ "$SYNC_CONFIG_YAML" != "true" ]] && new_status="true"; fn_update_config_value "SYNC_CONFIG_YAML" "$new_status" "$SYNC_RULES_CONFIG_FILE"; fn_print_success "config.yaml 同步已变更为: ${new_status}"; sleep 1 ;;
             2) read -p "请输入本地用户文件夹名 [直接回车默认为 default-user]: " local_u; local_u=${local_u:-default-user}; read -p "请输入要映射到的云端用户文件夹名 [直接回车默认为 default-user]: " remote_u; remote_u=${remote_u:-default-user}; fn_update_config_value "USER_MAP" "${local_u}:${remote_u}" "$SYNC_RULES_CONFIG_FILE"; fn_print_success "用户映射已设置为: ${local_u} -> ${remote_u}"; sleep 1.5 ;;
-            3) read -p "请输入下载时要排除的云端用户名 (用空格隔开，例如 b c): " excluded; fn_update_config_value "EXCLUDE_USERS" "$excluded" "$SYNC_RULES_CONFIG_FILE"; if [ -n "$excluded" ]; then fn_print_success "已设置排除用户列表。"; else fn_print_warning "输入为空，已清除排除列表。"; fi; sleep 1.5 ;;
-            4) if [ -f "$SYNC_RULES_CONFIG_FILE" ]; then rm -f "$SYNC_RULES_CONFIG_FILE"; fn_print_success "所有高级同步设置已重置。"; else fn_print_warning "没有需要重置的设置。"; fi; sleep 1.5 ;;
+            3) if [ -f "$SYNC_RULES_CONFIG_FILE" ]; then rm -f "$SYNC_RULES_CONFIG_FILE"; fn_print_success "所有高级同步设置已重置。"; else fn_print_warning "没有需要重置的设置。"; fi; sleep 1.5 ;;
             0) break ;; *) fn_print_error "无效输入。"; sleep 1 ;;
         esac
     done
@@ -797,7 +789,7 @@ while true; do
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
     ╔═════════════════════════════════╗
-    ║       SillyTavern 助手 v2.0     ║
+    ║       SillyTavern 助手 v2.0       ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF

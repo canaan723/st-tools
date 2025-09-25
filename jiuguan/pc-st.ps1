@@ -175,7 +175,7 @@ function Apply-Proxy {
     if (Test-Path $ProxyConfigFile) {
         $port = Get-Content $ProxyConfigFile -ErrorAction SilentlyContinue
         if (-not [string]::IsNullOrWhiteSpace($port)) {
-            $proxyUrl = "http://127.0.0.1:$port"
+            $proxyUrl = "http://1227.0.0.1:$port"
             $env:http_proxy = $proxyUrl
             $env:https_proxy = $proxyUrl
             $env:all_proxy = $proxyUrl
@@ -560,7 +560,6 @@ function Restore-FromCloud {
     $syncRules = Parse-ConfigFile $SyncRulesConfigFile
     $syncConfigYaml = if ($syncRules.ContainsKey("SYNC_CONFIG_YAML")) { $syncRules["SYNC_CONFIG_YAML"] } else { "false" }
     $userMap = if ($syncRules.ContainsKey("USER_MAP")) { $syncRules["USER_MAP"] } else { "" }
-    $excludeUsers = if ($syncRules.ContainsKey("EXCLUDE_USERS")) { $syncRules["EXCLUDE_USERS"] } else { "" }
     $restoreSuccess = $false
     $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
 
@@ -618,11 +617,6 @@ function Restore-FromCloud {
             $remoteUserFolders = Get-UserFolders -baseDataPath $sourceDataPath
             $localUserFolders = Get-UserFolders -baseDataPath $destDataPath
             $finalRemoteFolders = $remoteUserFolders
-            if (-not [string]::IsNullOrWhiteSpace($excludeUsers)) {
-                $excludedNames = $excludeUsers.Split(' ') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-                Write-Warning "应用排除规则: $excludeUsers"
-                $finalRemoteFolders = $remoteUserFolders | Where-Object { $excludedNames -notcontains $_.Name }
-            }
             $finalRemoteNames = $finalRemoteFolders | ForEach-Object { $_.Name }
             foreach ($localUser in $localUserFolders) {
                 if ($finalRemoteNames -notcontains $localUser.Name) {
@@ -769,13 +763,7 @@ function Show-AdvancedSyncSettingsMenu {
         } else {
             Write-Host "未设置" -F Red
         }
-        Write-Host "  [3] 下载时排除的云端用户    : " -NoNewline
-        if ($rules.ContainsKey("EXCLUDE_USERS") -and -not [string]::IsNullOrWhiteSpace($rules["EXCLUDE_USERS"])) {
-            Write-Host $rules["EXCLUDE_USERS"] -F Yellow
-        } else {
-            Write-Host "未设置" -F Red
-        }
-        Write-Host "`n  [4] " -NoNewline; Write-Host "重置所有高级设置" -F Red
+        Write-Host "`n  [3] " -NoNewline; Write-Host "重置所有高级设置" -F Red
         Write-Host "  [0] " -NoNewline; Write-Host "返回上一级" -F Cyan
         $choice = Read-Host "`n    请输入选项"
         switch ($choice) {
@@ -793,12 +781,6 @@ function Show-AdvancedSyncSettingsMenu {
                 Write-Success "用户映射已设置为: $local_u -> $remote_u"; Start-Sleep 1.5
             }
             "3" {
-                $excluded = Read-Host "请输入下载时要排除的云端用户名 (用空格隔开，例如 b c)"
-                Update-SyncRuleValue "EXCLUDE_USERS" $excluded.Trim() $SyncRulesConfigFile
-                if (-not [string]::IsNullOrWhiteSpace($excluded)) { Write-Success "已设置排除用户列表。" } else { Write-Warning "输入为空，已清除排除列表。" }
-                Start-Sleep 1.5
-            }
-            "4" {
                 if (Test-Path $SyncRulesConfigFile) {
                     Remove-Item $SyncRulesConfigFile -Force
                     Write-Success "所有高级同步设置已重置。"
