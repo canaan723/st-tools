@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v2.2.8
+# SillyTavern 助手 v2.2.9
 # 作者: Qingjue | 小红书号: 826702880
 
 # =========================================================================
@@ -59,7 +59,6 @@ fn_print_error_exit() { echo -e "\n${RED}✗ ${BOLD}$1${NC}\n${RED}流程已终�
 fn_press_any_key() { echo -e "\n${CYAN}请按任意键返回...${NC}"; read -n 1 -s; }
 fn_check_command() { command -v "$1" >/dev/null 2>&1; }
 
-# 【V2.2.8 新增】移植自 1Panel 脚本，用于正确识别用户文件夹
 fn_get_user_folders() {
     local target_dir="$1"; if [ ! -d "$target_dir" ]; then return; fi
     mapfile -t all_subdirs < <(find "$target_dir" -mindepth 1 -maxdepth 1 -type d -exec basename {} \;)
@@ -247,7 +246,6 @@ git_sync_find_pushable_mirror() {
     if [ ${#successful_urls[@]} -gt 0 ]; then fn_print_success "测试完成，找到 ${#successful_urls[@]} 条可用上传线路。" >&2; printf '%s\n' "${successful_urls[@]}"; else fn_print_error "所有上传线路均测试失败。"; return 1; fi
 }
 
-# 【V2.2.8 彻底重写】
 git_sync_backup_to_cloud() {
     clear; fn_print_header "Git备份数据到云端 (上传)"; if [ ! -f "$GIT_SYNC_CONFIG_FILE" ]; then fn_print_warning "请先在菜单 [1] 中配置Git同步服务。"; fn_press_any_key; return; fi
     mapfile -t push_urls < <(git_sync_find_pushable_mirror); if [ ${#push_urls[@]} -eq 0 ]; then fn_print_error "未能找到任何支持上传的线路。"; fn_press_any_key; return; fi
@@ -269,15 +267,15 @@ git_sync_backup_to_cloud() {
             cd "$temp_dir" || exit 1
             fn_print_warning "正在同步本地数据到临时区..."
 
-            local rsync_exclude_args="--exclude 'extensions/' --exclude 'backups/' --exclude '*.log'"
+            # 【V2.2.9 核心修正】使用数组定义 rsync 参数
+            local rsync_exclude_args=("--exclude=extensions/" "--exclude=backups/" "--exclude=*.log")
 
             if [ -n "$USER_MAP" ] && [[ "$USER_MAP" == *":"* ]]; then
                 local local_user="${USER_MAP%%:*}"; local remote_user="${USER_MAP##*:}"
                 fn_print_warning "应用用户映射规则: 本地'${local_user}' -> 云端'${remote_user}'"
                 if [ -d "$ST_DIR/data/$local_user" ]; then
                     mkdir -p "./data/$remote_user"
-                    # shellcheck disable=SC2086
-                    rsync -a --delete $rsync_exclude_args "$ST_DIR/data/$local_user/" "./data/$remote_user/"
+                    rsync -a --delete "${rsync_exclude_args[@]}" "$ST_DIR/data/$local_user/" "./data/$remote_user/"
                 else
                     fn_print_warning "本地用户文件夹 '$local_user' 不存在，跳过同步。"
                 fi
@@ -288,8 +286,7 @@ git_sync_backup_to_cloud() {
                 local local_users; local_users=($(fn_get_user_folders "$ST_DIR/data"))
                 for l_user in "${local_users[@]}"; do
                     mkdir -p "./data/$l_user"
-                    # shellcheck disable=SC2086
-                    rsync -a --delete $rsync_exclude_args "$ST_DIR/data/$l_user/" "./data/$l_user/"
+                    rsync -a --delete "${rsync_exclude_args[@]}" "$ST_DIR/data/$l_user/" "./data/$l_user/"
                 done
             fi
 
@@ -327,7 +324,6 @@ git_sync_backup_to_cloud() {
     fn_press_any_key
 }
 
-# 【V2.2.8 彻底重写】
 git_sync_restore_from_cloud() {
     clear; fn_print_header "Git从云端恢复数据 (下载)"; if [ ! -f "$GIT_SYNC_CONFIG_FILE" ]; then fn_print_warning "请先在菜单 [1] 中配置Git同步服务。"; fn_press_any_key; return; fi
     
@@ -375,15 +371,15 @@ git_sync_restore_from_cloud() {
 
         fn_print_warning "正在将云端数据同步到本地..."
         
-        local rsync_exclude_args="--exclude 'extensions/' --exclude 'backups/' --exclude '*.log'"
+        # 【V2.2.9 核心修正】使用数组定义 rsync 参数
+        local rsync_exclude_args=("--exclude=extensions/" "--exclude=backups/" "--exclude=*.log")
 
         if [ -n "$USER_MAP" ] && [[ "$USER_MAP" == *":"* ]]; then
             local local_user="${USER_MAP%%:*}"; local remote_user="${USER_MAP##*:}"
             fn_print_warning "应用用户映射规则: 云端'${remote_user}' -> 本地'${local_user}'"
             if [ -d "$temp_dir/data/$remote_user" ]; then
                 mkdir -p "$ST_DIR/data/$local_user"
-                # shellcheck disable=SC2086
-                rsync -a --delete $rsync_exclude_args "$temp_dir/data/$remote_user/" "$ST_DIR/data/$local_user/"
+                rsync -a --delete "${rsync_exclude_args[@]}" "$temp_dir/data/$remote_user/" "$ST_DIR/data/$local_user/"
             else
                 fn_print_warning "云端映射文件夹 'data/${remote_user}' 不存在，跳过映射同步。"
             fi
@@ -412,8 +408,7 @@ git_sync_restore_from_cloud() {
 
             for r_user in "${final_remote_users[@]}"; do
                 mkdir -p "$ST_DIR/data/$r_user"
-                # shellcheck disable=SC2086
-                rsync -a --delete $rsync_exclude_args "$temp_dir/data/$r_user/" "$ST_DIR/data/$r_user/"
+                rsync -a --delete "${rsync_exclude_args[@]}" "$temp_dir/data/$r_user/" "$ST_DIR/data/$r_user/"
             done
         fi
 
@@ -527,9 +522,7 @@ menu_git_config_management() {
 menu_advanced_sync_settings() {
     fn_update_config_value() {
         local key="$1"; local value="$2"; local file="$3"; touch "$file"
-        # 先删除旧的键值对（如果有）
         sed -i "/^${key}=/d" "$file"
-        # 如果值不为空，则添加新的键值对
         if [ -n "$value" ]; then
             echo "${key}=\"${value}\"" >> "$file"
         fi
@@ -958,7 +951,7 @@ while true; do
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
     ╔═════════════════════════════════╗
-    ║       SillyTavern 助手 v2.2.8     ║
+    ║       SillyTavern 助手 v2.2.9     ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
