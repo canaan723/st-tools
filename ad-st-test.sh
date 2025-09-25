@@ -230,7 +230,6 @@ git_sync_find_pushable_mirror() {
     if [ ${#successful_urls[@]} -gt 0 ]; then fn_print_success "测试完成，找到 ${#successful_urls[@]} 条可用上传线路。" >&2; printf '%s\n' "${successful_urls[@]}"; else fn_print_error "所有上传线路均测试失败。"; return 1; fi
 }
 
-# 【重构】上传函数
 git_sync_backup_to_cloud() {
     clear; fn_print_header "Git备份数据到云端 (上传)"; if [ ! -f "$GIT_SYNC_CONFIG_FILE" ]; then fn_print_warning "请先在菜单 [1] 中配置Git同步服务。"; fn_press_any_key; return; fi
     mapfile -t push_urls < <(git_sync_find_pushable_mirror); if [ ${#push_urls[@]} -eq 0 ]; then fn_print_error "未能找到任何支持上传的线路。"; fn_press_any_key; return; fi
@@ -287,8 +286,6 @@ git_sync_backup_to_cloud() {
             if [ -n "$preserved_config_path" ] && [ -f "$preserved_config_path" ]; then
                 mv "$preserved_config_path" "config.yaml"
             fi
-
-            # 【移除】不再需要欺骗Git
             
             git add .
             if git diff-index --quiet HEAD; then fn_print_success "数据与云端一致，无需上传。"; exit 100; fi
@@ -321,17 +318,17 @@ git_sync_backup_to_cloud() {
     fn_press_any_key
 }
 
-# 【重构】恢复函数
 git_sync_restore_from_cloud() {
     clear; fn_print_header "Git从云端恢复数据 (下载)"; if [ ! -f "$GIT_SYNC_CONFIG_FILE" ]; then fn_print_warning "请先在菜单 [1] 中配置Git同步服务。"; fn_press_any_key; return; fi
     
-    read -p "是否在恢复前，先对当前本地数据进行一次备份？(强烈推荐) [Y/n]: " backup_confirm
+    # 【改造】调用新的核心备份函数
+    fn_print_warning "此操作将用云端数据【覆盖】本地数据！"
+    read -p "是否在恢复前，先对当前数据进行一次本地备份？(强烈推荐) [Y/n]: " backup_confirm
     if [[ ! "$backup_confirm" =~ ^[nN]$ ]]; then 
-        if ! fn_create_data_zip_backup >/dev/null; then fn_print_error "本地备份失败，恢复操作已中止。"; fn_press_any_key; return; fi
+        if ! fn_core_create_zip_backup "恢复前"; then fn_print_error "本地备份失败，恢复操作已中止。"; fn_press_any_key; return; fi
     fi
     
-    # 【优化】修改确认流程
-    read -p "确认要从云端恢复数据吗？此操作将用云端数据【覆盖】本地数据！[Y/n]: " restore_confirm
+    read -p "确认要从云端恢复数据吗？[Y/n]: " restore_confirm
     if [[ "$restore_confirm" =~ ^[nN]$ ]]; then fn_print_warning "操作已取消。"; fn_press_any_key; return; fi
     
     local SYNC_CONFIG_YAML="false"; local USER_MAP=""; local EXCLUDE_USERS=""
@@ -406,8 +403,6 @@ git_sync_restore_from_cloud() {
             fi
         fi
         
-        # 【移除】不再需要恢复Git信息
-        
         fn_print_success "\n数据已从云端成功恢复！"
         exit 0
     )
@@ -416,14 +411,13 @@ git_sync_restore_from_cloud() {
     rm -rf "$temp_dir"
     
     if [ $subshell_exit_code -ne 0 ]; then
-        : # Error messages are already printed inside the subshell
+        : 
     fi
     fn_press_any_key
 }
 
 git_sync_clear_config() { if [ -f "$GIT_SYNC_CONFIG_FILE" ]; then read -p "确认要清除已保存的Git同步配置吗？(y/n): " confirm; if [[ "$confirm" =~ ^[yY]$ ]]; then rm -f "$GIT_SYNC_CONFIG_FILE"; fn_print_success "Git同步配置已清除。"; else fn_print_warning "操作已取消。"; fi; else fn_print_warning "未找到任何Git同步配置。"; fi; fn_press_any_key; }
 
-# 【新增】导出扩展链接函数
 fn_export_extension_links() {
     clear; fn_print_header "导出扩展链接"
     local all_links=()
@@ -590,7 +584,7 @@ menu_git_sync() {
         echo -e "      [2] ${GREEN}备份到云端 (上传)${NC}"
         echo -e "      [3] ${YELLOW}从云端恢复 (下载)${NC}"
         echo -e "      [4] ${CYAN}高级同步设置 (用户映射等)${NC}"
-        echo -e "      [5] ${CYAN}导出扩展链接${NC}\n" # 【新增】菜单项
+        echo -e "      [5] ${CYAN}导出扩展链接${NC}\n"
         echo -e "      [0] ${CYAN}返回主菜单${NC}\n"
         read -p "    请输入选项: " choice
         case $choice in 
@@ -598,7 +592,7 @@ menu_git_sync() {
             2) git_sync_backup_to_cloud ;; 
             3) git_sync_restore_from_cloud ;; 
             4) menu_advanced_sync_settings ;;
-            5) fn_export_extension_links ;; # 【新增】菜单逻辑
+            5) fn_export_extension_links ;;
             0) break ;; 
             *) fn_print_error "无效输入。"; sleep 1 ;; 
         esac
@@ -669,22 +663,72 @@ main_start() {
     echo -e "\n${YELLOW}SillyTavern 已停止运行。${NC}"; fn_press_any_key
 }
 
-fn_create_data_zip_backup() {
-    fn_print_warning "正在创建核心数据备份 (.zip)..."
-    if [ ! -d "$ST_DIR" ]; then fn_print_error "SillyTavern 目录不存在，无法备份。"; return 1; fi
-    local paths_to_backup=("./data" "./public/scripts/extensions/third-party" "./plugins" "./config.yaml")
-    mkdir -p "$BACKUP_ROOT_DIR"
-    local timestamp; timestamp=$(date +"%Y-%m-%d_%H-%M")
-    local backup_name="ST_核心数据_${timestamp}.zip"; local backup_zip_path="${BACKUP_ROOT_DIR}/${backup_name}"
+# 【新增】核心本地备份创建函数
+fn_core_create_zip_backup() {
+    local backup_type="$1" # "手动", "恢复前", "更新前"
+    
+    if [ ! -d "$ST_DIR" ]; then fn_print_error "SillyTavern 目录不存在，无法创建本地备份。"; return 1; fi
     cd "$ST_DIR" || { fn_print_error "无法进入 SillyTavern 目录进行备份。"; return 1; }
-    local has_files=false
-    for item in "${paths_to_backup[@]}"; do if [ -e "$item" ]; then has_files=true; break; fi; done
-    if ! $has_files; then fn_print_error "未能收集到任何有效的数据文件进行备份。"; cd "$HOME"; return 1; fi
+    
+    # 确定备份范围
+    local default_paths=("./data" "./public/scripts/extensions/third-party" "./plugins" "./config.yaml")
+    local paths_to_backup=()
+    if [ -f "$CONFIG_FILE" ]; then
+        mapfile -t paths_to_backup < "$CONFIG_FILE"
+    fi
+    # 如果配置文件为空或不存在，使用默认值
+    if [ ${#paths_to_backup[@]} -eq 0 ]; then
+        paths_to_backup=("${default_paths[@]}")
+    fi
+
+    # 检查备份上限
+    mkdir -p "$BACKUP_ROOT_DIR"
+    mapfile -t all_backups < <(find "$BACKUP_ROOT_DIR" -maxdepth 1 -name "*.zip" -printf "%T@ %p\n" | sort -n | cut -d' ' -f2-)
+    local current_backup_count=${#all_backups[@]}
+    
+    echo -e "${YELLOW}当前本地备份数: ${current_backup_count}/${BACKUP_LIMIT}${NC}"
+
+    if [ "$current_backup_count" -ge "$BACKUP_LIMIT" ]; then
+        local oldest_backup="${all_backups[0]}"
+        fn_print_warning "警告：本地备份已达上限 (${BACKUP_LIMIT}/${BACKUP_LIMIT})。"
+        echo -e "创建新备份将会自动删除最旧的一个备份文件:"
+        echo -e "  - ${RED}将被删除: $(basename "$oldest_backup")${NC}"
+        read -p "是否继续创建本地备份？[Y/n]: " confirm_overwrite
+        if [[ "$confirm_overwrite" =~ ^[nN]$ ]]; then
+            fn_print_warning "操作已取消。"
+            return 1
+        fi
+    fi
+
+    local timestamp; timestamp=$(date +"%Y-%m-%d_%H-%M")
+    local backup_name="ST_备份_${backup_type}_${timestamp}.zip"
+    local backup_zip_path="${BACKUP_ROOT_DIR}/${backup_name}"
+    
+    fn_print_warning "正在创建“${backup_type}”类型的本地备份..."
+
+    local valid_paths=()
+    for item in "${paths_to_backup[@]}"; do
+        [ -e "$item" ] && valid_paths+=("$item")
+    done
+    if [ ${#valid_paths[@]} -eq 0 ]; then fn_print_error "未能收集到任何有效文件进行本地备份。"; return 1; fi
+
     local exclude_params=(-x "*/_cache/*" -x "*.log" -x "*/backups/*")
-    if zip -rq "$backup_zip_path" "${paths_to_backup[@]}" "${exclude_params[@]}"; then
-        fn_print_success "核心数据备份成功: ${backup_name}" >&2; cd "$HOME"; echo "$backup_zip_path"; return 0
+    if zip -rq "$backup_zip_path" "${valid_paths[@]}" "${exclude_params[@]}"; then
+        # 成功后清理旧备份
+        if [ "$current_backup_count" -ge "$BACKUP_LIMIT" ]; then
+            fn_print_warning "正在清理旧备份..."
+            rm "$oldest_backup"
+            echo "  - 已删除: $(basename "$oldest_backup")"
+        fi
+        mapfile -t new_all_backups < <(find "$BACKUP_ROOT_DIR" -maxdepth 1 -name "*.zip")
+        fn_print_success "本地备份成功：${backup_name} (当前: ${#new_all_backups[@]}/${BACKUP_LIMIT})"
+        echo -e "  ${CYAN}保存路径: ${backup_zip_path}${NC}"
+        cd "$HOME"
+        return 0
     else
-        fn_print_error "创建 .zip 备份失败！"; cd "$HOME"; return 1
+        fn_print_error "创建本地 .zip 备份失败！"
+        cd "$HOME"
+        return 1
     fi
 }
 
@@ -737,11 +781,14 @@ main_update_st() {
                     echo -e "\n请选择操作方式："; echo -e "  [${GREEN}回车${NC}] ${BOLD}自动备份并重新安装 (推荐)${NC}"; echo -e "  [1]    ${YELLOW}强制覆盖更新 (危险)${NC}"; echo -e "  [0]    ${CYAN}放弃更新${NC}"; read -p "请输入选项: " choice
                     case "$choice" in
                     "" | 'b' | 'B')
-                        clear; fn_print_header "步骤 1/5: 创建核心数据备份"; local data_backup_zip_path; data_backup_zip_path=$(fn_create_data_zip_backup); if [ -z "$data_backup_zip_path" ]; then fn_print_error_exit "核心数据备份(.zip)创建失败，更新流程终止。"; fi
+                        clear; fn_print_header "步骤 1/5: 创建本地备份"
+                        # 【改造】调用新的核心备份函数
+                        if ! fn_core_create_zip_backup "更新前"; then fn_print_error_exit "本地备份创建失败，更新流程终止。"; fi
+                        
                         fn_print_header "步骤 2/5: 完整备份当前目录"; local renamed_backup_dir="${ST_DIR}_backup_$(date +%Y%m%d%H%M%S)"; cd "$HOME"; mv "$ST_DIR" "$renamed_backup_dir" || fn_print_error_exit "备份失败！请检查权限或手动重命名后重试。"; fn_print_success "旧目录已完整备份为: $(basename "$renamed_backup_dir")"
                         fn_print_header "步骤 3/5: 下载并安装新版 SillyTavern"; main_install "no-start"; if [ ! -d "$ST_DIR" ]; then fn_print_error_exit "新版本安装失败，流程终止。"; fi
-                        fn_print_header "步骤 4/5: 自动恢复用户数据"; fn_print_warning "正在将备份数据解压至新目录..."; if ! unzip -o "$data_backup_zip_path" -d "$ST_DIR" >/dev/null 2>&1; then fn_print_error_exit "数据恢复失败！请检查zip文件是否有效。"; fi; fn_print_success "用户数据已成功恢复到新版本中。"
-                        fn_print_header "步骤 5/5: 更新完成，请确认"; fn_print_success "SillyTavern 已更新并恢复数据！"; fn_print_warning "请注意:"; echo -e "  - 您的聊天记录、角色卡、插件和设置已恢复。"; echo -e "  - 如果您曾手动修改过酒馆核心文件(如 server.js)，这些修改需要您重新操作。"; echo -e "  - 您的完整旧版本已备份在: ${CYAN}$(basename "$renamed_backup_dir")${NC}"; echo -e "  - 本次恢复所用的核心数据备份位于: ${CYAN}$(basename "$BACKUP_ROOT_DIR")/$(basename "$data_backup_zip_path")${NC}"
+                        fn_print_header "步骤 4/5: 自动恢复用户数据"; fn_print_warning "正在将备份数据解压至新目录..."; if ! unzip -o "$BACKUP_ROOT_DIR"/ST_备份_更新前_*.zip -d "$ST_DIR" >/dev/null 2>&1; then fn_print_error_exit "数据恢复失败！请检查zip文件是否有效。"; fi; fn_print_success "用户数据已成功恢复到新版本中。"
+                        fn_print_header "步骤 5/5: 更新完成，请确认"; fn_print_success "SillyTavern 已更新并恢复数据！"; fn_print_warning "请注意:"; echo -e "  - 您的聊天记录、角色卡、插件和设置已恢复。"; echo -e "  - 如果您曾手动修改过酒馆核心文件(如 server.js)，这些修改需要您重新操作。"; echo -e "  - 您的完整旧版本已备份在: ${CYAN}$(basename "$renamed_backup_dir")${NC}"; echo -e "  - 本次恢复所用的核心本地备份位于: ${CYAN}$(basename "$BACKUP_ROOT_DIR")/ST_备份_更新前_...zip${NC}"
                         echo -e "\n${CYAN}请按任意键，启动更新后的 SillyTavern...${NC}"; read -n 1 -s; main_start; return
                         ;;
                     '1')
@@ -758,27 +805,199 @@ main_update_st() {
     if $update_success; then fn_print_success "SillyTavern 更新完成！"; fi; fn_press_any_key
 }
 
+# 【改造】创建本地备份的交互界面
 run_backup_interactive() {
-    clear; fn_print_header "创建自定义备份"; if [ ! -f "$ST_DIR/start.sh" ]; then fn_print_warning "SillyTavern 尚未安装，无法备份。"; fn_press_any_key; return; fi; cd "$ST_DIR" || fn_print_error_exit "无法进入 SillyTavern 目录: $ST_DIR"
-    declare -A ALL_PATHS=(["./data"]="用户数据 (聊天/角色/设置)" ["./public/scripts/extensions/third-party"]="前端扩展" ["./plugins"]="后端扩展" ["./config.yaml"]="服务器配置 (网络/安全)")
-    local options=("./data" "./public/scripts/extensions/third-party" "./plugins" "./config.yaml"); local default_selection=("./data" "./plugins" "./public/scripts/extensions/third-party")
-    local selection_to_load=(); if [ -f "$CONFIG_FILE" ]; then mapfile -t selection_to_load <"$CONFIG_FILE"; fi; if [ ${#selection_to_load[@]} -eq 0 ]; then selection_to_load=("${default_selection[@]}"); fi
-    declare -A selection_status; for key in "${options[@]}"; do selection_status["$key"]=false; done; for key in "${selection_to_load[@]}"; do if [[ -v selection_status["$key"] ]]; then selection_status["$key"]=true; fi; done
-    while true; do
-        clear; fn_print_header "请选择要备份的内容"; echo "输入数字可切换勾选状态。"
-        for i in "${!options[@]}"; do local key="${options[$i]}"; local description="${ALL_PATHS[$key]}"; if ${selection_status[$key]}; then printf "  [%-2d] ${GREEN}[✓] %s${NC}\n" "$((i + 1))" "$key"; else printf "  [%-2d] [ ] %s${NC}\n" "$((i + 1))" "$key"; fi; printf "      ${CYAN}(%s)${NC}\n" "$description"; done
-        echo -e "      ${GREEN}[回车] 开始备份${NC}      ${RED}[0] 取消备份${NC}"; read -p "请操作 [输入数字, 回车 或 0]: " user_choice
-        case "$user_choice" in "" | [sS]) break ;; 0) echo "备份已取消。"; fn_press_any_key; return ;; *) if [[ "$user_choice" =~ ^[0-9]+$ ]] && [ "$user_choice" -ge 1 ] && [ "$user_choice" -le "${#options[@]}" ]; then local selected_key="${options[$((user_choice - 1))]}"; if ${selection_status[$selected_key]}; then selection_status[$selected_key]=false; else selection_status[$selected_key]=true; fi; else fn_print_warning "无效输入。"; sleep 1; fi ;; esac
+    clear; fn_print_header "创建新的本地备份"
+    if [ ! -f "$ST_DIR/start.sh" ]; then fn_print_warning "SillyTavern 尚未安装，无法备份。"; fn_press_any_key; return; fi
+    cd "$ST_DIR" || fn_print_error_exit "无法进入 SillyTavern 目录: $ST_DIR"
+
+    declare -A ALL_PATHS=(
+        ["./data"]="用户数据 (聊天/角色/设置)"
+        ["./public/scripts/extensions/third-party"]="前端扩展"
+        ["./plugins"]="后端扩展"
+        ["./config.yaml"]="服务器配置 (网络/安全)"
+    )
+    local options=("./data" "./public/scripts/extensions/third-party" "./plugins" "./config.yaml")
+    # 【改造】默认全选
+    local default_selection=("${options[@]}")
+
+    local selection_to_load=()
+    if [ -f "$CONFIG_FILE" ]; then
+        mapfile -t selection_to_load <"$CONFIG_FILE"
+    fi
+    if [ ${#selection_to_load[@]} -eq 0 ]; then
+        selection_to_load=("${default_selection[@]}")
+    fi
+
+    declare -A selection_status
+    for key in "${options[@]}"; do
+        selection_status["$key"]=false
     done
-    local paths_to_backup=(); for key in "${options[@]}"; do if ${selection_status[$key]}; then if [ -e "$key" ]; then paths_to_backup+=("$key"); else fn_print_warning "路径 '$key' 不存在，已跳过。"; fi; fi; done
-    if [ ${#paths_to_backup[@]} -eq 0 ]; then fn_print_warning "您没有选择任何有效的项目，备份已取消。"; fn_press_any_key; return; fi
-    mkdir -p "$BACKUP_ROOT_DIR"; local timestamp; timestamp=$(date +"%Y-%m-%d_%H-%M"); local backup_name="ST_备份_${timestamp}"; local backup_zip_path="${BACKUP_ROOT_DIR}/${backup_name}.zip"
-    echo -e "\n${YELLOW}正在根据您的选择压缩文件...${NC}"; echo "包含项目:"; for item in "${paths_to_backup[@]}"; do echo "  - $item"; done
-    local exclude_params=(-x "*/_cache/*" -x "*.log" -x "*/backups/*"); zip -rq "$backup_zip_path" "${paths_to_backup[@]}" "${exclude_params[@]}"; if [ $? -ne 0 ]; then fn_print_warning "备份失败！"; fn_press_any_key; return; fi
-    mapfile -t all_backups < <(find "$BACKUP_ROOT_DIR" -maxdepth 1 -name "*.zip" -printf "%T@ %p\n" | sort -nr | cut -d' ' -f2-); fn_print_success "备份成功：${backup_name}.zip (当前备份数: ${#all_backups[@]}/${BACKUP_LIMIT})"; echo -e "  ${CYAN}保存路径: ${backup_zip_path}${NC}"; printf "%s\n" "${paths_to_backup[@]}" >"$CONFIG_FILE"
-    if [ "${#all_backups[@]}" -gt $BACKUP_LIMIT ]; then
-        fn_print_warning "备份数量超过上限，正在清理旧备份..."; local backups_to_delete=("${all_backups[@]:$BACKUP_LIMIT}"); for old_backup in "${backups_to_delete[@]}"; do rm "$old_backup"; echo "  - 已删除: $(basename "$old_backup")"; done; fn_print_success "清理完成。"
-    fi; fn_press_any_key
+    for key in "${selection_to_load[@]}"; do
+        if [[ -v selection_status["$key"] ]]; then
+            selection_status["$key"]=true
+        fi
+    done
+
+    while true; do
+        clear
+        fn_print_header "请选择要备份的内容 (定义备份范围)"
+        echo "此处的选择将作为所有本地备份(包括自动备份)的范围。"
+        echo "输入数字可切换勾选状态。"
+        for i in "${!options[@]}"; do
+            local key="${options[$i]}"
+            local description="${ALL_PATHS[$key]}"
+            if ${selection_status[$key]}; then
+                printf "  [%-2d] ${GREEN}[✓] %s${NC}\n" "$((i + 1))" "$key"
+            else
+                printf "  [%-2d] [ ] %s${NC}\n" "$((i + 1))" "$key"
+            fi
+            printf "      ${CYAN}(%s)${NC}\n" "$description"
+        done
+        echo -e "\n      ${GREEN}[回车] 保存设置并开始备份${NC}"
+        echo -e "      ${RED}[0] 返回上一级${NC}"
+        read -p "请操作 [输入数字, 回车 或 0]: " user_choice
+        case "$user_choice" in
+        "" | [sS])
+            break
+            ;;
+        0)
+            echo "操作已取消。"
+            return
+            ;;
+        *)
+            if [[ "$user_choice" =~ ^[0-9]+$ ]] && [ "$user_choice" -ge 1 ] && [ "$user_choice" -le "${#options[@]}" ]; then
+                local selected_key="${options[$((user_choice - 1))]}"
+                if ${selection_status[$selected_key]}; then
+                    selection_status[$selected_key]=false
+                else
+                    selection_status[$selected_key]=true
+                fi
+            else
+                fn_print_warning "无效输入。"; sleep 1
+            fi
+            ;;
+        esac
+    done
+
+    local paths_to_save=()
+    for key in "${options[@]}"; do
+        if ${selection_status[$key]}; then
+            paths_to_save+=("$key")
+        fi
+    done
+
+    if [ ${#paths_to_save[@]} -eq 0 ]; then
+        fn_print_warning "您没有选择任何项目，本地备份已取消。"
+        fn_press_any_key
+        return
+    fi
+    
+    # 保存用户的选择到配置文件
+    printf "%s\n" "${paths_to_save[@]}" > "$CONFIG_FILE"
+    fn_print_success "备份范围已保存！"
+    sleep 1
+
+    # 【改造】调用核心函数
+    if fn_core_create_zip_backup "手动"; then
+        : # Success message is already inside the core function
+    else
+        fn_print_error "手动本地备份创建失败。"
+    fi
+    fn_press_any_key
+}
+
+# 【新增】本地备份管理界面
+main_manage_backups() {
+    while true; do
+        clear
+        mkdir -p "$BACKUP_ROOT_DIR"
+        mapfile -t backup_files < <(find "$BACKUP_ROOT_DIR" -maxdepth 1 -name "*.zip" -printf "%T@ %p\n" | sort -nr | cut -d' ' -f2-)
+        local count=${#backup_files[@]}
+
+        fn_print_header "本地备份管理 (当前: ${count}/${BACKUP_LIMIT})"
+
+        if [ "$count" -eq 0 ]; then
+            echo -e "      ${YELLOW}没有找到任何本地备份文件。${NC}"
+        else
+            echo " [序号] [类型]   [创建日期与时间]  [大小]  [文件名]"
+            echo " ─────────────────────────────────────────────────────────────"
+            for i in "${!backup_files[@]}"; do
+                local file_path="${backup_files[$i]}"
+                local filename; filename=$(basename "$file_path")
+                
+                # 解析文件名
+                local type; type=$(echo "$filename" | awk -F'[_.]' '{print $3}')
+                local date; date=$(echo "$filename" | awk -F'[_.]' '{print $4}')
+                local time; time=$(echo "$filename" | awk -F'[_.]' '{print $5}')
+                
+                # 获取文件大小
+                local size; size=$(du -h "$file_path" | awk '{print $1}')
+                
+                printf " [%2d]   %-7s  %s %s  %-6s  %s\n" "$((i+1))" "$type" "$date" "$time" "$size" "$filename"
+            done
+        fi
+        
+        echo -e "\n  ${RED}请输入要删除的备份序号 (多选请用空格隔开, 输入 'all' 全选)。${NC}"
+        echo -e "  按 ${CYAN}[回车] 键直接返回${NC}，或输入 ${CYAN}[0] 返回${NC}。"
+        read -p "  请操作: " selection
+
+        if [[ -z "$selection" || "$selection" == "0" ]]; then
+            break
+        fi
+
+        local files_to_delete=()
+        if [[ "$selection" == "all" || "$selection" == "*" ]]; then
+            files_to_delete=("${backup_files[@]}")
+        else
+            for index in $selection; do
+                if [[ "$index" =~ ^[0-9]+$ ]] && [ "$index" -ge 1 ] && [ "$index" -le "$count" ]; then
+                    files_to_delete+=("${backup_files[$((index-1))]}")
+                else
+                    fn_print_error "无效的序号: $index"
+                    sleep 2
+                    continue 2 # Continue the outer while loop
+                fi
+            done
+        fi
+
+        if [ ${#files_to_delete[@]} -gt 0 ]; then
+            clear
+            fn_print_warning "警告：以下本地备份文件将被永久删除，此操作不可撤销！"
+            for file in "${files_to_delete[@]}"; do
+                echo -e "  - ${RED}$(basename "$file")${NC}"
+            done
+            read -p $'\n'"确认要删除这 ${#files_to_delete[@]} 个文件吗？[y/N]: " confirm_delete
+            if [[ "$confirm_delete" =~ ^[yY]$ ]]; then
+                for file in "${files_to_delete[@]}"; do
+                    rm "$file"
+                done
+                fn_print_success "选定的本地备份文件已删除。"
+                sleep 2
+            else
+                fn_print_warning "删除操作已取消。"
+                sleep 2
+            fi
+        fi
+    done
+}
+
+# 【新增】本地备份主菜单
+main_backup_menu() {
+    while true; do
+        clear
+        fn_print_header "本地备份管理"
+        echo -e "      [1] ${CYAN}创建新的本地备份${NC}"
+        echo -e "      [2] ${CYAN}管理已有的本地备份${NC}\n"
+        echo -e "      [0] ${CYAN}返回主菜单${NC}\n"
+        read -p "    请输入选项: " choice
+        case $choice in
+            1) run_backup_interactive ;;
+            2) main_manage_backups ;;
+            0) break ;;
+            *) fn_print_error "无效输入。"; sleep 1 ;;
+        esac
+    done
 }
 
 main_update_script() {
@@ -817,10 +1036,11 @@ while true; do
 EOF
     update_notice=""; if [ -f "$UPDATE_FLAG_FILE" ]; then update_notice=" ${YELLOW}[!] 有更新${NC}"; fi
 
+    # 【改造】主菜单
     echo -e "${NC}\n    选择一个操作来开始：\n"
     echo -e "      [1] ${GREEN}${BOLD}启动 SillyTavern${NC}"
     echo -e "      [2] ${CYAN}${BOLD}数据同步 (Git 云端)${NC}"
-    echo -e "      [3] ${CYAN}${BOLD}创建本地备份${NC}"
+    echo -e "      [3] ${CYAN}${BOLD}本地备份管理${NC}"
     echo -e "      [4] ${YELLOW}${BOLD}首次部署 (全新安装)${NC}\n"
     echo -e "      [5] 更新 ST 主程序    [6] 更新助手脚本${update_notice}"
     echo -e "      [7] 管理助手自启      [8] 查看帮助文档"
@@ -831,7 +1051,7 @@ EOF
     case $choice in
     1) main_start ;;
     2) menu_git_sync ;;
-    3) run_backup_interactive ;;
+    3) main_backup_menu ;; # 【改造】调用新的子菜单
     4) main_install ;;
     5) main_update_st ;;
     6) main_update_script ;;
