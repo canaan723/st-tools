@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v2.2.3
+# SillyTavern 助手 v2.2.8
 # 作者: Qingjue | 小红书号: 826702880
 
 # =========================================================================
@@ -31,6 +31,8 @@ GIT_SYNC_CONFIG_FILE="$CONFIG_DIR/git_sync.conf"
 PROXY_CONFIG_FILE="$CONFIG_DIR/proxy.conf"
 SYNC_RULES_CONFIG_FILE="$CONFIG_DIR/sync_rules.conf"
 
+readonly TOP_LEVEL_SYSTEM_FOLDERS=("data/_storage" "data/_cache" "data/_uploads" "data/_webpack")
+
 MIRROR_LIST=(
     "https://github.com/SillyTavern/SillyTavern.git"
     "https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git"
@@ -56,6 +58,21 @@ fn_print_error() { echo -e "${RED}✗ $1${NC}" >&2; }
 fn_print_error_exit() { echo -e "\n${RED}✗ ${BOLD}$1${NC}\n${RED}流程已终止。${NC}" >&2; fn_press_any_key; exit 1; }
 fn_press_any_key() { echo -e "\n${CYAN}请按任意键返回...${NC}"; read -n 1 -s; }
 fn_check_command() { command -v "$1" >/dev/null 2>&1; }
+
+# 【V2.2.8 新增】移植自 1Panel 脚本，用于正确识别用户文件夹
+fn_get_user_folders() {
+    local target_dir="$1"; if [ ! -d "$target_dir" ]; then return; fi
+    mapfile -t all_subdirs < <(find "$target_dir" -mindepth 1 -maxdepth 1 -type d -exec basename {} \;)
+    local user_folders=()
+    for dir in "${all_subdirs[@]}"; do
+        local is_system_folder=false
+        for sys_folder in "${TOP_LEVEL_SYSTEM_FOLDERS[@]}"; do
+            if [[ "data/$dir" == "$sys_folder" ]]; then is_system_folder=true; break; fi
+        done
+        if [ "$is_system_folder" = false ]; then user_folders+=("$dir"); fi
+    done
+    echo "${user_folders[@]}"
+}
 
 fn_find_fastest_mirror() {
     if [ ${#CACHED_MIRRORS[@]} -gt 0 ]; then
@@ -230,6 +247,7 @@ git_sync_find_pushable_mirror() {
     if [ ${#successful_urls[@]} -gt 0 ]; then fn_print_success "测试完成，找到 ${#successful_urls[@]} 条可用上传线路。" >&2; printf '%s\n' "${successful_urls[@]}"; else fn_print_error "所有上传线路均测试失败。"; return 1; fi
 }
 
+# 【V2.2.8 彻底重写】
 git_sync_backup_to_cloud() {
     clear; fn_print_header "Git备份数据到云端 (上传)"; if [ ! -f "$GIT_SYNC_CONFIG_FILE" ]; then fn_print_warning "请先在菜单 [1] 中配置Git同步服务。"; fn_press_any_key; return; fi
     mapfile -t push_urls < <(git_sync_find_pushable_mirror); if [ ${#push_urls[@]} -eq 0 ]; then fn_print_error "未能找到任何支持上传的线路。"; fn_press_any_key; return; fi
@@ -242,7 +260,6 @@ git_sync_backup_to_cloud() {
     for push_url in "${push_urls[@]}"; do
         local chosen_host; chosen_host=$(echo "$push_url" | sed -e 's|https://.*@||' -e 's|/.*$||'); fn_print_warning "正在尝试使用线路 [${chosen_host}] 进行备份..."
         local temp_dir; temp_dir=$(mktemp -d)
-        local preserved_config_path=""
 
         (
             cd "$HOME" || exit 1
@@ -250,41 +267,34 @@ git_sync_backup_to_cloud() {
             fn_print_success "已成功从云端克隆仓库。"
 
             cd "$temp_dir" || exit 1
-            
-            if [ "$SYNC_CONFIG_YAML" != "true" ] && [ -f "config.yaml" ]; then
-                fn_print_warning "检测到云端存在 config.yaml，已设置为本地忽略模式，将为您保留云端版本。"
-                preserved_config_path=$(mktemp)
-                mv "config.yaml" "$preserved_config_path"
+            fn_print_warning "正在同步本地数据到临时区..."
+
+            local rsync_exclude_args="--exclude 'extensions/' --exclude 'backups/' --exclude '*.log'"
+
+            if [ -n "$USER_MAP" ] && [[ "$USER_MAP" == *":"* ]]; then
+                local local_user="${USER_MAP%%:*}"; local remote_user="${USER_MAP##*:}"
+                fn_print_warning "应用用户映射规则: 本地'${local_user}' -> 云端'${remote_user}'"
+                if [ -d "$ST_DIR/data/$local_user" ]; then
+                    mkdir -p "./data/$remote_user"
+                    # shellcheck disable=SC2086
+                    rsync -a --delete $rsync_exclude_args "$ST_DIR/data/$local_user/" "./data/$remote_user/"
+                else
+                    fn_print_warning "本地用户文件夹 '$local_user' 不存在，跳过同步。"
+                fi
+            else
+                fn_print_warning "应用镜像同步规则: 同步所有本地用户文件夹"
+                find . -mindepth 1 -not -path './.git*' -delete
+                
+                local local_users; local_users=($(fn_get_user_folders "$ST_DIR/data"))
+                for l_user in "${local_users[@]}"; do
+                    mkdir -p "./data/$l_user"
+                    # shellcheck disable=SC2086
+                    rsync -a --delete $rsync_exclude_args "$ST_DIR/data/$l_user/" "./data/$l_user/"
+                done
             fi
 
-            find . -mindepth 1 -not -path './.git*' -delete
-
-            fn_print_warning "正在同步本地数据到临时区..."
-            
             if [ "$SYNC_CONFIG_YAML" == "true" ] && [ -f "$ST_DIR/config.yaml" ]; then
                 cp "$ST_DIR/config.yaml" .
-            fi
-
-            if [ -d "$ST_DIR/data" ]; then
-                local exclude_opts=("--exclude=extensions/" "--exclude=_cache/" "--exclude=backups/" "--exclude=*.log")
-                
-                if [ -n "$USER_MAP" ] && [[ "$USER_MAP" == *":"* ]]; then
-                    local local_user="${USER_MAP%%:*}"; local remote_user="${USER_MAP##*:}"
-                    fn_print_warning "应用用户映射规则: 本地'${local_user}' -> 云端'${remote_user}'"
-                    
-                    rsync -a "${exclude_opts[@]}" --exclude="$local_user/" "$ST_DIR/data/" "./data/"
-                    
-                    if [ -d "$ST_DIR/data/$local_user" ]; then
-                        mkdir -p "./data/$remote_user"
-                        rsync -a "${exclude_opts[@]}" "$ST_DIR/data/$local_user/" "./data/$remote_user/"
-                    fi
-                else
-                    rsync -a "${exclude_opts[@]}" "$ST_DIR/data/" "./data/"
-                fi
-            fi
-
-            if [ -n "$preserved_config_path" ] && [ -f "$preserved_config_path" ]; then
-                mv "$preserved_config_path" "config.yaml"
             fi
             
             git add .
@@ -303,7 +313,6 @@ git_sync_backup_to_cloud() {
         
         local subshell_exit_code=$?
         rm -rf "$temp_dir"
-        [ -n "$preserved_config_path" ] && rm -f "$preserved_config_path"
 
         if [ $subshell_exit_code -eq 0 ] || [ $subshell_exit_code -eq 100 ]; then
             backup_success=true
@@ -318,10 +327,10 @@ git_sync_backup_to_cloud() {
     fn_press_any_key
 }
 
+# 【V2.2.8 彻底重写】
 git_sync_restore_from_cloud() {
     clear; fn_print_header "Git从云端恢复数据 (下载)"; if [ ! -f "$GIT_SYNC_CONFIG_FILE" ]; then fn_print_warning "请先在菜单 [1] 中配置Git同步服务。"; fn_press_any_key; return; fi
     
-    # 【改造】调用新的核心备份函数
     fn_print_warning "此操作将用云端数据【覆盖】本地数据！"
     read -p "是否在恢复前，先对当前数据进行一次本地备份？(强烈推荐) [Y/n]: " backup_confirm
     if [[ ! "$backup_confirm" =~ ^[nN]$ ]]; then 
@@ -366,41 +375,51 @@ git_sync_restore_from_cloud() {
 
         fn_print_warning "正在将云端数据同步到本地..."
         
-        if [ "$SYNC_CONFIG_YAML" == "true" ] && [ -f "$temp_dir/config.yaml" ]; then
-            fn_print_warning "\n--- 正在同步: config.yaml ---"
-            cp "$temp_dir/config.yaml" "$ST_DIR/config.yaml"
+        local rsync_exclude_args="--exclude 'extensions/' --exclude 'backups/' --exclude '*.log'"
+
+        if [ -n "$USER_MAP" ] && [[ "$USER_MAP" == *":"* ]]; then
+            local local_user="${USER_MAP%%:*}"; local remote_user="${USER_MAP##*:}"
+            fn_print_warning "应用用户映射规则: 云端'${remote_user}' -> 本地'${local_user}'"
+            if [ -d "$temp_dir/data/$remote_user" ]; then
+                mkdir -p "$ST_DIR/data/$local_user"
+                # shellcheck disable=SC2086
+                rsync -a --delete $rsync_exclude_args "$temp_dir/data/$remote_user/" "$ST_DIR/data/$local_user/"
+            else
+                fn_print_warning "云端映射文件夹 'data/${remote_user}' 不存在，跳过映射同步。"
+            fi
+        else
+            fn_print_warning "应用镜像同步规则: 恢复所有云端用户文件夹"
+            local remote_users_all; remote_users_all=($(fn_get_user_folders "$temp_dir/data"))
+            local final_remote_users=()
+            if [ -n "$EXCLUDE_USERS" ]; then
+                fn_print_warning "应用排除规则: 将不会从云端恢复以下用户: $EXCLUDE_USERS"
+                for r_user in "${remote_users_all[@]}"; do
+                    if ! [[ " $EXCLUDE_USERS " =~ " $r_user " ]]; then
+                        final_remote_users+=("$r_user")
+                    fi
+                done
+            else
+                final_remote_users=("${remote_users_all[@]}")
+            fi
+            
+            local local_users; local_users=($(fn_get_user_folders "$ST_DIR/data"))
+            for l_user in "${local_users[@]}"; do
+                if ! [[ " ${final_remote_users[*]} " =~ " ${l_user} " ]]; then
+                    fn_print_warning "清理本地多余的用户: $l_user"
+                    rm -rf "$ST_DIR/data/$l_user"
+                fi
+            done
+
+            for r_user in "${final_remote_users[@]}"; do
+                mkdir -p "$ST_DIR/data/$r_user"
+                # shellcheck disable=SC2086
+                rsync -a --delete $rsync_exclude_args "$temp_dir/data/$r_user/" "$ST_DIR/data/$r_user/"
+            done
         fi
 
-        if [ -d "$temp_dir/data" ]; then
-            fn_print_warning "\n--- 正在同步: data (将保留本地 extensions 文件夹) ---"
-            
-            local base_exclude_opts=("--exclude=extensions/")
-
-            if [ -n "$USER_MAP" ] && [[ "$USER_MAP" == *":"* ]]; then
-                local local_user="${USER_MAP%%:*}"; local remote_user="${USER_MAP##*:}"
-                fn_print_warning "应用用户映射规则: 云端'${remote_user}' -> 本地'${local_user}'"
-                
-                local exclude_args=("${base_exclude_opts[@]}")
-                exclude_args+=("--exclude=${remote_user}/")
-                if [ -n "$EXCLUDE_USERS" ]; then
-                    fn_print_warning "应用排除规则: ${EXCLUDE_USERS}"
-                    for user in $EXCLUDE_USERS; do exclude_args+=("--exclude=${user}/"); done
-                fi
-                
-                fn_print_warning "  - 同步基础 data (应用排除规则)..."
-                rsync -av --delete "${exclude_args[@]}" "$temp_dir/data/" "$ST_DIR/data/"
-
-                if [ -d "$temp_dir/data/$remote_user" ]; then
-                    fn_print_warning "\n  - 同步映射文件夹 ${remote_user} -> ${local_user}..."
-                    mkdir -p "$ST_DIR/data/$local_user"
-                    rsync -av --delete "${base_exclude_opts[@]}" "$temp_dir/data/$remote_user/" "$ST_DIR/data/$local_user/"
-                else
-                    fn_print_warning "云端映射文件夹 'data/${remote_user}' 不存在，跳过映射同步。"
-                fi
-            else
-                fn_print_warning "未配置用户映射，将完整恢复 data 目录 (保留本地 extensions)。"
-                rsync -av --delete "${base_exclude_opts[@]}" "$temp_dir/data/" "$ST_DIR/data/"
-            fi
+        if [ "$SYNC_CONFIG_YAML" == "true" ] && [ -f "$temp_dir/config.yaml" ]; then
+            fn_print_warning "正在同步: config.yaml"
+            cp "$temp_dir/config.yaml" "$ST_DIR/config.yaml"
         fi
         
         fn_print_success "\n数据已从云端成功恢复！"
@@ -508,9 +527,10 @@ menu_git_config_management() {
 menu_advanced_sync_settings() {
     fn_update_config_value() {
         local key="$1"; local value="$2"; local file="$3"; touch "$file"
-        if grep -q "^${key}=" "$file"; then
-            sed -i "s|^${key}=.*|${key}=\"${value}\"|" "$file"
-        else
+        # 先删除旧的键值对（如果有）
+        sed -i "/^${key}=/d" "$file"
+        # 如果值不为空，则添加新的键值对
+        if [ -n "$value" ]; then
             echo "${key}=\"${value}\"" >> "$file"
         fi
     }
@@ -663,25 +683,16 @@ main_start() {
     echo -e "\n${YELLOW}SillyTavern 已停止运行。${NC}"; fn_press_any_key
 }
 
-# 【新增】核心本地备份创建函数
 fn_core_create_zip_backup() {
-    local backup_type="$1" # "手动", "恢复前", "更新前"
-    
+    local backup_type="$1"
     if [ ! -d "$ST_DIR" ]; then fn_print_error "SillyTavern 目录不存在，无法创建本地备份。"; return 1; fi
     cd "$ST_DIR" || { fn_print_error "无法进入 SillyTavern 目录进行备份。"; return 1; }
     
-    # 确定备份范围
     local default_paths=("./data" "./public/scripts/extensions/third-party" "./plugins" "./config.yaml")
     local paths_to_backup=()
-    if [ -f "$CONFIG_FILE" ]; then
-        mapfile -t paths_to_backup < "$CONFIG_FILE"
-    fi
-    # 如果配置文件为空或不存在，使用默认值
-    if [ ${#paths_to_backup[@]} -eq 0 ]; then
-        paths_to_backup=("${default_paths[@]}")
-    fi
+    if [ -f "$CONFIG_FILE" ]; then mapfile -t paths_to_backup < "$CONFIG_FILE"; fi
+    if [ ${#paths_to_backup[@]} -eq 0 ]; then paths_to_backup=("${default_paths[@]}"); fi
 
-    # 检查备份上限
     mkdir -p "$BACKUP_ROOT_DIR"
     mapfile -t all_backups < <(find "$BACKUP_ROOT_DIR" -maxdepth 1 -name "*.zip" -printf "%T@ %p\n" | sort -n | cut -d' ' -f2-)
     local current_backup_count=${#all_backups[@]}
@@ -694,10 +705,7 @@ fn_core_create_zip_backup() {
         echo -e "创建新备份将会自动删除最旧的一个备份文件:"
         echo -e "  - ${RED}将被删除: $(basename "$oldest_backup")${NC}"
         read -p "是否继续创建本地备份？[Y/n]: " confirm_overwrite
-        if [[ "$confirm_overwrite" =~ ^[nN]$ ]]; then
-            fn_print_warning "操作已取消。"
-            return 1
-        fi
+        if [[ "$confirm_overwrite" =~ ^[nN]$ ]]; then fn_print_warning "操作已取消。"; return 1; fi
     fi
 
     local timestamp; timestamp=$(date +"%Y-%m-%d_%H-%M")
@@ -707,28 +715,20 @@ fn_core_create_zip_backup() {
     fn_print_warning "正在创建“${backup_type}”类型的本地备份..."
 
     local valid_paths=()
-    for item in "${paths_to_backup[@]}"; do
-        [ -e "$item" ] && valid_paths+=("$item")
-    done
+    for item in "${paths_to_backup[@]}"; do [ -e "$item" ] && valid_paths+=("$item"); done
     if [ ${#valid_paths[@]} -eq 0 ]; then fn_print_error "未能收集到任何有效文件进行本地备份。"; return 1; fi
 
-    local exclude_params=(-x "*/_cache/*" -x "*.log" -x "*/backups/*")
+    local exclude_params=(-x "*/_cache/*" -x "*.log" -x "*/backups/*" -x "*/extensions/*")
     if zip -rq "$backup_zip_path" "${valid_paths[@]}" "${exclude_params[@]}"; then
-        # 成功后清理旧备份
         if [ "$current_backup_count" -ge "$BACKUP_LIMIT" ]; then
-            fn_print_warning "正在清理旧备份..."
-            rm "$oldest_backup"
-            echo "  - 已删除: $(basename "$oldest_backup")"
+            fn_print_warning "正在清理旧备份..."; rm "$oldest_backup"; echo "  - 已删除: $(basename "$oldest_backup")"
         fi
         mapfile -t new_all_backups < <(find "$BACKUP_ROOT_DIR" -maxdepth 1 -name "*.zip")
         fn_print_success "本地备份成功：${backup_name} (当前: ${#new_all_backups[@]}/${BACKUP_LIMIT})"
         echo -e "  ${CYAN}保存路径: ${backup_zip_path}${NC}"
-        cd "$HOME"
-        return 0
+        cd "$HOME"; return 0
     else
-        fn_print_error "创建本地 .zip 备份失败！"
-        cd "$HOME"
-        return 1
+        fn_print_error "创建本地 .zip 备份失败！"; cd "$HOME"; return 1
     fi
 }
 
@@ -782,7 +782,6 @@ main_update_st() {
                     case "$choice" in
                     "" | 'b' | 'B')
                         clear; fn_print_header "步骤 1/5: 创建本地备份"
-                        # 【改造】调用新的核心备份函数
                         if ! fn_core_create_zip_backup "更新前"; then fn_print_error_exit "本地备份创建失败，更新流程终止。"; fi
                         
                         fn_print_header "步骤 2/5: 完整备份当前目录"; local renamed_backup_dir="${ST_DIR}_backup_$(date +%Y%m%d%H%M%S)"; cd "$HOME"; mv "$ST_DIR" "$renamed_backup_dir" || fn_print_error_exit "备份失败！请检查权限或手动重命名后重试。"; fn_print_success "旧目录已完整备份为: $(basename "$renamed_backup_dir")"
@@ -805,7 +804,6 @@ main_update_st() {
     if $update_success; then fn_print_success "SillyTavern 更新完成！"; fi; fn_press_any_key
 }
 
-# 【改造】创建本地备份的交互界面
 run_backup_interactive() {
     clear; fn_print_header "创建新的本地备份"
     if [ ! -f "$ST_DIR/start.sh" ]; then fn_print_warning "SillyTavern 尚未安装，无法备份。"; fn_press_any_key; return; fi
@@ -818,61 +816,33 @@ run_backup_interactive() {
         ["./config.yaml"]="服务器配置 (网络/安全)"
     )
     local options=("./data" "./public/scripts/extensions/third-party" "./plugins" "./config.yaml")
-    # 【改造】默认全选
     local default_selection=("${options[@]}")
 
     local selection_to_load=()
-    if [ -f "$CONFIG_FILE" ]; then
-        mapfile -t selection_to_load <"$CONFIG_FILE"
-    fi
-    if [ ${#selection_to_load[@]} -eq 0 ]; then
-        selection_to_load=("${default_selection[@]}")
-    fi
+    if [ -f "$CONFIG_FILE" ]; then mapfile -t selection_to_load <"$CONFIG_FILE"; fi
+    if [ ${#selection_to_load[@]} -eq 0 ]; then selection_to_load=("${default_selection[@]}"); fi
 
     declare -A selection_status
-    for key in "${options[@]}"; do
-        selection_status["$key"]=false
-    done
-    for key in "${selection_to_load[@]}"; do
-        if [[ -v selection_status["$key"] ]]; then
-            selection_status["$key"]=true
-        fi
-    done
+    for key in "${options[@]}"; do selection_status["$key"]=false; done
+    for key in "${selection_to_load[@]}"; do if [[ -v selection_status["$key"] ]]; then selection_status["$key"]=true; fi; done
 
     while true; do
-        clear
-        fn_print_header "请选择要备份的内容 (定义备份范围)"
-        echo "此处的选择将作为所有本地备份(包括自动备份)的范围。"
-        echo "输入数字可切换勾选状态。"
+        clear; fn_print_header "请选择要备份的内容 (定义备份范围)"
+        echo "此处的选择将作为所有本地备份(包括自动备份)的范围。"; echo "输入数字可切换勾选状态。"
         for i in "${!options[@]}"; do
-            local key="${options[$i]}"
-            local description="${ALL_PATHS[$key]}"
-            if ${selection_status[$key]}; then
-                printf "  [%-2d] ${GREEN}[✓] %s${NC}\n" "$((i + 1))" "$key"
-            else
-                printf "  [%-2d] [ ] %s${NC}\n" "$((i + 1))" "$key"
-            fi
+            local key="${options[$i]}"; local description="${ALL_PATHS[$key]}"
+            if ${selection_status[$key]}; then printf "  [%-2d] ${GREEN}[✓] %s${NC}\n" "$((i + 1))" "$key"; else printf "  [%-2d] [ ] %s${NC}\n" "$((i + 1))" "$key"; fi
             printf "      ${CYAN}(%s)${NC}\n" "$description"
         done
-        echo -e "\n      ${GREEN}[回车] 保存设置并开始备份${NC}"
-        echo -e "      ${RED}[0] 返回上一级${NC}"
+        echo -e "\n      ${GREEN}[回车] 保存设置并开始备份${NC}"; echo -e "      ${RED}[0] 返回上一级${NC}"
         read -p "请操作 [输入数字, 回车 或 0]: " user_choice
         case "$user_choice" in
-        "" | [sS])
-            break
-            ;;
-        0)
-            echo "操作已取消。"
-            return
-            ;;
+        "" | [sS]) break ;;
+        0) echo "操作已取消。"; return ;;
         *)
             if [[ "$user_choice" =~ ^[0-9]+$ ]] && [ "$user_choice" -ge 1 ] && [ "$user_choice" -le "${#options[@]}" ]; then
                 local selected_key="${options[$((user_choice - 1))]}"
-                if ${selection_status[$selected_key]}; then
-                    selection_status[$selected_key]=false
-                else
-                    selection_status[$selected_key]=true
-                fi
+                if ${selection_status[$selected_key]}; then selection_status[$selected_key]=false; else selection_status[$selected_key]=true; fi
             else
                 fn_print_warning "无效输入。"; sleep 1
             fi
@@ -881,59 +851,32 @@ run_backup_interactive() {
     done
 
     local paths_to_save=()
-    for key in "${options[@]}"; do
-        if ${selection_status[$key]}; then
-            paths_to_save+=("$key")
-        fi
-    done
+    for key in "${options[@]}"; do if ${selection_status[$key]}; then paths_to_save+=("$key"); fi; done
 
-    if [ ${#paths_to_save[@]} -eq 0 ]; then
-        fn_print_warning "您没有选择任何项目，本地备份已取消。"
-        fn_press_any_key
-        return
-    fi
+    if [ ${#paths_to_save[@]} -eq 0 ]; then fn_print_warning "您没有选择任何项目，本地备份已取消。"; fn_press_any_key; return; fi
     
-    # 保存用户的选择到配置文件
-    printf "%s\n" "${paths_to_save[@]}" > "$CONFIG_FILE"
-    fn_print_success "备份范围已保存！"
-    sleep 1
-
-    # 【改造】调用核心函数
-    if fn_core_create_zip_backup "手动"; then
-        : # Success message is already inside the core function
-    else
-        fn_print_error "手动本地备份创建失败。"
-    fi
+    printf "%s\n" "${paths_to_save[@]}" > "$CONFIG_FILE"; fn_print_success "备份范围已保存！"; sleep 1
+    if fn_core_create_zip_backup "手动"; then :; else fn_print_error "手动本地备份创建失败。"; fi
     fn_press_any_key
 }
 
-# 【新增】本地备份管理界面
 main_manage_backups() {
     while true; do
-        clear
-        mkdir -p "$BACKUP_ROOT_DIR"
+        clear; mkdir -p "$BACKUP_ROOT_DIR"
         mapfile -t backup_files < <(find "$BACKUP_ROOT_DIR" -maxdepth 1 -name "*.zip" -printf "%T@ %p\n" | sort -nr | cut -d' ' -f2-)
         local count=${#backup_files[@]}
 
         fn_print_header "本地备份管理 (当前: ${count}/${BACKUP_LIMIT})"
 
-        if [ "$count" -eq 0 ]; then
-            echo -e "      ${YELLOW}没有找到任何本地备份文件。${NC}"
-        else
+        if [ "$count" -eq 0 ]; then echo -e "      ${YELLOW}没有找到任何本地备份文件。${NC}"; else
             echo " [序号] [类型]   [创建日期与时间]  [大小]  [文件名]"
             echo " ─────────────────────────────────────────────────────────────"
             for i in "${!backup_files[@]}"; do
-                local file_path="${backup_files[$i]}"
-                local filename; filename=$(basename "$file_path")
-                
-                # 解析文件名
+                local file_path="${backup_files[$i]}"; local filename; filename=$(basename "$file_path")
                 local type; type=$(echo "$filename" | awk -F'[_.]' '{print $3}')
                 local date; date=$(echo "$filename" | awk -F'[_.]' '{print $4}')
                 local time; time=$(echo "$filename" | awk -F'[_.]' '{print $5}')
-                
-                # 获取文件大小
                 local size; size=$(du -h "$file_path" | awk '{print $1}')
-                
                 printf " [%2d]   %-7s  %s %s  %-6s  %s\n" "$((i+1))" "$type" "$date" "$time" "$size" "$filename"
             done
         fi
@@ -942,51 +885,36 @@ main_manage_backups() {
         echo -e "  按 ${CYAN}[回车] 键直接返回${NC}，或输入 ${CYAN}[0] 返回${NC}。"
         read -p "  请操作: " selection
 
-        if [[ -z "$selection" || "$selection" == "0" ]]; then
-            break
-        fi
+        if [[ -z "$selection" || "$selection" == "0" ]]; then break; fi
 
         local files_to_delete=()
-        if [[ "$selection" == "all" || "$selection" == "*" ]]; then
-            files_to_delete=("${backup_files[@]}")
-        else
+        if [[ "$selection" == "all" || "$selection" == "*" ]]; then files_to_delete=("${backup_files[@]}"); else
             for index in $selection; do
                 if [[ "$index" =~ ^[0-9]+$ ]] && [ "$index" -ge 1 ] && [ "$index" -le "$count" ]; then
                     files_to_delete+=("${backup_files[$((index-1))]}")
                 else
-                    fn_print_error "无效的序号: $index"
-                    sleep 2
-                    continue 2 # Continue the outer while loop
+                    fn_print_error "无效的序号: $index"; sleep 2; continue 2
                 fi
             done
         fi
 
         if [ ${#files_to_delete[@]} -gt 0 ]; then
-            clear
-            fn_print_warning "警告：以下本地备份文件将被永久删除，此操作不可撤销！"
-            for file in "${files_to_delete[@]}"; do
-                echo -e "  - ${RED}$(basename "$file")${NC}"
-            done
+            clear; fn_print_warning "警告：以下本地备份文件将被永久删除，此操作不可撤销！"
+            for file in "${files_to_delete[@]}"; do echo -e "  - ${RED}$(basename "$file")${NC}"; done
             read -p $'\n'"确认要删除这 ${#files_to_delete[@]} 个文件吗？[y/N]: " confirm_delete
             if [[ "$confirm_delete" =~ ^[yY]$ ]]; then
-                for file in "${files_to_delete[@]}"; do
-                    rm "$file"
-                done
-                fn_print_success "选定的本地备份文件已删除。"
-                sleep 2
+                for file in "${files_to_delete[@]}"; do rm "$file"; done
+                fn_print_success "选定的本地备份文件已删除。"; sleep 2
             else
-                fn_print_warning "删除操作已取消。"
-                sleep 2
+                fn_print_warning "删除操作已取消。"; sleep 2
             fi
         fi
     done
 }
 
-# 【新增】本地备份主菜单
 main_backup_menu() {
     while true; do
-        clear
-        fn_print_header "本地备份管理"
+        clear; fn_print_header "本地备份管理"
         echo -e "      [1] ${CYAN}创建新的本地备份${NC}"
         echo -e "      [2] ${CYAN}管理已有的本地备份${NC}\n"
         echo -e "      [0] ${CYAN}返回主菜单${NC}\n"
@@ -1030,13 +958,12 @@ while true; do
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
     ╔═════════════════════════════════╗
-    ║       SillyTavern 助手 v2.2.3     ║
+    ║       SillyTavern 助手 v2.2.8     ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
     update_notice=""; if [ -f "$UPDATE_FLAG_FILE" ]; then update_notice=" ${YELLOW}[!] 有更新${NC}"; fi
 
-    # 【改造】主菜单
     echo -e "${NC}\n    选择一个操作来开始：\n"
     echo -e "      [1] ${GREEN}${BOLD}启动 SillyTavern${NC}"
     echo -e "      [2] ${CYAN}${BOLD}数据同步 (Git 云端)${NC}"
@@ -1051,7 +978,7 @@ EOF
     case $choice in
     1) main_start ;;
     2) menu_git_sync ;;
-    3) main_backup_menu ;; # 【改造】调用新的子菜单
+    3) main_backup_menu ;;
     4) main_install ;;
     5) main_update_st ;;
     6) main_update_script ;;
