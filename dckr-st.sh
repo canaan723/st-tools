@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# SillyTavern 助手 v1.5
+# SillyTavern 助手 v1.6
 # 作者: Qingjue | 小红书号: 826702880
 
 # --- [核心] 确保脚本由 Bash 执行 ---
@@ -101,7 +101,7 @@ fn_optimize_docker() {
         "https://dockerproxy.1panel.live" "https://hub.rat.dev" "https://docker.m.ixdev.cn" 
         "https://hub2.nat.tf" "https://docker.1panel.dev" "https://docker.amingg.com" "https://docker.xuanyuan.me" 
         "https://dytt.online" "https://lispy.org" "https://docker.xiaogenban1993.com" 
-        "https://docker-0.unsee.tech" "https://666860.xyz"
+        "https://docker-0.unsee.tech" "https://666860.xyz" "https://hubproxy-advj.onrender.com"
     )
     docker rmi hello-world > /dev/null 2>&1 || true
     local results=""; local official_hub_ok=false
@@ -897,7 +897,7 @@ main_menu() {
     while true; do
         tput reset
         echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.5${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.6${NC}       ${CYAN}║${NC}"
         echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
         echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
 

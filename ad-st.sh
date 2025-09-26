@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# SillyTavern 助手 v2.0
+# SillyTavern 助手 v2.1
 # 作者: Qingjue | 小红书号: 826702880
 
 # =========================================================================
@@ -48,6 +48,7 @@ MIRROR_LIST=(
     "https://gh.catmak.name/https://github.com/SillyTavern/SillyTavern.git"
     "https://hub.gitmirror.com/https://github.com/SillyTavern/SillyTavern.git"
     "https://gh-proxy.net/https://github.com/SillyTavern/SillyTavern.git"
+    "https://hubproxy-advj.onrender.com/https://github.com/SillyTavern/SillyTavern.git"
 )
 
 # =========================================================================
@@ -789,7 +790,7 @@ while true; do
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
     ╔═════════════════════════════════╗
-    ║       SillyTavern 助手 v2.0     ║
+    ║       SillyTavern 助手 v2.1     ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF

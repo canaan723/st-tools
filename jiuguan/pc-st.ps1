@@ -1,4 +1,4 @@
-﻿# SillyTavern 助手 v2.0
+﻿# SillyTavern 助手 v2.1
 # 作者: Qingjue | 小红书号: 826702880
 # =========================================================================
 
@@ -53,7 +53,8 @@ $Mirror_List = @(
     "https://proxy.pipers.cn/https://github.com/SillyTavern/SillyTavern.git",
     "https://gh.catmak.name/https://github.com/SillyTavern/SillyTavern.git",
     "https://hub.gitmirror.com/https://github.com/SillyTavern/SillyTavern.git",
-    "https://gh-proxy.net/https://github.com/SillyTavern/SillyTavern.git"
+    "https://gh-proxy.net/https://github.com/SillyTavern/SillyTavern.git",
+    "https://hubproxy-advj.onrender.com/https://github.com/SillyTavern/SillyTavern.git"
 )
 
 # 用于缓存镜像测速结果，避免重复测试
@@ -1344,7 +1345,7 @@ while ($true) {
     Clear-Host
     Write-Host @"
     ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v2.0      ║
+    ║      SillyTavern 助手 v2.1      ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 "@ -ForegroundColor Cyan
