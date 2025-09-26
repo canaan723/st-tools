@@ -789,7 +789,7 @@ while true; do
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
     ╔═════════════════════════════════╗
-    ║       SillyTavern 助手 v2.0       ║
+    ║       SillyTavern 助手 v2.0     ║
     ║   by Qingjue | XHS:826702880    ║
     ╚═════════════════════════════════╝
 EOF
