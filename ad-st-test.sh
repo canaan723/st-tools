@@ -2,10 +2,6 @@
 # 作者: 清绝 | 网址: blog.qjyg.de
 # 清绝咕咕助手 v2.2
 
-# =========================================================================
-#   环境与常量定义
-# =========================================================================
-
 BOLD='\033[1m'
 CYAN='\033[1;36m'
 GREEN='\033[1;32m'
@@ -45,38 +41,64 @@ MIRROR_LIST=(
     "https://hubproxy-advj.onrender.com/https://github.com/SillyTavern/SillyTavern.git"
 )
 
-# =========================================================================
-#   辅助函数库
-# =========================================================================
-
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.3${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.2${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
 }
-fn_print_header() { echo -e "\n${CYAN}═══ ${BOLD}$1 ${NC}═══${NC}"; }
-fn_print_success() { echo -e "${GREEN}✓ ${BOLD}$1${NC}"; }
-fn_print_warning() { echo -e "${YELLOW}⚠ $1${NC}" >&2; }
-fn_print_error() { echo -e "${RED}✗ $1${NC}" >&2; }
-fn_print_error_exit() { echo -e "\n${RED}✗ ${BOLD}$1${NC}\n${RED}流程已终止。${NC}" >&2; fn_press_any_key; exit 1; }
-fn_press_any_key() { echo -e "\n${CYAN}请按任意键返回...${NC}"; read -n 1 -s; }
-fn_check_command() { command -v "$1" >/dev/null 2>&1; }
+
+fn_print_header() {
+    echo -e "\n${CYAN}═══ ${BOLD}$1 ${NC}═══${NC}"
+}
+
+fn_print_success() {
+    echo -e "${GREEN}✓ ${BOLD}$1${NC}"
+}
+
+fn_print_warning() {
+    echo -e "${YELLOW}⚠ $1${NC}" >&2
+}
+
+fn_print_error() {
+    echo -e "${RED}✗ $1${NC}" >&2
+}
+
+fn_print_error_exit() {
+    echo -e "\n${RED}✗ ${BOLD}$1${NC}\n${RED}流程已终止。${NC}" >&2
+    fn_press_any_key
+    exit 1
+}
+
+fn_press_any_key() {
+    echo -e "\n${CYAN}请按任意键返回...${NC}"
+    read -n 1 -s
+}
+
+fn_check_command() {
+    command -v "$1" >/dev/null 2>&1
+}
 
 fn_get_user_folders() {
-    local target_dir="$1"; if [ ! -d "$target_dir" ]; then return; fi
+    local target_dir="$1"
+    if [ ! -d "$target_dir" ]; then return; fi
     mapfile -t all_subdirs < <(find "$target_dir" -mindepth 1 -maxdepth 1 -type d -exec basename {} \;)
     local user_folders=()
     for dir in "${all_subdirs[@]}"; do
         local is_system_folder=false
         for sys_folder in "${TOP_LEVEL_SYSTEM_FOLDERS[@]}"; do
-            if [[ "data/$dir" == "$sys_folder" ]]; then is_system_folder=true; break; fi
+            if [[ "data/$dir" == "$sys_folder" ]]; then
+                is_system_folder=true
+                break
+            fi
         done
-        if [ "$is_system_folder" = false ]; then user_folders+=("$dir"); fi
+        if [ "$is_system_folder" = false ]; then
+            user_folders+=("$dir")
+        fi
     done
     echo "${user_folders[@]}"
 }
 
 fn_find_fastest_mirror() {
-    local mode="$1" # "official_only", "mirrors_only", "all"
+    local mode="$1"
     if [ -z "$mode" ]; then mode="all"; fi
 
     if [[ "$mode" != "all" && ${#CACHED_MIRRORS[@]} -gt 0 ]]; then
@@ -85,14 +107,13 @@ fn_find_fastest_mirror() {
         return 0
     fi
     if [[ "$mode" == "all" ]]; then
-        CACHED_MIRRORS=() # 全量测试时清空缓存
+        CACHED_MIRRORS=()
     fi
 
     fn_print_warning "开始测试 Git 镜像连通性与速度 (用于下载)..."
     local github_url="https://github.com/SillyTavern/SillyTavern.git"
     local sorted_successful_mirrors=()
     
-    # 测试官方源
     if [[ "$mode" == "official_only" || "$mode" == "all" ]]; then
         if [[ " ${MIRROR_LIST[*]} " =~ " ${github_url} " ]]; then
             echo -e "  - 优先测试: GitHub 官方源..." >&2
@@ -113,7 +134,6 @@ fn_find_fastest_mirror() {
         fi
     fi
 
-    # 测试镜像源
     if [[ "$mode" == "mirrors_only" || "$mode" == "all" ]]; then
         local other_mirrors=()
         for mirror in "${MIRROR_LIST[@]}"; do
@@ -122,14 +142,20 @@ fn_find_fastest_mirror() {
 
         if [ ${#other_mirrors[@]} -gt 0 ]; then
             echo -e "${YELLOW}已启动并行测试，将完整测试所有镜像线路...${NC}" >&2
-            local results_file; results_file=$(mktemp); local pids=()
+            local results_file
+            results_file=$(mktemp)
+            local pids=()
             for mirror_url in "${other_mirrors[@]}"; do
                 (
-                    local mirror_host; mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
-                    local start_time; start_time=$(date +%s.%N)
+                    local mirror_host
+                    mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
+                    local start_time
+                    start_time=$(date +%s.%N)
                     if timeout 10s git ls-remote "$mirror_url" HEAD >/dev/null 2>&1; then
-                        local end_time; end_time=$(date +%s.%N)
-                        local elapsed_time; elapsed_time=$(echo "$end_time - $start_time" | bc)
+                        local end_time
+                        end_time=$(date +%s.%N)
+                        local elapsed_time
+                        elapsed_time=$(echo "$end_time - $start_time" | bc)
                         echo "$elapsed_time $mirror_url" >>"$results_file"
                         echo -e "  - 测试: ${CYAN}${mirror_host}${NC} - 耗时 ${GREEN}${elapsed_time}s${NC} ${GREEN}[成功]${NC}" >&2
                     else
@@ -153,7 +179,8 @@ fn_find_fastest_mirror() {
         CACHED_MIRRORS=("${sorted_successful_mirrors[@]}")
         printf '%s\n' "${CACHED_MIRRORS[@]}"
     else
-        fn_print_error "所有线路均测试失败。"; return 1
+        fn_print_error "所有线路均测试失败。"
+        return 1
     fi
 }
 
@@ -163,13 +190,15 @@ fn_run_npm_install() {
 
     fn_print_warning "正在同步依赖包 (npm install)..."
     if npm install --no-audit --no-fund --omit=dev; then
-        fn_print_success "依赖包同步完成。"; return 0
+        fn_print_success "依赖包同步完成。"
+        return 0
     fi
 
     fn_print_warning "依赖包同步失败，将自动清理缓存并重试..."
     npm cache clean --force >/dev/null 2>&1
     if npm install --no-audit --no-fund --omit=dev; then
-        fn_print_success "依赖包重试同步成功。"; return 0
+        fn_print_success "依赖包重试同步成功。"
+        return 0
     fi
 
     fn_print_warning "国内镜像安装失败，将切换到NPM官方源进行最后尝试..."
@@ -181,9 +210,11 @@ fn_run_npm_install() {
     npm config set registry https://registry.npmmirror.com
 
     if [ $exit_code -eq 0 ]; then
-        fn_print_success "使用官方源安装依赖成功！"; return 0
+        fn_print_success "使用官方源安装依赖成功！"
+        return 0
     else
-        fn_print_error "所有安装尝试均失败。"; return 1
+        fn_print_error "所有安装尝试均失败。"
+        return 1
     fi
 }
 
@@ -194,25 +225,25 @@ fn_update_termux_source() {
     echo -e "  - ${GREEN}国内网络${NC}: ${BOLD}依次触屏选择【第一项】和【第三项】并点击 OK${NC}。"
     echo -e "  - ${GREEN}国外网络${NC}: ${BOLD}选择两次【第一项】并点击 OK${NC}。"
     echo -e "  - 之后安装会自动进行，无需其他操作。"
-    echo -e "\n${CYAN}请按任意键以继续...${NC}"; read -n 1 -s
+    echo -e "\n${CYAN}请按任意键以继续...${NC}"
+    read -n 1 -s
 
     for i in {1..3}; do
         termux-change-repo
         fn_print_warning "正在更新软件包列表 (第 $i/3 次尝试)..."
         if pkg update -y; then
-            fn_print_success "软件源配置并更新成功！"; return 0
+            fn_print_success "软件源配置并更新成功！"
+            return 0
         fi
         if [ $i -lt 3 ]; then
-            fn_print_error "当前选择的镜像源似乎有问题，正在尝试自动切换..."; sleep 2
+            fn_print_error "当前选择的镜像源似乎有问题，正在尝试自动切换..."
+            sleep 2
         fi
     done
 
-    fn_print_error "已尝试 3 次，但均无法成功更新软件源。"; return 1
+    fn_print_error "已尝试 3 次，但均无法成功更新软件源。"
+    return 1
 }
-
-# =========================================================================
-#   Git 同步功能模块
-# =========================================================================
 
 fn_git_check_deps() {
     if ! fn_check_command "git" || ! fn_check_command "rsync"; then
@@ -228,8 +259,14 @@ fn_git_ensure_identity() {
         clear
         fn_print_header "首次使用Git同步：配置身份"
         local user_name user_email
-        while true; do read -p "请输入您的Git用户名 (例如 Your Name): " user_name; [[ -n "$user_name" ]] && break || fn_print_error "用户名不能为空！"; done
-        while true; do read -p "请输入您的Git邮箱 (例如 you@example.com): " user_email; [[ -n "$user_email" ]] && break || fn_print_error "邮箱不能为空！"; done
+        while true; do
+            read -p "请输入您的Git用户名 (例如 Your Name): " user_name
+            [[ -n "$user_name" ]] && break || fn_print_error "用户名不能为空！"
+        done
+        while true; do
+            read -p "请输入您的Git邮箱 (例如 you@example.com): " user_email
+            [[ -n "$user_email" ]] && break || fn_print_error "邮箱不能为空！"
+        done
         git config --global user.name "$user_name"
         git config --global user.email "$user_email"
         fn_print_success "Git身份信息已配置成功！"
@@ -242,8 +279,14 @@ fn_git_configure() {
     clear
     fn_print_header "配置 Git 同步服务"
     local repo_url repo_token
-    while true; do read -p "请输入您的私有仓库HTTPS地址: " repo_url; [[ -n "$repo_url" ]] && break || fn_print_error "仓库地址不能为空！"; done
-    while true; do read -p "请输入您的Personal Access Token: " repo_token; [[ -n "$repo_token" ]] && break || fn_print_error "Token不能为空！"; done
+    while true; do
+        read -p "请输入您的私有仓库HTTPS地址: " repo_url
+        [[ -n "$repo_url" ]] && break || fn_print_error "仓库地址不能为空！"
+    done
+    while true; do
+        read -p "请输入您的Personal Access Token: " repo_token
+        [[ -n "$repo_token" ]] && break || fn_print_error "Token不能为空！"
+    done
     echo "REPO_URL=\"$repo_url\"" > "$GIT_SYNC_CONFIG_FILE"
     echo "REPO_TOKEN=\"$repo_token\"" >> "$GIT_SYNC_CONFIG_FILE"
     chmod 600 "$GIT_SYNC_CONFIG_FILE"
@@ -279,10 +322,8 @@ fn_git_test_one_mirror_push() {
 
 fn_git_construct_authed_url() {
     local public_mirror_url="$1"
-    # shellcheck source=/dev/null
     source "$GIT_SYNC_CONFIG_FILE"
     
-    # 提前检查配置是否存在
     if [[ -z "$REPO_URL" || -z "$REPO_TOKEN" ]]; then
         return 1
     fi
@@ -291,27 +332,22 @@ fn_git_construct_authed_url() {
     repo_path=$(echo "$REPO_URL" | sed 's|https://github.com/||')
     local authed_private_url="https://${REPO_TOKEN}@github.com/${repo_path}"
 
-    # 规则1: 直接推送到官方 GitHub
     if [[ "$public_mirror_url" == "https://github.com/SillyTavern/SillyTavern.git" ]]; then
         echo "$authed_private_url"
         return 0
     fi
     
-    # 规则2: 直接替换域名的镜像 (如 hub.gitmirror.com)
     if [[ "$public_mirror_url" =~ ^https://hub\.gitmirror\.com/ ]]; then
         echo "https://${REPO_TOKEN}@hub.gitmirror.com/${repo_path}"
         return 0
     fi
 
-    # 规则3: 路径中包含 /gh/ 的镜像 (如 git.ark.xx.kg/gh/, xget.xi-xu.me/gh/)
     if [[ "$public_mirror_url" =~ ^https://([^/]+)/gh/ ]]; then
         local proxy_domain="${BASH_REMATCH[1]}"
         echo "https://${REPO_TOKEN}@${proxy_domain}/gh/${repo_path}"
         return 0
     fi
 
-    # 规则4: 将完整URL作为路径的代理 (如 gh-proxy.com, gh.llkk.cc 等)
-    # 提取代理前缀，例如 "https://gh-proxy.com/"
     local proxy_prefix
     proxy_prefix=$(echo "$public_mirror_url" | sed -E 's|/(https?://)?github.com/.*||')
     if [[ -n "$proxy_prefix" && "$proxy_prefix" != "$public_mirror_url" ]]; then
@@ -319,15 +355,13 @@ fn_git_construct_authed_url() {
         return 0
     fi
 
-    # 如果以上规则都未匹配，则返回失败
     return 1
 }
 
 fn_git_find_pushable_mirror() {
-    local mode="$1" # "official_only", "mirrors_only", "all"
+    local mode="$1"
     if [ -z "$mode" ]; then mode="all"; fi
 
-    # shellcheck source=/dev/null
     source "$GIT_SYNC_CONFIG_FILE"
     if [[ -z "$REPO_URL" || -z "$REPO_TOKEN" ]]; then
         fn_print_error "Git同步配置不完整或不存在。"
@@ -337,7 +371,6 @@ fn_git_find_pushable_mirror() {
     local github_public_url="https://github.com/SillyTavern/SillyTavern.git"
     local successful_urls=()
     
-    # 测试官方源
     if [[ "$mode" == "official_only" || "$mode" == "all" ]]; then
         if [[ " ${MIRROR_LIST[*]} " =~ " ${github_public_url} " ]]; then
             local official_url
@@ -360,7 +393,6 @@ fn_git_find_pushable_mirror() {
         fi
     fi
     
-    # 测试镜像源
     if [[ "$mode" == "mirrors_only" || "$mode" == "all" ]]; then
         local other_mirrors=()
         for mirror_url in "${MIRROR_LIST[@]}"; do
@@ -369,11 +401,15 @@ fn_git_find_pushable_mirror() {
         
         if [ ${#other_mirrors[@]} -gt 0 ]; then
             echo -e "${YELLOW}已启动并行测试，将完整测试所有镜像...${NC}" >&2
-            local results_file; results_file=$(mktemp); local pids=()
+            local results_file
+            results_file=$(mktemp)
+            local pids=()
             for mirror_url in "${other_mirrors[@]}"; do
                 ( 
-                    local authed_push_url; authed_push_url=$(fn_git_construct_authed_url "$mirror_url") || exit 1
-                    local mirror_host; mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
+                    local authed_push_url
+                    authed_push_url=$(fn_git_construct_authed_url "$mirror_url") || exit 1
+                    local mirror_host
+                    mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
                     if fn_git_test_one_mirror_push "$authed_push_url"; then 
                         echo "$authed_push_url" >> "$results_file"
                         echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${GREEN}[成功]${NC}" >&2
@@ -411,10 +447,8 @@ fn_git_backup_to_cloud() {
     fi
     
     local push_urls=()
-    # 阶段一：只测官方
     mapfile -t push_urls < <(fn_git_find_pushable_mirror "official_only")
 
-    # 阶段二：官方失败，测镜像
     if [ ${#push_urls[@]} -eq 0 ]; then
         mapfile -t push_urls < <(fn_git_find_pushable_mirror "mirrors_only")
         if [ ${#push_urls[@]} -eq 0 ]; then
@@ -492,7 +526,7 @@ fn_git_backup_to_cloud() {
             rm -rf "$temp_dir"
             if [ $subshell_exit_code -eq 0 ] || [ $subshell_exit_code -eq 100 ]; then
                 backup_success=true
-                break # 跳出 for 循环
+                break
             else
                 fn_print_error "使用线路 [${chosen_host}] 备份失败，正在切换..."
                 continue
@@ -500,20 +534,17 @@ fn_git_backup_to_cloud() {
         done
 
         if ! $backup_success; then
-            # 阶段三：如果所有预选线路都失败了，并且这是第一次尝试
             if [ $attempts -eq 1 ]; then
                 fn_print_error "已尝试所有预选线路，但备份均失败。"
                 fn_print_warning "将进行全量测速并重试所有可用线路..."
                 mapfile -t push_urls < <(fn_git_find_pushable_mirror "all")
                 if [ ${#push_urls[@]} -eq 0 ]; then
                     fn_print_error "全量测速后未找到任何可用上传线路。"
-                    break # 跳出 while 循环
+                    break
                 fi
-                # 继续 while 循环以使用新列表重试
             else
-                # 如果已经是第二次尝试（全量测速后）仍然失败
                 fn_print_error "已尝试所有可用线路，但备份均失败。"
-                break # 跳出 while 循环
+                break
             fi
         fi
     done
@@ -550,15 +581,12 @@ fn_git_restore_from_cloud() {
     local SYNC_CONFIG_YAML="false"
     local USER_MAP=""
     if [ -f "$SYNC_RULES_CONFIG_FILE" ]; then
-        # shellcheck source=/dev/null
         source "$SYNC_RULES_CONFIG_FILE"
     fi
 
     local pull_urls=()
-    # 阶段一：只测官方
     mapfile -t pull_urls < <(fn_find_fastest_mirror "official_only")
 
-    # 阶段二：官方失败，测镜像
     if [ ${#pull_urls[@]} -eq 0 ]; then
         mapfile -t pull_urls < <(fn_find_fastest_mirror "mirrors_only")
         if [ ${#pull_urls[@]} -eq 0 ]; then
@@ -572,7 +600,6 @@ fn_git_restore_from_cloud() {
     temp_dir=$(mktemp -d)
     (
         cd "$HOME" || exit 1
-        # shellcheck source=/dev/null
         source "$GIT_SYNC_CONFIG_FILE"
         local repo_path
         repo_path=$(echo "$REPO_URL" | sed 's|https://github.com/||')
@@ -592,27 +619,24 @@ fn_git_restore_from_cloud() {
                 
                 if git clone --depth 1 "$pull_url_with_auth" "$temp_dir"; then
                     clone_success=true
-                    break # 成功，跳出 for 循环
+                    break
                 fi
                 fn_print_error "下载云端数据失败！正在切换下一条线路..."
                 rm -rf "$temp_dir"/* "$temp_dir"/.* 2>/dev/null
             done
 
             if ! $clone_success; then
-                # 阶段三：如果所有预选线路都失败了，并且这是第一次尝试
                 if [ $attempts -eq 1 ]; then
                     fn_print_error "已尝试所有预选线路，但下载均失败。"
                     fn_print_warning "将进行全量测速并重试所有可用线路..."
                     mapfile -t pull_urls < <(fn_find_fastest_mirror "all")
                     if [ ${#pull_urls[@]} -eq 0 ]; then
                         fn_print_error "全量测速后未找到任何可用下载线路。"
-                        break # 跳出 while 循环
+                        break
                     fi
-                    # 继续 while 循环以使用新列表重试
                 else
-                    # 如果已经是第二次尝试（全量测速后）仍然失败
                     fn_print_error "已尝试所有可用线路，但恢复均失败。"
-                    break # 跳出 while 循环
+                    break
                 fi
             fi
         done
@@ -668,7 +692,7 @@ fn_git_restore_from_cloud() {
         exit 0
     )
     
-    rm -rf "$temp__dir"
+    rm -rf "$temp_dir"
     fn_press_any_key
 }
 
@@ -799,7 +823,6 @@ fn_menu_advanced_sync() {
         local SYNC_CONFIG_YAML="false"
         local USER_MAP=""
         if [ -f "$SYNC_RULES_CONFIG_FILE" ]; then
-            # shellcheck source=/dev/null
             source "$SYNC_RULES_CONFIG_FILE"
         fi
 
@@ -863,7 +886,6 @@ fn_menu_git_sync() {
         clear
         fn_print_header "数据同步 (Git 方案)"
         if [ -f "$GIT_SYNC_CONFIG_FILE" ]; then
-            # shellcheck source=/dev/null
             source "$GIT_SYNC_CONFIG_FILE"
             if [ -n "$REPO_URL" ]; then
                 local current_repo_name
@@ -889,10 +911,6 @@ fn_menu_git_sync() {
         esac
     done
 }
-
-# =========================================================================
-#   网络代理功能模块
-# =========================================================================
 
 fn_apply_proxy() {
     if [ -f "$PROXY_CONFIG_FILE" ]; then
@@ -953,10 +971,6 @@ fn_menu_proxy() {
         esac
     done
 }
-
-# =========================================================================
-#   核心功能模块
-# =========================================================================
 
 fn_start_st() {
     clear
@@ -1077,10 +1091,8 @@ fn_install_st() {
         local download_success=false
         local mirrors_to_try=()
         
-        # 阶段一：只测官方
         mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "official_only")
         
-        # 阶段二：官方失败，测镜像
         if [ ${#mirrors_to_try[@]} -eq 0 ]; then
             mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "mirrors_only")
             if [ ${#mirrors_to_try[@]} -eq 0 ]; then
@@ -1088,7 +1100,6 @@ fn_install_st() {
                 if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
                     fn_print_error_exit "下载失败，用户取消操作。"
                 else
-                    # 用户选择重试，需要一个方式来重新开始循环，这里简单退出，让用户重选菜单
                     fn_print_warning "请重新选择部署选项以重试。"
                     fn_press_any_key
                     return
@@ -1112,7 +1123,6 @@ fn_install_st() {
             done
 
             if ! $download_success; then
-                # 阶段三：实际下载失败，全量测速后重试
                 fn_print_error "已尝试所有预选线路，但下载均失败。"
                 fn_print_warning "将进行全量测速并重试所有可用线路..."
                 mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "all")
@@ -1121,9 +1131,7 @@ fn_install_st() {
                     if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
                         fn_print_error_exit "下载失败，用户取消操作。"
                     fi
-                    # 继续循环以重新测速
                 else
-                    # 找到新线路，循环将继续尝试
                     continue
                 fi
             fi
@@ -1162,7 +1170,6 @@ fn_update_st() {
     local update_success=false
     local github_url="https://github.com/SillyTavern/SillyTavern.git"
 
-    # 封装冲突处理逻辑，避免代码重复
     handle_merge_conflict() {
         local git_output="$1"
         clear
@@ -1202,7 +1209,7 @@ fn_update_st() {
             echo -e "\n${CYAN}请按任意键，启动更新后的 SillyTavern...${NC}"
             read -n 1 -s
             fn_start_st
-            exit 0 # 正常退出脚本
+            exit 0
             ;;
         '1')
             fn_print_warning "正在执行强制覆盖 (git reset --hard)..."
@@ -1214,7 +1221,6 @@ fn_update_st() {
             else
                 fn_print_error "强制更新失败！"
             fi
-            # 无论成功失败，都跳出主循环
             return 1
             ;;
         *) 
@@ -1224,12 +1230,10 @@ fn_update_st() {
         esac
     }
 
-    # 主更新循环
     while ! $update_success; do
         local mirrors_to_try=()
         local pull_succeeded_this_round=false
 
-        # 阶段一：尝试官方源
         fn_print_warning "正在尝试使用官方源 [github.com] 更新..."
         mirrors_to_try=("$github_url")
         for mirror_url in "${mirrors_to_try[@]}"; do
@@ -1240,14 +1244,12 @@ fn_update_st() {
                 pull_succeeded_this_round=true; break
             elif echo "$git_output" | grep -qE "overwritten by merge|Please commit|unmerged files"; then
                 handle_merge_conflict "$git_output"
-                # handle_merge_conflict 会自行处理流程，这里直接返回
                 fn_press_any_key; return
             else
                 fn_print_error "使用官方源更新失败！错误: $(echo "$git_output" | tail -n 1)"
             fi
         done
 
-        # 阶段二：如果官方失败，尝试镜像
         if ! $pull_succeeded_this_round; then
             fn_print_warning "将开始测试并尝试使用镜像源..."
             mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "mirrors_only")
@@ -1268,7 +1270,6 @@ fn_update_st() {
             done
         fi
         
-        # 阶段三：如果仍然失败，进行全量测试和最终尝试
         if ! $pull_succeeded_this_round; then
             fn_print_error "预选线路均更新失败。"
             fn_print_warning "将进行全量测速并重试所有可用线路..."
@@ -1289,23 +1290,20 @@ fn_update_st() {
             done
         fi
 
-        # 检查本轮所有尝试的最终结果
         if $pull_succeeded_this_round; then
             fn_print_success "代码更新成功。"
             if fn_run_npm_install; then
-                update_success=true # 完全成功，跳出主循环
+                update_success=true
             else
                 fn_print_error "代码已更新，但依赖安装失败。更新未全部完成。"
-                break # 依赖安装失败，也跳出循环
+                break
             fi
         else
-            # 所有阶段的所有线路都失败了
             read -p $'\n'"${RED}所有线路均更新失败。是否重新测速并重试？(直接回车=是, 输入n=否): ${NC}" retry_choice
             if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
                 fn_print_warning "更新失败，用户取消操作。"
-                break # 用户取消，跳出主循环
+                break
             fi
-            # 用户选择重试，主循环将继续
         fi
     done
 
@@ -1494,10 +1492,6 @@ fn_menu_backup() {
     done
 }
 
-# =========================================================================
-#   脚本自身管理与杂项
-# =========================================================================
-
 fn_update_script() {
     clear
     fn_print_header "更新咕咕助手脚本"
@@ -1616,15 +1610,13 @@ fn_migrate_configs() {
     fi
 }
 
-# =========================================================================
-#   主菜单与脚本入口
-# =========================================================================
-
 fn_migrate_configs
 fn_apply_proxy
+
 if [[ "$1" != "--no-check" && "$1" != "--updated" ]]; then
     fn_check_for_updates
 fi
+
 if [[ "$1" == "--updated" ]]; then
     clear
     fn_print_success "助手已成功更新至最新版本！"
