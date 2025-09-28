@@ -445,7 +445,11 @@ fn_git_backup_to_cloud() {
         fn_press_any_key
         return
     fi
-    
+    local SYNC_CONFIG_YAML="false"
+    local USER_MAP=""
+    if [ -f "$SYNC_RULES_CONFIG_FILE" ]; then
+        source "$SYNC_RULES_CONFIG_FILE"
+    fi
     local push_urls=()
     mapfile -t push_urls < <(fn_git_find_pushable_mirror "official_only")
 

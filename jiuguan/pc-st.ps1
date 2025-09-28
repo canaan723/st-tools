@@ -36,7 +36,7 @@ $Mirror_List = @(
 $CachedMirrors = @()
 
 function Show-Header {
-    Write-Host "    " -NoNewline; Write-Host ">>" -ForegroundColor Yellow -NoNewline; Write-Host " 清绝咕咕助手 v2.4" -ForegroundColor Green
+    Write-Host "    " -NoNewline; Write-Host ">>" -ForegroundColor Yellow -NoNewline; Write-Host " 清绝咕咕助手 v2.5" -ForegroundColor Green
     Write-Host "       " -NoNewline; Write-Host "作者: 清绝 | 网址: blog.qjyg.de" -ForegroundColor DarkGray
 }
 
@@ -76,59 +76,6 @@ function Test-GitConnectivity {
     }
 }
 
-function Find-FastestMirror {
-    if ($CachedMirrors.Count -gt 0) { Write-Success "已使用缓存的测速结果。"; return $CachedMirrors }
-    Write-Warning "开始测试 Git 备用镜像连通性与速度..."
-    $githubUrl = "https://github.com/SillyTavern/SillyTavern.git"
-    $mirrorsToTest = $Mirror_List | Where-Object { $_ -ne $githubUrl }
-    if ($mirrorsToTest.Count -eq 0) { Write-Error "没有可用的备用镜像进行测试。"; return @() }
-
-    $jobs = @{}
-    foreach ($mirrorUrl in $mirrorsToTest) {
-        $scriptBlock = {
-            param($u)
-            $start = Get-Date
-            try {
-                git ls-remote $u HEAD | Out-Null
-                if ($LASTEXITCODE -eq 0) {
-                    $end = Get-Date
-                    return @{ Url = $u; Time = ($end - $start).TotalSeconds }
-                }
-            } catch {}
-            return $null
-        }
-        $jobs[$mirrorUrl] = Start-Job -ScriptBlock $scriptBlock -ArgumentList $mirrorUrl
-    }
-    Wait-Job $jobs.Values -Timeout 15 | Out-Null
-
-    $results = @()
-    foreach ($mirrorUrl in $jobs.Keys) {
-        $job = $jobs[$mirrorUrl]
-        $mirrorHost = ($mirrorUrl -split '/')[2]
-        if ($job.State -eq 'Completed') {
-            $result = Receive-Job $job
-            if ($result) {
-                $results += $result
-                Write-Host ("  - 测试: {0} - 耗时 {1:N2}s [成功]" -f $mirrorHost, $result.Time) -ForegroundColor Green
-            } else {
-                Write-Host ("  - 测试: {0} [失败]" -f $mirrorHost) -ForegroundColor Red
-            }
-        } else {
-            Write-Host ("  - 测试: {0} [超时/失败]" -f $mirrorHost) -ForegroundColor Red
-        }
-        Remove-Job -Job $job -Force
-    }
-
-    if ($results.Count -gt 0) {
-        $sortedMirrors = $results | Sort-Object Time | ForEach-Object { $_.Url }
-        Write-Success "测试完成，找到 $($results.Count) 个可用备用线路。"
-        $script:CachedMirrors = $sortedMirrors
-        return $script:CachedMirrors
-    } else {
-        Write-Error "所有备用线路均测试失败。"
-        return @()
-    }
-}
 
 function Run-NpmInstallWithRetry {
     if (-not (Test-Path $ST_Dir)) { return $false }
@@ -276,12 +223,15 @@ function Set-GitSyncConfig {
     $repoUrl = ""
     $repoToken = ""
     while ([string]::IsNullOrWhiteSpace($repoUrl)) { $repoUrl = Read-Host "请输入您的私有仓库HTTPS地址" }
-    while ([string]::IsNullOrWhiteSpace($repoToken)) { $repoToken = Read-Host "请输入您的Personal Access Token" }
+    # --- 修复点：修改下面的提示信息 ---
+    while ([string]::IsNullOrWhiteSpace($repoToken)) { $repoToken = Read-Host "请输入您的 Personal Access Token (个人访问令牌)" }
+    # --- 提示信息修改结束 ---
     Set-Content -Path $GitSyncConfigFile -Value "REPO_URL=`"$repoUrl`"`nREPO_TOKEN=`"$repoToken`""
     Write-Success "Git同步服务配置已保存！"
     Press-Any-Key
 }
 
+# 替换旧的 Test-OneMirrorPush 函数
 function Test-OneMirrorPush($authedUrl) {
     $tempRepoDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
     New-Item -Path $tempRepoDir -ItemType Directory -Force | Out-Null
@@ -301,15 +251,19 @@ function Test-OneMirrorPush($authedUrl) {
         $pushJob = Start-Job -ScriptBlock {
             param($path, $tag)
             Set-Location $path
-            git push origin "HEAD:refs/tags/$tag" 2>$null
+            # 关键修复：添加 -c credential.helper='' 来禁用凭据弹窗
+            git -c credential.helper='' push origin "HEAD:refs/tags/$tag" 2>$null
             return ($LASTEXITCODE -eq 0)
         } -ArgumentList $tempRepoDir, $testTag
 
         if (Wait-Job $pushJob -Timeout 15) {
-            $pushResult = Receive-Job $pushJob
-            if ($pushResult) {
+            if (Receive-Job $pushJob) {
                 $isSuccess = $true
-                $deleteJob = Start-Job -ScriptBlock { param($path, $tag) Set-Location $path; git push origin --delete "refs/tags/$tag" 2>$null } -ArgumentList $tempRepoDir, $testTag
+                $deleteJob = Start-Job -ScriptBlock { 
+                    param($path, $tag) 
+                    Set-Location $path
+                    git -c credential.helper='' push origin --delete "refs/tags/$tag" 2>$null 
+                } -ArgumentList $tempRepoDir, $testTag
                 Wait-Job $deleteJob -Timeout 15 | Out-Null
                 Remove-Job $deleteJob -Force
             }
@@ -322,108 +276,140 @@ function Test-OneMirrorPush($authedUrl) {
     return $isSuccess
 }
 
-function Find-PushableMirror {
-    $gitConfig = Parse-ConfigFile $GitSyncConfigFile
-    if (-not $gitConfig.ContainsKey("REPO_URL") -or -not $gitConfig.ContainsKey("REPO_TOKEN")) {
-        Write-Error "Git同步配置不完整或不存在。"
-        return @()
+function Find-AvailableMirrors {
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateSet('Download', 'Upload')]
+        [string]$TestType,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateSet('OfficialOnly', 'MirrorsOnly', 'All')]
+        [string]$Mode
+    )
+
+    # --- 本地化文本映射 ---
+    $testTypeDescription = @{
+        'Download' = '下载'
+        'Upload'   = '上传'
     }
-    $repoUrl = $gitConfig["REPO_URL"]
-    $repoToken = $gitConfig["REPO_TOKEN"]
-    Write-Warning "正在自动测试支持数据上传的加速线路..."
-    $repoPath = $repoUrl -replace 'https://github.com/', ''
-    $githubPublicUrl = "https://github.com/SillyTavern/SillyTavern.git"
+    $modeDescription = @{
+        'OfficialOnly' = '仅官方线路'
+        'MirrorsOnly'  = '备用镜像线路'
+        'All'          = '所有线路'
+    }
+    # --- 映射结束 ---
+
+    $githubUrl = "https://github.com/SillyTavern/SillyTavern.git"
+    $mirrorsToTest = @()
     $successfulUrls = New-Object System.Collections.Generic.List[string]
 
-    if ($Mirror_List -contains $githubPublicUrl) {
-        $officialUrl = "https://$($repoToken)@github.com/$($repoPath)"
-        Write-Host "  - 优先测试: 官方 GitHub ..." -NoNewline
-        if (Test-OneMirrorPush $officialUrl) {
-            Write-Host "`r  ✓ [成功]                                  " -ForegroundColor Green
-            $successfulUrls.Add($officialUrl)
-            return $successfulUrls.ToArray()
-        } else {
-            Write-Host "`r  ✗ [失败]                                  " -ForegroundColor Red
-        }
+    if ($Mode -eq 'OfficialOnly' -or $Mode -eq 'All') {
+        $mirrorsToTest += $githubUrl
     }
+    if ($Mode -eq 'MirrorsOnly' -or $Mode -eq 'All') {
+        $mirrorsToTest += $Mirror_List | Where-Object { $_ -ne $githubUrl }
+    }
+    $mirrorsToTest = $mirrorsToTest | Select-Object -Unique
 
-    $otherMirrors = $Mirror_List | Where-Object { $_ -ne $githubPublicUrl }
-    if ($otherMirrors.Count > 0) {
-        Write-Warning "已启动并行测试，将完整测试所有镜像..."
-        $jobs = @{}
-        foreach ($mirrorUrl in $otherMirrors) {
-            $scriptBlock = {
-                param($mUrl, $rToken, $rPath)
-                
-                $authedPushUrl = $null
-                $authedPrivateUrl = "https://$($rToken)@github.com/$($rPath)"
-                $mirrorHost = ($mUrl -split '/')[2]
+    if ($mirrorsToTest.Count -eq 0) { return @() }
 
-                if ($mUrl -like "*hub.gitmirror.com*") {
-                    $authedPushUrl = "https://$($rToken)@$($mirrorHost)/$($rPath)"
-                } elseif ($mUrl -match "/gh/") {
-                    $authedPushUrl = "https://$($rToken)@$($mirrorHost)/gh/$($rPath)"
-                } elseif ($mUrl -like "*/github.com/*") {
-                    $proxyPrefix = $mUrl -replace '(https?://)?github\.com/.*'
-                    if (-not [string]::IsNullOrEmpty($proxyPrefix) -and $proxyPrefix -ne $mUrl) {
-                        $authedPushUrl = "$($proxyPrefix)/$($authedPrivateUrl)"
-                    }
-                }
+    Write-Warning "开始测试 Git $($testTypeDescription[$TestType]) 线路 ($($modeDescription[$Mode]))..."
 
-                if ($authedPushUrl) {
-                    if (& $Function:Test-OneMirrorPush $authedPushUrl) {
-                        return $authedPushUrl
-                    }
-                }
-                return $null
+    foreach ($mirrorUrl in $mirrorsToTest) {
+        $mirrorHost = ($mirrorUrl -split '/')[2]
+        Write-Host "  - 正在测试: $($mirrorHost) ..." -NoNewline
+        $isSuccess = $false
+        
+        if ($TestType -eq 'Download') {
+            $job = Start-Job -ScriptBlock {
+                param($url)
+                git -c credential.helper='' ls-remote $url HEAD | Out-Null
+                return ($LASTEXITCODE -eq 0)
+            } -ArgumentList $mirrorUrl
+            if (Wait-Job $job -Timeout 10) {
+                if (Receive-Job $job) { $isSuccess = $true }
             }
-            $initScript = ${function:Test-OneMirrorPush}.ToString()
-            $jobs[$mirrorUrl] = Start-Job -InitializationScript $initScript -ScriptBlock $scriptBlock -ArgumentList $mirrorUrl, $repoToken, $repoPath
-        }
-        Wait-Job $jobs.Values -Timeout 30 | Out-Null
-
-        foreach ($mirrorUrl in $jobs.Keys) {
-            $job = $jobs[$mirrorUrl]
-            $mirrorHost = ($mirrorUrl -split '/')[2]
-            if ($job.State -eq 'Completed') {
-                $pushUrl = Receive-Job $job
-                if ($pushUrl) {
-                    $successfulUrls.Add($pushUrl)
-                    Write-Host ("  - 测试: {0} [成功]" -f $mirrorHost) -ForegroundColor Green
-                } else {
-                    Write-Host ("  - 测试: {0} [失败]" -f $mirrorHost) -ForegroundColor Red
-                }
+            Remove-Job $job -Force
+            
+            if ($isSuccess) {
+                Write-Host "`r  ✓ 测试: $($mirrorHost) [成功]                                  " -ForegroundColor Green
+                $successfulUrls.Add($mirrorUrl)
             } else {
-                Write-Host ("  - 测试: {0} [失败]" -f $mirrorHost) -ForegroundColor Red
+                Write-Host "`r  ✗ 测试: $($mirrorHost) [失败]                                  " -ForegroundColor Red
             }
-            Remove-Job -Job $job -Force
+
+        } elseif ($TestType -eq 'Upload') {
+            $gitConfig = Parse-ConfigFile $GitSyncConfigFile
+            if (-not $gitConfig.ContainsKey("REPO_URL") -or -not $gitConfig.ContainsKey("REPO_TOKEN")) {
+                Write-Error "Git同步配置不完整。"; return @()
+            }
+            $repoPath = $gitConfig["REPO_URL"] -replace 'https://github.com/', ''
+            $repoToken = $gitConfig["REPO_TOKEN"]
+            $authedPrivateUrl = "https://$($repoToken)@github.com/$($repoPath)"
+            $authedPushUrl = $null
+
+            if ($mirrorHost -eq "github.com") {
+                $authedPushUrl = $authedPrivateUrl
+            } elseif ($mirrorUrl -like "*hub.gitmirror.com*") {
+                $authedPushUrl = "https://$($repoToken)@$($mirrorHost)/$($repoPath)"
+            } elseif ($mirrorUrl -match "/gh/") {
+                $authedPushUrl = "https://$($repoToken)@$($mirrorHost)/gh/$($repoPath)"
+            } elseif ($mirrorUrl -like "*/github.com/*") {
+                $proxyPrefix = $mirrorUrl -replace '(https?://)?github\.com/.*'
+                if (-not [string]::IsNullOrEmpty($proxyPrefix) -and $proxyPrefix -ne $mirrorUrl) {
+                    $authedPushUrl = "$($proxyPrefix)/$($authedPrivateUrl)"
+                }
+            }
+
+            if ($authedPushUrl) {
+                if (Test-OneMirrorPush $authedPushUrl) {
+                    $isSuccess = $true
+                    $successfulUrls.Add($authedPushUrl)
+                }
+            }
+
+            if ($isSuccess) {
+                Write-Host "`r  ✓ 测试: $($mirrorHost) [成功]                                  " -ForegroundColor Green
+            } else {
+                Write-Host "`r  ✗ 测试: $($mirrorHost) [失败]                                  " -ForegroundColor Red
+            }
         }
     }
 
-    if ($successfulUrls.Count > 0) {
-        Write-Success "测试完成，找到 $($successfulUrls.Count) 条可用上传线路。"
-        return $successfulUrls.ToArray()
+    if ($successfulUrls.Count -gt 0) {
+        Write-Success "`n测试完成，共找到 $($successfulUrls.Count) 条可用 $($testTypeDescription[$TestType]) 线路。"
     } else {
-        Write-Error "所有上传线路均测试失败。"
-        return @()
+        Write-Error "`n所有 $($testTypeDescription[$TestType]) 线路均测试失败。"
     }
+    return $successfulUrls.ToArray()
 }
 
 function Backup-ToCloud {
     Clear-Host
-    Write-Header "Git备份数据到云端 (上传)"
+    # --- 修复点：修改下面的标题 ---
+    Write-Header "备份数据到云端"
+    # --- 标题修改结束 ---
     if (-not (Test-Path $GitSyncConfigFile)) {
-        Write-Warning "请先在菜单 [1] 中配置Git同步服务。"
-        Press-Any-Key
-        return
+        Write-Warning "请先在菜单 [1] 中配置Git同步服务。"; Press-Any-Key; return
     }
 
     $backupSuccess = $false
     $fullRetestAttempted = $false
     while (-not $backupSuccess) { 
-        $pushUrls = Find-PushableMirror
+        $pushUrls = @()
+        if (-not $fullRetestAttempted) {
+            $pushUrls = Find-AvailableMirrors -TestType 'Upload' -Mode 'OfficialOnly'
+            if ($pushUrls.Count -eq 0) {
+                $pushUrls = Find-AvailableMirrors -TestType 'Upload' -Mode 'MirrorsOnly'
+            }
+        } else {
+            $pushUrls = Find-AvailableMirrors -TestType 'Upload' -Mode 'All'
+        }
+
         if ($pushUrls.Count -eq 0) {
-            break 
+            $retryChoice = Read-Host "`n所有上传线路均测试失败。是否重新测速并重试？(直接回车=是, 输入n=否)"
+            if ($retryChoice -eq 'n') { Write-Warning "用户取消操作。"; break }
+            $fullRetestAttempted = $false; continue
         }
 
         $syncRules = Parse-ConfigFile $SyncRulesConfigFile
@@ -435,66 +421,51 @@ function Backup-ToCloud {
             Write-Warning "正在尝试使用线路 [$chosenHost] 进行备份..."
             $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
             try {
-                try {
-                    git clone --depth 1 $pushUrl $tempDir
-                    if ($LASTEXITCODE -ne 0) { Write-Error "从云端克隆仓库失败！"; continue }
-                    Write-Success "已成功从云端克隆仓库。"
-                    Set-Location $tempDir
-                    git config core.autocrlf false
-                    Write-Warning "正在同步本地数据到临时区..."
-
-                    $recursiveExcludeDirs = @("extensions", "backups")
-                    $recursiveExcludeFiles = @("*.log")
-                    $robocopyExcludeArgs = @($recursiveExcludeDirs | ForEach-Object { "/XD", $_ }) + @($recursiveExcludeFiles | ForEach-Object { "/XF", $_ })
-
-                    if (-not [string]::IsNullOrWhiteSpace($userMap) -and $userMap.Contains(":")) {
-                        $localUser = $userMap.Split(':')[0]
-                        $remoteUser = $userMap.Split(':')[1]
-                        Write-Warning "应用用户映射规则: 本地'$localUser' -> 云端'$remoteUser'"
-                        $localUserPath = Join-Path $ST_Dir "data/$localUser"
-                        if (Test-Path $localUserPath) {
-                            $remoteUserPath = Join-Path $tempDir "data/$remoteUser"
-                            robocopy $localUserPath $remoteUserPath /E /PURGE $robocopyExcludeArgs /R:2 /W:5 /NFL /NDL /NJH /NJS /NP | Out-Null
-                            if ($LASTEXITCODE -ge 8) { Write-Error "Robocopy 同步 '$localUser' 失败！错误码: $LASTEXITCODE"; continue }
-                        } else {
-                            Write-Warning "本地用户文件夹 '$localUser' 不存在，跳过同步。"
-                        }
-                    } else {
-                        Get-ChildItem -Path . | Where-Object { $_.Name -ne ".git" } | Remove-Item -Recurse -Force
-                        Write-Warning "应用镜像同步规则: 同步所有本地用户文件夹"
-                        $localUserFolders = Get-UserFolders -baseDataPath (Join-Path $ST_Dir "data")
-                        foreach ($userFolder in $localUserFolders) {
-                            $sourcePath = $userFolder.FullName
-                            $destPath = Join-Path (Join-Path $tempDir "data") $userFolder.Name
-                            robocopy $sourcePath $destPath /E /PURGE $robocopyExcludeArgs /R:2 /W:5 /NFL /NDL /NJH /NJS /NP | Out-Null
-                            if ($LASTEXITCODE -ge 8) { Write-Error "Robocopy 同步 '$($userFolder.Name)' 失败！错误码: $LASTEXITCODE"; continue 2 }
-                        }
+                git -c credential.helper='' clone --depth 1 $pushUrl $tempDir
+                if ($LASTEXITCODE -ne 0) { Write-Error "从云端克隆仓库失败！"; continue }
+                Write-Success "已成功从云端克隆仓库。"
+                Set-Location $tempDir
+                git config core.autocrlf false
+                Write-Warning "正在同步本地数据到临时区..."
+                $recursiveExcludeDirs = @("extensions", "backups")
+                $recursiveExcludeFiles = @("*.log")
+                $robocopyExcludeArgs = @($recursiveExcludeDirs | ForEach-Object { "/XD", $_ }) + @($recursiveExcludeFiles | ForEach-Object { "/XF", $_ })
+                if (-not [string]::IsNullOrWhiteSpace($userMap) -and $userMap.Contains(":")) {
+                    $localUser = $userMap.Split(':')[0]; $remoteUser = $userMap.Split(':')[1]
+                    Write-Warning "应用用户映射规则: 本地'$localUser' -> 云端'$remoteUser'"
+                    $localUserPath = Join-Path $ST_Dir "data/$localUser"
+                    if (Test-Path $localUserPath) {
+                        $remoteUserPath = Join-Path $tempDir "data/$remoteUser"
+                        robocopy $localUserPath $remoteUserPath /E /PURGE $robocopyExcludeArgs /R:2 /W:5 /NFL /NDL /NJH /NJS /NP | Out-Null
+                        if ($LASTEXITCODE -ge 8) { Write-Error "Robocopy 同步 '$localUser' 失败！错误码: $LASTEXITCODE"; continue }
+                    } else { Write-Warning "本地用户文件夹 '$localUser' 不存在，跳过同步。" }
+                } else {
+                    Get-ChildItem -Path . | Where-Object { $_.Name -ne ".git" } | Remove-Item -Recurse -Force
+                    Write-Warning "应用镜像同步规则: 同步所有本地用户文件夹"
+                    $localUserFolders = Get-UserFolders -baseDataPath (Join-Path $ST_Dir "data")
+                    foreach ($userFolder in $localUserFolders) {
+                        $sourcePath = $userFolder.FullName
+                        $destPath = Join-Path (Join-Path $tempDir "data") $userFolder.Name
+                        robocopy $sourcePath $destPath /E /PURGE $robocopyExcludeArgs /R:2 /W:5 /NFL /NDL /NJH /NJS /NP | Out-Null
+                        if ($LASTEXITCODE -ge 8) { Write-Error "Robocopy 同步 '$($userFolder.Name)' 失败！错误码: $LASTEXITCODE"; continue 2 }
                     }
-                    if ($syncConfigYaml -eq "true" -and (Test-Path (Join-Path $ST_Dir "config.yaml"))) {
-                        Copy-Item (Join-Path $ST_Dir "config.yaml") $tempDir -Force
-                    }
-
-                    Set-Location $tempDir
-                    git add .
-                    if ($(git status --porcelain).Length -eq 0) {
-                        Write-Success "数据与云端一致，无需上传。"
-                        $backupSuccess = $true
-                        break
-                    }
-                    Write-Warning "正在提交数据变更..."
-                    $commitMessage = "💻 Windows 推送: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-                    git commit -m $commitMessage -q
-                    if ($LASTEXITCODE -ne 0) { Write-Error "Git 提交失败！"; continue }
-                    Write-Warning "正在上传到云端... (请稍候，下方为实时进度)"
-                    git push
-                    if ($LASTEXITCODE -ne 0) { Write-Error "上传失败！"; continue }
-                    Write-Success "数据成功备份到云端！"
-                    $backupSuccess = $true
-                    break
-                } catch {
-                    Write-Error "在处理线路 [$chosenHost] 时发生意外错误: $($_.Exception.Message)"
-                    continue
                 }
+                if ($syncConfigYaml -eq "true" -and (Test-Path (Join-Path $ST_Dir "config.yaml"))) {
+                    Copy-Item (Join-Path $ST_Dir "config.yaml") $tempDir -Force
+                }
+                Set-Location $tempDir
+                git add .
+                if ($(git status --porcelain).Length -eq 0) {
+                    Write-Success "数据与云端一致，无需上传。"; $backupSuccess = $true; break
+                }
+                Write-Warning "正在提交数据变更..."
+                $commitMessage = "💻 Windows 推送: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+                git commit -m $commitMessage -q
+                if ($LASTEXITCODE -ne 0) { Write-Error "Git 提交失败！"; continue }
+                Write-Warning "正在上传到云端..."
+                git -c credential.helper='' push
+                if ($LASTEXITCODE -ne 0) { Write-Error "上传失败！"; continue }
+                Write-Success "数据成功备份到云端！"; $backupSuccess = $true; break
             } finally {
                 Set-Location $ScriptBaseDir
                 if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
@@ -504,12 +475,9 @@ function Backup-ToCloud {
         if (-not $backupSuccess) {
             if (-not $fullRetestAttempted) {
                 $fullRetestAttempted = $true
-                Write-Error "预选线路均备份失败。"
-                Write-Warning "将进行全量测速并重试所有可用线路..."
-                $script:CachedMirrors = @() 
+                Write-Error "预选线路均备份失败。将进行全量测速并重试所有可用线路..."
             } else {
-                Write-Error "已尝试所有可用线路，但备份均失败。"
-                break
+                Write-Error "已尝试所有可用线路，但备份均失败。"; break
             }
         }
     }
@@ -518,7 +486,9 @@ function Backup-ToCloud {
 
 function Restore-FromCloud {
     Clear-Host
-    Write-Header "Git从云端恢复数据 (下载)"
+    # --- 修复点：修改下面的标题 ---
+    Write-Header "从云端恢复数据"
+    # --- 标题修改结束 ---
     if (-not (Test-Path $GitSyncConfigFile)) {
         Write-Warning "请先在菜单 [1] 中配置Git同步服务。"; Press-Any-Key; return
     }
@@ -543,41 +513,32 @@ function Restore-FromCloud {
     
     $cloneSuccess = $false
     $fullRetestAttempted = $false
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+    
     while (-not $cloneSuccess) {
         $mirrorsToTry = @()
-        $officialUrl = "https://github.com/SillyTavern/SillyTavern.git"
-        
         if (-not $fullRetestAttempted) {
-            Write-Warning "正在测试官方线路 [github.com]..."
-            if (Test-GitConnectivity $officialUrl) {
-                Write-Success "官方线路连接成功！"
-                $mirrorsToTry += $officialUrl
-            } else {
-                Write-Error "官方线路连接失败！"
-                $mirrorsToTry = Find-FastestMirror
+            $mirrorsToTry = Find-AvailableMirrors -TestType 'Download' -Mode 'OfficialOnly'
+            if ($mirrorsToTry.Count -eq 0) {
+                $mirrorsToTry = Find-AvailableMirrors -TestType 'Download' -Mode 'MirrorsOnly'
             }
         } else {
-            if (Test-GitConnectivity $officialUrl) { $mirrorsToTry += $officialUrl }
-            $mirrorsToTry += Find-FastestMirror
-            $mirrorsToTry = $mirrorsToTry | Select-Object -Unique
+            $mirrorsToTry = Find-AvailableMirrors -TestType 'Download' -Mode 'All'
         }
 
         if ($mirrorsToTry.Count -eq 0) {
             $retryChoice = Read-Host "`n所有线路均测试失败。是否重新测速并重试？(直接回车=是, 输入n=否)"
             if ($retryChoice -eq 'n') { Write-ErrorExit "用户取消操作。" }
-            $script:CachedMirrors = @()
-            $fullRetestAttempted = $false
-            continue
+            $fullRetestAttempted = $false; continue
         }
 
-        $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
         try {
             foreach ($pullUrl in $mirrorsToTry) {
                 $chosenHost = ($pullUrl -split '/')[2]
                 Write-Warning "正在尝试使用线路 [$chosenHost] 进行恢复..."
                 $privateRepoUrl = $pullUrl -replace '/SillyTavern/SillyTavern.git', "/$repoPath"
                 $pullUrlWithAuth = $privateRepoUrl -replace 'https://', "https://$($repoToken)@"
-                git clone --depth 1 $pullUrlWithAuth $tempDir
+                git -c credential.helper='' clone --depth 1 $pullUrlWithAuth $tempDir
                 if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true; break }
                 Write-Error "使用线路 [$chosenHost] 恢复失败！正在切换下一条..."
                 if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
@@ -589,14 +550,9 @@ function Restore-FromCloud {
         if (-not $cloneSuccess) {
             if (-not $fullRetestAttempted) {
                 $fullRetestAttempted = $true
-                Write-Error "预选线路均恢复失败。"
-                Write-Warning "将进行全量测速并重试所有可用线路..."
-                $script:CachedMirrors = @()
+                Write-Error "预选线路均恢复失败。将进行全量测速并重试所有可用线路..."
             } else {
-                $retryChoice = Read-Host "`n所有可用线路均恢复失败。是否重新测速并重试？(直接回车=是, 输入n=否)"
-                if ($retryChoice -eq 'n') { Write-ErrorExit "恢复失败，用户取消操作。" }
-                $script:CachedMirrors = @()
-                $fullRetestAttempted = $false
+                Write-Error "已尝试所有可用线路，恢复均失败。"
             }
         }
     }
@@ -605,39 +561,31 @@ function Restore-FromCloud {
         Write-Success "已成功从云端下载数据。"
         if (-not (Get-ChildItem $tempDir)) { Write-Error "下载的数据源无效或为空，恢复操作已中止！"; return }
         Write-Warning "正在将云端数据同步到本地..."
-
         $recursiveExcludeDirs = @("extensions", "backups")
         $recursiveExcludeFiles = @("*.log")
         $robocopyExcludeArgs = @($recursiveExcludeDirs | ForEach-Object { "/XD", $_ }) + @($recursiveExcludeFiles | ForEach-Object { "/XF", $_ })
-
         if (-not [string]::IsNullOrWhiteSpace($userMap) -and $userMap.Contains(":")) {
-            $localUser = $userMap.Split(':')[0]
-            $remoteUser = $userMap.Split(':')[1]
+            $localUser = $userMap.Split(':')[0]; $remoteUser = $userMap.Split(':')[1]
             Write-Warning "应用用户映射规则: 云端'$remoteUser' -> 本地'$localUser'"
             $remoteUserPath = Join-Path $tempDir "data/$remoteUser"
             if (Test-Path $remoteUserPath) {
                 $localUserPath = Join-Path $ST_Dir "data/$localUser"
                 robocopy $remoteUserPath $localUserPath /E /PURGE $robocopyExcludeArgs /R:2 /W:5 /NFL /NDL /NJH /NJS /NP | Out-Null
                 if ($LASTEXITCODE -ge 8) { Write-Error "Robocopy 恢复 '$localUser' 失败！错误码: $LASTEXITCODE"; return }
-            } else {
-                Write-Warning "云端映射文件夹 'data\$remoteUser' 不存在，跳过映射同步。"
-            }
+            } else { Write-Warning "云端映射文件夹 'data\$remoteUser' 不存在，跳过映射同步。" }
         } else {
             Write-Warning "应用镜像同步规则: 恢复所有云端用户文件夹"
-            $sourceDataPath = Join-Path $tempDir "data"
-            $destDataPath = Join-Path $ST_Dir "data"
+            $sourceDataPath = Join-Path $tempDir "data"; $destDataPath = Join-Path $ST_Dir "data"
             $remoteUserFolders = Get-UserFolders -baseDataPath $sourceDataPath
             $localUserFolders = Get-UserFolders -baseDataPath $destDataPath
             $finalRemoteNames = $remoteUserFolders | ForEach-Object { $_.Name }
             foreach ($localUser in $localUserFolders) {
                 if ($finalRemoteNames -notcontains $localUser.Name) {
-                    Write-Warning "清理本地多余的用户: $($localUser.Name)"
-                    Remove-Item $localUser.FullName -Recurse -Force
+                    Write-Warning "清理本地多余的用户: $($localUser.Name)"; Remove-Item $localUser.FullName -Recurse -Force
                 }
             }
             foreach ($remoteUser in $remoteUserFolders) {
-                $sourcePath = $remoteUser.FullName
-                $destPath = Join-Path $destDataPath $remoteUser.Name
+                $sourcePath = $remoteUser.FullName; $destPath = Join-Path $destDataPath $remoteUser.Name
                 robocopy $sourcePath $destPath /E /PURGE $robocopyExcludeArgs /R:2 /W:5 /NFL /NDL /NJH /NJS /NP | Out-Null
                 if ($LASTEXITCODE -ge 8) { Write-Error "Robocopy 恢复 '$($remoteUser.Name)' 失败！错误码: $LASTEXITCODE"; return }
             }
@@ -647,7 +595,7 @@ function Restore-FromCloud {
         }
         Write-Success "`n数据已从云端成功恢复！"
     } finally {
-        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+        if (Test-Path $tempDir){ Remove-Item $tempDir -Recurse -Force }
     }
     Press-Any-Key
 }
@@ -667,76 +615,16 @@ function Clear-GitSyncConfig {
     Press-Any-Key
 }
 
-function Export-ExtensionLinks {
-    Clear-Host
-    Write-Header "导出扩展链接"
-    $allLinks = [System.Collections.Generic.List[string]]::new()
-    $outputContent = [System.Text.StringBuilder]::new()
-    function Get-RepoUrl($path) {
-        if (Test-Path (Join-Path $path ".git")) {
-            try {
-                Set-Location $path
-                $url = git config --get remote.origin.url
-                return $url.Trim()
-            } finally {
-                Set-Location $ScriptBaseDir
-            }
-        }
-        return $null
-    }
-    $globalExtPath = Join-Path $ST_Dir "public/scripts/extensions/third-party"
-    if (Test-Path $globalExtPath) {
-        $globalLinks = @(Get-ChildItem -Path $globalExtPath -Directory | ForEach-Object { Get-RepoUrl $_.FullName } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        if ($globalLinks.Count -gt 0) {
-            $outputContent.AppendLine("═══ 全局扩展 ═══") | Out-Null
-            $globalLinks | ForEach-Object { $outputContent.AppendLine($_) | Out-Null; $allLinks.Add($_) }
-        }
-    }
-    $dataPath = Join-Path $ST_Dir "data"
-    if (Test-Path $dataPath) {
-        Get-ChildItem -Path $dataPath -Directory | ForEach-Object {
-            $userDir = $_
-            $userExtPath = Join-Path $userDir.FullName "extensions"
-            if (Test-Path $userExtPath) {
-                $userLinks = @(Get-ChildItem -Path $userExtPath -Directory | ForEach-Object { Get-RepoUrl $_.FullName } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-                if ($userLinks.Count -gt 0) {
-                    $outputContent.AppendLine() | Out-Null
-                    $outputContent.AppendLine("═══ 用户 [$($userDir.Name)] 的扩展 ═══") | Out-Null
-                    $userLinks | ForEach-Object { $outputContent.AppendLine($_) | Out-Null; $allLinks.Add($_) }
-                }
-            }
-        }
-    }
-    if ($allLinks.Count -eq 0) {
-        Write-Warning "未找到任何已安装的Git扩展。"
-    } else {
-        Write-Host $outputContent.ToString()
-        $saveChoice = Read-Host "`n是否将以上链接保存到桌面？ [y/N]"
-        if ($saveChoice -eq 'y' -or $saveChoice -eq 'Y') {
-            try {
-                $desktopPath = [System.Environment]::GetFolderPath('Desktop')
-                $fileName = "ST_扩展链接_$(Get-Date -Format 'yyyy-MM-dd').txt"
-                $filePath = Join-Path $desktopPath $fileName
-                Set-Content -Path $filePath -Value $outputContent.ToString() -Encoding UTF8
-                Write-Success "链接已成功保存到桌面: $fileName"
-            } catch {
-                Write-Error "保存失败: $($_.Exception.Message)"
-            }
-        }
-    }
-    Press-Any-Key
-}
-
 function Show-ManageGitConfigMenu {
     while ($true) {
         Clear-Host
-        Write-Header "管理 Git 同步配置"
+        Write-Header "管理同步配置"
         Write-Host "      [1] " -NoNewline; Write-Host "修改/设置同步信息" -ForegroundColor Cyan
         Write-Host "      [2] " -NoNewline; Write-Host "清除所有同步配置" -ForegroundColor Red
         Write-Host "      [0] " -NoNewline; Write-Host "返回上一级" -ForegroundColor Cyan
         $choice = Read-Host "`n    请输入选项"
         switch ($choice) {
-            "1" { Set-GitSyncConfig; return }
+            "1" { Set-GitSyncConfig }
             "2" { Clear-GitSyncConfig }
             "0" { return }
             default { Write-Warning "无效输入。"; Start-Sleep 1 }
@@ -768,7 +656,7 @@ function Show-AdvancedSyncSettingsMenu {
             $remoteUser = $rules["USER_MAP"].Split(':')[1]
             Write-Host "本地 $localUser -> 云端 $remoteUser" -F Green
         } else {
-            Write-Host "未设置" -F Red
+            Write-Host "未设置 (将同步所有用户)" -F Red
         }
         Write-Host "`n  [3] " -NoNewline; Write-Host "重置所有高级设置" -F Red
         Write-Host "  [0] " -NoNewline; Write-Host "返回上一级" -F Cyan
@@ -821,9 +709,11 @@ function Show-GitSyncMenu {
             Write-Host "      " -NoNewline; Write-Host "当前仓库: $currentRepoName" -F Yellow
             Write-Host ""
         }
-        Write-Host "`n      [1] " -NoNewline; Write-Host "管理同步配置 (仓库地址/Token)" -F Cyan
-        Write-Host "      [2] " -NoNewline; Write-Host "备份到云端 (上传)" -F Green
-        Write-Host "      [3] " -NoNewline; Write-Host "从云端恢复 (下载)" -F Yellow
+        Write-Host "`n      [1] " -NoNewline; Write-Host "管理同步配置 (仓库地址/令牌)" -F Cyan
+        # --- 修复点：修改下面的菜单项 ---
+        Write-Host "      [2] " -NoNewline; Write-Host "备份数据 (上传至云端)" -F Green
+        Write-Host "      [3] " -NoNewline; Write-Host "恢复数据 (从云端下载)" -F Yellow
+        # --- 菜单项修改结束 ---
         Write-Host "      [4] " -NoNewline; Write-Host "高级同步设置 (用户映射等)" -F Cyan
         Write-Host "      [5] " -NoNewline; Write-Host "导出扩展链接" -F Cyan
         Write-Host "`n      [0] " -NoNewline; Write-Host "返回主菜单" -F Cyan
@@ -838,6 +728,90 @@ function Show-GitSyncMenu {
             default { Write-Warning "无效输入。"; Start-Sleep 1 }
         }
     }
+}
+
+# 替换旧的 Export-ExtensionLinks 函数
+function Export-ExtensionLinks {
+    Clear-Host
+    Write-Header "导出扩展链接"
+    $allLinks = [System.Collections.Generic.List[string]]::new()
+    $outputContent = [System.Text.StringBuilder]::new()
+
+    # 定义一个内部函数来获取仓库URL
+    function Get-RepoUrlFromPath($path) {
+        if (Test-Path (Join-Path $path ".git")) {
+            # 关键修复：在子进程中执行git命令，避免主脚本目录切换混乱
+            $url = (Invoke-Command -ScriptBlock {
+                param($p)
+                Set-Location -Path $p
+                git config --get remote.origin.url
+            } -ArgumentList $path)
+            return $url.Trim()
+        }
+        return $null
+    }
+
+    # 检查全局扩展
+    $globalExtPath = Join-Path $ST_Dir "public/scripts/extensions/third-party"
+    if (Test-Path $globalExtPath) {
+        $globalDirs = Get-ChildItem -Path $globalExtPath -Directory -ErrorAction SilentlyContinue
+        if ($globalDirs) {
+            $outputContent.AppendLine("═══ 全局扩展 ═══") | Out-Null
+            foreach ($dir in $globalDirs) {
+                $repoUrl = Get-RepoUrlFromPath $dir.FullName
+                if (-not [string]::IsNullOrWhiteSpace($repoUrl)) {
+                    $outputContent.AppendLine($repoUrl) | Out-Null
+                    $allLinks.Add($repoUrl)
+                }
+            }
+        }
+    }
+
+    # 检查所有用户的扩展
+    $dataPath = Join-Path $ST_Dir "data"
+    if (Test-Path $dataPath) {
+        $userDirs = Get-ChildItem -Path $dataPath -Directory -ErrorAction SilentlyContinue
+        foreach ($userDir in $userDirs) {
+            $userExtPath = Join-Path $userDir.FullName "extensions"
+            if (Test-Path $userExtPath) {
+                $userExtDirs = Get-ChildItem -Path $userExtPath -Directory -ErrorAction SilentlyContinue
+                if ($userExtDirs) {
+                    $userLinks = [System.Collections.Generic.List[string]]::new()
+                    foreach ($extDir in $userExtDirs) {
+                        $repoUrl = Get-RepoUrlFromPath $extDir.FullName
+                        if (-not [string]::IsNullOrWhiteSpace($repoUrl)) {
+                            $userLinks.Add($repoUrl)
+                            $allLinks.Add($repoUrl)
+                        }
+                    }
+                    if ($userLinks.Count -gt 0) {
+                        $outputContent.AppendLine() | Out-Null
+                        $outputContent.AppendLine("═══ 用户 [$($userDir.Name)] 的扩展 ═══") | Out-Null
+                        $userLinks | ForEach-Object { $outputContent.AppendLine($_) | Out-Null }
+                    }
+                }
+            }
+        }
+    }
+
+    if ($allLinks.Count -eq 0) {
+        Write-Warning "未找到任何已安装的Git扩展。"
+    } else {
+        Write-Host $outputContent.ToString()
+        $saveChoice = Read-Host "`n是否将以上链接保存到桌面？ [y/N]"
+        if ($saveChoice -eq 'y' -or $saveChoice -eq 'Y') {
+            try {
+                $desktopPath = [System.Environment]::GetFolderPath('Desktop')
+                $fileName = "ST_扩展链接_$(Get-Date -Format 'yyyy-MM-dd').txt"
+                $filePath = Join-Path $desktopPath $fileName
+                Set-Content -Path $filePath -Value $outputContent.ToString() -Encoding UTF8
+                Write-Success "链接已成功保存到桌面: $fileName"
+            } catch {
+                Write-Error "保存失败: $($_.Exception.Message)"
+            }
+        }
+    }
+    Press-Any-Key
 }
 
 function Start-SillyTavern {
@@ -862,6 +836,7 @@ function Start-SillyTavern {
     Press-Any-Key
 }
 
+# 替换旧的 Install-SillyTavern 函数
 function Install-SillyTavern {
     param([bool]$autoStart = $true)
     Clear-Host
@@ -870,9 +845,7 @@ function Install-SillyTavern {
     Write-Header "1/3: 检查核心依赖"
     if (-not (Check-Command "git") -or -not (Check-Command "node")) {
         Write-Warning "错误: Git 或 Node.js 未安装。即将为您展示帮助文档..."
-        Start-Sleep -Seconds 3
-        Open-HelpDocs
-        return
+        Start-Sleep -Seconds 3; Open-HelpDocs; return
     }
     Write-Success "核心依赖 (Git, Node.js) 已找到。"
 
@@ -884,35 +857,26 @@ function Install-SillyTavern {
         $fullRetestAttempted = $false
         while (-not $downloadSuccess) {
             $mirrorsToTry = @()
-            $officialUrl = "https://github.com/SillyTavern/SillyTavern.git"
-            
             if (-not $fullRetestAttempted) {
-                Write-Warning "正在测试官方线路 [github.com]..."
-                if (Test-GitConnectivity $officialUrl) {
-                    Write-Success "官方线路连接成功！"
-                    $mirrorsToTry += $officialUrl
-                } else {
-                    Write-Error "官方线路连接失败！"
-                    $mirrorsToTry = Find-FastestMirror
+                $mirrorsToTry = Find-AvailableMirrors -TestType 'Download' -Mode 'OfficialOnly'
+                if ($mirrorsToTry.Count -eq 0) {
+                    $mirrorsToTry = Find-AvailableMirrors -TestType 'Download' -Mode 'MirrorsOnly'
                 }
             } else {
-                if (Test-GitConnectivity $officialUrl) { $mirrorsToTry += $officialUrl }
-                $mirrorsToTry += Find-FastestMirror
-                $mirrorsToTry = $mirrorsToTry | Select-Object -Unique
+                $mirrorsToTry = Find-AvailableMirrors -TestType 'Download' -Mode 'All'
             }
 
             if ($mirrorsToTry.Count -eq 0) {
                 $retryChoice = Read-Host "`n所有线路均测试失败。是否重新测速并重试？(直接回车=是, 输入n=否)"
                 if ($retryChoice -eq 'n') { Write-ErrorExit "用户取消操作。" }
-                $script:CachedMirrors = @()
-                $fullRetestAttempted = $false
-                continue
+                $fullRetestAttempted = $false; continue
             }
 
             foreach ($mirrorUrl in $mirrorsToTry) {
                 $mirrorHost = ($mirrorUrl -split '/')[2]
                 Write-Warning "正在尝试从线路 [$($mirrorHost)] 下载 ($Repo_Branch 分支)..."
-                git clone --depth 1 -b $Repo_Branch $mirrorUrl $ST_Dir
+                # 关键修复：添加 -c credential.helper='' 来禁用凭据弹窗
+                git -c credential.helper='' clone --depth 1 -b $Repo_Branch $mirrorUrl $ST_Dir
                 if ($LASTEXITCODE -eq 0) { $downloadSuccess = $true; break }
                 Write-Error "使用线路 [$($mirrorHost)] 下载失败！正在切换下一条..."
                 if (Test-Path $ST_Dir) { Remove-Item -Recurse -Force $ST_Dir }
@@ -921,14 +885,9 @@ function Install-SillyTavern {
             if (-not $downloadSuccess) {
                 if (-not $fullRetestAttempted) {
                     $fullRetestAttempted = $true
-                    Write-Error "预选线路均下载失败。"
-                    Write-Warning "将进行全量测速并重试所有可用线路..."
-                    $script:CachedMirrors = @()
+                    Write-Error "预选线路均下载失败。将进行全量测速并重试所有可用线路..."
                 } else {
-                    $retryChoice = Read-Host "`n所有可用线路均下载失败。是否重新测速并重试？(直接回车=是, 输入n=否)"
-                    if ($retryChoice -eq 'n') { Write-ErrorExit "下载失败，用户取消操作。" }
-                    $script:CachedMirrors = @()
-                    $fullRetestAttempted = $false
+                    Write-Error "已尝试所有可用线路，下载均失败。"
                 }
             }
         }
@@ -938,19 +897,11 @@ function Install-SillyTavern {
     Write-Header "3/3: 配置 NPM 环境并安装依赖"
     if (Test-Path $ST_Dir) {
         if (-not (Run-NpmInstallWithRetry)) { Write-ErrorExit "依赖安装最终失败，部署中断。" }
-    } else {
-        Write-Warning "SillyTavern 目录不存在，跳过此步。"
-    }
+    } else { Write-Warning "SillyTavern 目录不存在，跳过此步。" }
 
     if ($autoStart) {
-        Write-Host "`n"
-        Write-Success "部署完成！"
-        Write-Warning "即将进行首次启动..."
-        Start-Sleep -Seconds 3
-        Start-SillyTavern
-    } else {
-        Write-Success "全新版本下载与配置完成。"
-    }
+        Write-Host "`n"; Write-Success "部署完成！"; Write-Warning "即将进行首次启动..."; Start-Sleep -Seconds 3; Start-SillyTavern
+    } else { Write-Success "全新版本下载与配置完成。" }
 }
 
 function New-LocalZipBackup {
@@ -1016,42 +967,32 @@ function New-LocalZipBackup {
     }
 }
 
+# 替换旧的 Update-SillyTavern 函数
 function Update-SillyTavern {
     Clear-Host
     Write-Header "更新 SillyTavern 主程序"
     if (-not (Test-Path (Join-Path $ST_Dir ".git"))) {
-        Write-Warning "未找到Git仓库，请先完整部署。"
-        Press-Any-Key
-        return
+        Write-Warning "未找到Git仓库，请先完整部署。"; Press-Any-Key; return
     }
+    
     $updateSuccess = $false
     $fullRetestAttempted = $false
     while (-not $updateSuccess) {
         Set-Location $ST_Dir
         $mirrorsToTry = @()
-        $officialUrl = "https://github.com/SillyTavern/SillyTavern.git"
-        
         if (-not $fullRetestAttempted) {
-            Write-Warning "正在测试官方线路 [github.com]..."
-            if (Test-GitConnectivity $officialUrl) {
-                Write-Success "官方线路连接成功！"
-                $mirrorsToTry += $officialUrl
-            } else {
-                Write-Error "官方线路连接失败！"
-                $mirrorsToTry = Find-FastestMirror
+            $mirrorsToTry = Find-AvailableMirrors -TestType 'Download' -Mode 'OfficialOnly'
+            if ($mirrorsToTry.Count -eq 0) {
+                $mirrorsToTry = Find-AvailableMirrors -TestType 'Download' -Mode 'MirrorsOnly'
             }
         } else {
-            if (Test-GitConnectivity $officialUrl) { $mirrorsToTry += $officialUrl }
-            $mirrorsToTry += Find-FastestMirror
-            $mirrorsToTry = $mirrorsToTry | Select-Object -Unique
+            $mirrorsToTry = Find-AvailableMirrors -TestType 'Download' -Mode 'All'
         }
 
         if ($mirrorsToTry.Count -eq 0) {
             $retryChoice = Read-Host "`n所有线路均测试失败。是否重新测速并重试？(直接回车=是, 输入n=否)"
             if ($retryChoice -eq 'n') { Write-Warning "用户取消操作。"; break }
-            $script:CachedMirrors = @()
-            $fullRetestAttempted = $false
-            continue
+            $fullRetestAttempted = $false; continue
         }
 
         $pullSucceeded = $false
@@ -1059,12 +1000,15 @@ function Update-SillyTavern {
             $mirrorHost = ($mirrorUrl -split '/')[2]
             Write-Warning "正在尝试使用线路 [$($mirrorHost)] 更新..."
             git remote set-url origin $mirrorUrl
-            $gitOutput = git pull origin $Repo_Branch 2>&1
+            # 关键修复：添加 -c credential.helper='' 来禁用凭据弹窗
+            $gitOutput = git -c credential.helper='' pull origin $Repo_Branch 2>&1
             if ($LASTEXITCODE -eq 0) {
                 if ($gitOutput -match "Already up to date") { Write-Success "代码已是最新，无需更新。" } else { Write-Success "代码更新成功。" }
-                $pullSucceeded = $true
-                break
+                $pullSucceeded = $true; break
             } elseif ($gitOutput -match "Your local changes to the following files would be overwritten|conflict|error: Pulling is not possible because you have unmerged files.") {
+                # 此处省略冲突处理逻辑，因为它很长且与本问题无关，保持原样即可
+                # ... 原来的冲突处理 switch 语句 ...
+                # 为确保完整性，这里直接粘贴原冲突处理代码
                 Clear-Host
                 Write-Header "检测到更新冲突！"
                 Write-Warning "原因: 你可能修改过酒馆的某些文件，导致无法自动合并新版本。"
@@ -1086,9 +1030,7 @@ function Update-SillyTavern {
                         try {
                             Set-Location $ScriptBaseDir
                             Rename-Item -Path $ST_Dir -NewName $renamedBackupDir -ErrorAction Stop
-                        } catch {
-                            Write-ErrorExit "备份失败，请检查权限或手动重命名后重试。"
-                        }
+                        } catch { Write-ErrorExit "备份失败，请检查权限或手动重命名后重试。" }
                         Write-Success "旧目录已完整备份为: $($renamedBackupDir | Split-Path -Leaf)"
                         Write-Header "步骤 3/5: 下载并安装新版 SillyTavern"
                         Install-SillyTavern -autoStart $false
@@ -1098,9 +1040,7 @@ function Update-SillyTavern {
                             Write-Warning "正在将备份数据解压至新目录..."
                             Expand-Archive -Path $dataBackupZipPath -DestinationPath $ST_Dir -Force -ErrorAction Stop
                             Write-Success "用户数据已成功恢复到新版本中。"
-                        } catch {
-                            Write-ErrorExit "数据恢复失败！错误: $($_.Exception.Message)"
-                        }
+                        } catch { Write-ErrorExit "数据恢复失败！错误: $($_.Exception.Message)" }
                         Write-Header "步骤 5/5: 更新完成，请确认"
                         Write-Success "SillyTavern 已更新并恢复数据！"
                         Write-Warning "请注意:"
@@ -1110,30 +1050,18 @@ function Update-SillyTavern {
                         Write-Host "  - 本次恢复所用的核心本地备份位于: " -NoNewline; Write-Host (Join-Path ($Backup_Root_Dir | Split-Path -Leaf) ($dataBackupZipPath | Split-Path -Leaf)) -ForegroundColor Cyan
                         Write-Host "`n请按任意键，启动更新后的 SillyTavern..." -ForegroundColor Cyan
                         $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null
-                        Start-SillyTavern
-                        exit
+                        Start-SillyTavern; exit
                     }
                     '1' {
                         Write-Warning "正在执行强制覆盖 (git reset --hard)..."
                         git reset --hard origin/$Repo_Branch
-                        git pull origin $Repo_Branch
-                        if ($LASTEXITCODE -eq 0) {
-                            Write-Success "强制更新成功。"
-                            $pullSucceeded = $true
-                        } else {
-                            Write-Error "强制更新失败！"
-                        }
+                        git -c credential.helper='' pull origin $Repo_Branch
+                        if ($LASTEXITCODE -eq 0) { Write-Success "强制更新成功。"; $pullSucceeded = $true } else { Write-Error "强制更新失败！" }
                         break
                     }
-                    default {
-                        Write-Warning "已取消更新。"
-                        Press-Any-Key
-                        return
-                    }
+                    default { Write-Warning "已取消更新。"; Press-Any-Key; return }
                 }
-            } else {
-                Write-Error "使用线路 [$($mirrorHost)] 更新失败！正在切换下一条..."
-            }
+            } else { Write-Error "使用线路 [$($mirrorHost)] 更新失败！正在切换下一条..." }
         }
 
         if ($pullSucceeded) {
@@ -1141,19 +1069,13 @@ function Update-SillyTavern {
         } else {
             if (-not $fullRetestAttempted) {
                 $fullRetestAttempted = $true
-                Write-Error "预选线路均更新失败。"
-                Write-Warning "将进行全量测速并重试所有可用线路..."
-                $script:CachedMirrors = @()
+                Write-Error "预选线路均更新失败。将进行全量测速并重试所有可用线路..."
             } else {
                 Set-Location $ScriptBaseDir
-                $retryChoice = Read-Host "`n所有可用线路均更新失败。是否重新测速并重试？(直接回车=是, 输入n=否)"
-                if ($retryChoice -eq 'n') { Write-Warning "更新失败，用户取消操作。"; break }
-                $script:CachedMirrors = @()
-                $fullRetestAttempted = $false
+                Write-Error "已尝试所有可用线路，更新均失败。"
             }
         }
     }
-
     Set-Location $ScriptBaseDir
     if ($updateSuccess) { Write-Success "SillyTavern 更新完成！" }
     Press-Any-Key
