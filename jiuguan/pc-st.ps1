@@ -1,37 +1,20 @@
-﻿# SillyTavern 助手 v2.1
-# 作者: Qingjue | 小红书号: 826702880
-# =========================================================================
+﻿# 清绝咕咕助手 v2.2
+# 作者: 清绝 | 网址: blog.qjyg.de
 
 # --- 初始化与环境设置 ---
-# 强制使用 TLS 1.2 安全协议
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-# 强制使用 UTF-8 编码处理外部程序输出，解决乱码问题
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-
-# =========================================================================
-#   核心配置
-# =========================================================================
-
-# 脚本自身更新地址
+# --- 核心配置 ---
 $ScriptSelfUpdateUrl = "https://gitee.com/canaan723/st-tools/raw/main/jiuguan/pc-st.ps1"
-# 帮助文档地址
 $HelpDocsUrl = "https://blog.qjyg.de"
-# 脚本所在目录
 $ScriptBaseDir = Split-Path -Path $PSCommandPath -Parent
-# SillyTavern 主程序目录
 $ST_Dir = Join-Path $ScriptBaseDir "SillyTavern"
-# Git 下载/更新时使用的分支
 $Repo_Branch = "release"
-# 本地备份文件存放根目录
 $Backup_Root_Dir = Join-Path $ScriptBaseDir "_SillyTavern_Backups"
-# 本地备份文件数量上限
 $Backup_Limit = 10
-# 脚本更新提示的临时标记文件
 $UpdateFlagFile = Join-Path ([System.IO.Path]::GetTempPath()) ".st_assistant_update_flag"
 
-# --- 统一配置文件路径 ---
-# 将所有配置文件存放在用户目录下的 .config/pc-st 中
 $ConfigDir = Join-Path $ScriptBaseDir ".config"
 if (-not (Test-Path $ConfigDir)) {
     New-Item -Path $ConfigDir -ItemType Directory -Force | Out-Null
@@ -41,7 +24,6 @@ $GitSyncConfigFile = Join-Path $ConfigDir "git_sync.conf"
 $ProxyConfigFile = Join-Path $ConfigDir "proxy.conf"
 $SyncRulesConfigFile = Join-Path $ConfigDir "sync_rules.conf"
 
-# Git 镜像列表，用于加速下载和更新
 $Mirror_List = @(
     "https://github.com/SillyTavern/SillyTavern.git",
     "https://git.ark.xx.kg/gh/SillyTavern/SillyTavern.git",
@@ -56,34 +38,31 @@ $Mirror_List = @(
     "https://gh-proxy.net/https://github.com/SillyTavern/SillyTavern.git",
     "https://hubproxy-advj.onrender.com/https://github.com/SillyTavern/SillyTavern.git"
 )
-
-# 用于缓存镜像测速结果，避免重复测试
 $CachedMirrors = @()
-
 
 # =========================================================================
 #   辅助函数库
 # =========================================================================
 
-# --- UI 输出函数 ---
+function Show-Header {
+    Write-Host "    " -NoNewline; Write-Host ">>" -ForegroundColor Yellow -NoNewline; Write-Host " 清绝咕咕助手 v2.2" -ForegroundColor Green
+    Write-Host "       " -NoNewline; Write-Host "作者: 清绝 | 网址: blog.qjyg.de" -ForegroundColor DarkGray
+}
+
 function Write-Header($Title) { Write-Host "`n═══ $($Title) ═══" -ForegroundColor Cyan }
 function Write-Success($Message) { Write-Host "✓ $Message" -ForegroundColor Green }
 function Write-Warning($Message) { Write-Host "⚠ $Message" -ForegroundColor Yellow }
 function Write-Error($Message) { Write-Host "✗ $Message" -ForegroundColor Red }
 function Write-ErrorExit($Message) { Write-Host "`n✗ $Message`n流程已终止。" -ForegroundColor Red; Press-Any-Key; exit }
 function Press-Any-Key { Write-Host "`n请按任意键返回..." -ForegroundColor Cyan; $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null }
-
-# 检查命令是否存在
 function Check-Command($Command) { return (Get-Command $Command -ErrorAction SilentlyContinue) }
 
-# 获取用户数据文件夹列表，排除系统文件夹
 function Get-UserFolders {
     param([string]$baseDataPath)
     $systemFolders = @("_cache", "_storage", "_uploads", "_webpack")
     return Get-ChildItem -Path $baseDataPath -Directory -ErrorAction SilentlyContinue | Where-Object { $systemFolders -notcontains $_.Name }
 }
 
-# 测试并找出最快的 Git 镜像
 function Find-FastestMirror {
     param([bool]$excludeOfficial = $false)
     if ($CachedMirrors.Count -gt 0) { Write-Success "已使用缓存的测速结果。"; return $CachedMirrors }
@@ -140,7 +119,6 @@ function Find-FastestMirror {
     }
 }
 
-# 运行 npm install 并带重试机制
 function Run-NpmInstallWithRetry {
     if (-not (Test-Path $ST_Dir)) { return $false }
     Set-Location $ST_Dir
@@ -166,17 +144,15 @@ function Run-NpmInstallWithRetry {
     return $false
 }
 
-
 # =========================================================================
 #   网络代理功能模块
 # =========================================================================
 
-# 应用代理配置到环境变量
 function Apply-Proxy {
     if (Test-Path $ProxyConfigFile) {
         $port = Get-Content $ProxyConfigFile -ErrorAction SilentlyContinue
         if (-not [string]::IsNullOrWhiteSpace($port)) {
-            $proxyUrl = "http://1227.0.0.1:$port"
+            $proxyUrl = "http://127.0.0.1:$port"
             $env:http_proxy = $proxyUrl
             $env:https_proxy = $proxyUrl
             $env:all_proxy = $proxyUrl
@@ -188,7 +164,6 @@ function Apply-Proxy {
     }
 }
 
-# 设置代理端口
 function Set-Proxy {
     $portInput = Read-Host "请输入代理端口号 [直接回车默认为 7890]"
     if ([string]::IsNullOrWhiteSpace($portInput)) { $portInput = "7890" }
@@ -207,7 +182,6 @@ function Set-Proxy {
     Press-Any-Key
 }
 
-# 清除代理配置
 function Clear-Proxy {
     if (Test-Path $ProxyConfigFile) {
         Remove-Item $ProxyConfigFile -Force
@@ -219,7 +193,6 @@ function Clear-Proxy {
     Press-Any-Key
 }
 
-# 显示代理管理菜单
 function Show-ManageProxyMenu {
     while ($true) {
         Clear-Host
@@ -230,7 +203,7 @@ function Show-ManageProxyMenu {
         } else {
             Write-Host "未配置" -ForegroundColor Red
         }
-        Write-Host "      (此设置仅对本助手内的操作生效，不影响系统全局代理)" -ForegroundColor DarkGray
+        Write-Host "      (此设置仅对咕咕助手内的操作生效，不影响系统全局代理)" -ForegroundColor DarkGray
         Write-Host "`n      [1] " -NoNewline; Write-Host "设置/修改代理" -ForegroundColor Cyan
         Write-Host "      [2] " -NoNewline; Write-Host "清除代理" -ForegroundColor Red
         Write-Host "      [0] " -NoNewline; Write-Host "返回主菜单" -ForegroundColor Cyan
@@ -244,12 +217,10 @@ function Show-ManageProxyMenu {
     }
 }
 
-
 # =========================================================================
 #   Git 同步功能模块
 # =========================================================================
 
-# 解析 key=value 格式的配置文件
 function Parse-ConfigFile($filePath) {
     $config = @{}
     if (Test-Path $filePath) {
@@ -271,7 +242,6 @@ function Parse-ConfigFile($filePath) {
     return $config
 }
 
-# 检查 Git 同步所需的依赖 (git, robocopy)
 function Test-GitSyncDeps {
     if (-not (Check-Command "git") -or -not (Check-Command "robocopy")) {
         Write-Warning "Git尚未安装，请先运行 [首次部署]。"
@@ -281,7 +251,6 @@ function Test-GitSyncDeps {
     return $true
 }
 
-# 确保 Git 用户名和邮箱已配置
 function Ensure-GitIdentity {
     if ([string]::IsNullOrWhiteSpace($(git config --global user.name)) -or [string]::IsNullOrWhiteSpace($(git config --global user.email))) {
         Clear-Host
@@ -298,7 +267,6 @@ function Ensure-GitIdentity {
     return $true
 }
 
-# 设置 Git 同步的仓库地址和 Token
 function Set-GitSyncConfig {
     Clear-Host
     Write-Header "配置 Git 同步服务"
@@ -311,7 +279,6 @@ function Set-GitSyncConfig {
     Press-Any-Key
 }
 
-# 测试单个镜像是否支持推送
 function Test-OneMirrorPush($authedUrl) {
     $tempRepoDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
     New-Item -Path $tempRepoDir -ItemType Directory -Force | Out-Null
@@ -343,7 +310,6 @@ function Test-OneMirrorPush($authedUrl) {
     return ($exitCode -eq 0)
 }
 
-# 寻找支持推送 (上传) 的 Git 镜像
 function Find-PushableMirror {
     $gitConfig = Parse-ConfigFile $GitSyncConfigFile
     if (-not $gitConfig.ContainsKey("REPO_URL") -or -not $gitConfig.ContainsKey("REPO_TOKEN")) {
@@ -437,7 +403,6 @@ function Find-PushableMirror {
     }
 }
 
-# 核心功能：备份数据到云端 (上传)
 function Backup-ToCloud {
     Clear-Host
     Write-Header "Git备份数据到云端 (上传)"
@@ -472,13 +437,11 @@ function Backup-ToCloud {
                 git config core.autocrlf false
                 Write-Warning "正在同步本地数据到临时区..."
 
-                # 定义 robocopy 排除规则
                 $recursiveExcludeDirs = @("extensions", "backups")
                 $recursiveExcludeFiles = @("*.log")
                 $robocopyExcludeArgs = @($recursiveExcludeDirs | ForEach-Object { "/XD", $_ }) + @($recursiveExcludeFiles | ForEach-Object { "/XF", $_ })
 
                 if (-not [string]::IsNullOrWhiteSpace($userMap) -and $userMap.Contains(":")) {
-                    # 映射同步模式：只同步指定的用户文件夹
                     $localUser = $userMap.Split(':')[0]
                     $remoteUser = $userMap.Split(':')[1]
                     Write-Warning "应用用户映射规则: 本地'$localUser' -> 云端'$remoteUser'"
@@ -490,14 +453,14 @@ function Backup-ToCloud {
                         Write-Warning "本地用户文件夹 '$localUser' 不存在，跳过同步。"
                     }
                 } else {
-                    # 镜像同步模式：同步所有用户文件夹
                     Get-ChildItem -Path . | Where-Object { $_.Name -ne ".git" } | Remove-Item -Recurse -Force
                     Write-Warning "应用镜像同步规则: 同步所有本地用户文件夹"
-                    $sourceDataPath = Join-Path $ST_Dir "data"
-                    $destDataPath = Join-Path $tempDir "data"
-                    $topLevelExcludeDirs = @("_cache", "_storage", "_uploads", "_webpack")
-                    $finalExcludeArgs = $robocopyExcludeArgs + @($topLevelExcludeDirs | ForEach-Object { "/XD", $_ })
-                    robocopy $sourceDataPath $destDataPath /E /PURGE $finalExcludeArgs /R:2 /W:5 /NFL /NDL /NJH /NJS /NP | Out-Null
+                    $localUserFolders = Get-UserFolders -baseDataPath (Join-Path $ST_Dir "data")
+                    foreach ($userFolder in $localUserFolders) {
+                        $sourcePath = $userFolder.FullName
+                        $destPath = Join-Path (Join-Path $tempDir "data") $userFolder.Name
+                        robocopy $sourcePath $destPath /E /PURGE $robocopyExcludeArgs /R:2 /W:5 /NFL /NDL /NJH /NJS /NP | Out-Null
+                    }
                 }
                 if ($syncConfigYaml -eq "true" -and (Test-Path (Join-Path $ST_Dir "config.yaml"))) {
                     Copy-Item (Join-Path $ST_Dir "config.yaml") $tempDir -Force
@@ -511,7 +474,7 @@ function Backup-ToCloud {
                     break
                 }
                 Write-Warning "正在提交数据变更..."
-                $commitMessage = "来自Windows的数据同步: $(Get-Date -Format 'yyyy年MM月dd日 HH:mm:ss')"
+                $commitMessage = "💻 Windows 推送: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
                 git commit -m $commitMessage -q
                 if ($LASTEXITCODE -ne 0) { Write-Error "Git 提交失败！"; continue }
                 Write-Warning "正在上传到云端... (请稍候，下方为实时进度)"
@@ -533,7 +496,6 @@ function Backup-ToCloud {
     Press-Any-Key
 }
 
-# 核心功能：从云端恢复数据 (下载)
 function Restore-FromCloud {
     Clear-Host
     Write-Header "Git从云端恢复数据 (下载)"
@@ -593,13 +555,11 @@ function Restore-FromCloud {
         if (-not (Get-ChildItem $tempDir)) { Write-Error "下载的数据源无效或为空，恢复操作已中止！"; return }
         Write-Warning "正在将云端数据同步到本地..."
 
-        # 定义 robocopy 排除规则
         $recursiveExcludeDirs = @("extensions", "backups")
         $recursiveExcludeFiles = @("*.log")
         $robocopyExcludeArgs = @($recursiveExcludeDirs | ForEach-Object { "/XD", $_ }) + @($recursiveExcludeFiles | ForEach-Object { "/XF", $_ })
 
         if (-not [string]::IsNullOrWhiteSpace($userMap) -and $userMap.Contains(":")) {
-            # 映射同步模式
             $localUser = $userMap.Split(':')[0]
             $remoteUser = $userMap.Split(':')[1]
             Write-Warning "应用用户映射规则: 云端'$remoteUser' -> 本地'$localUser'"
@@ -611,7 +571,6 @@ function Restore-FromCloud {
                 Write-Warning "云端映射文件夹 'data\$remoteUser' 不存在，跳过映射同步。"
             }
         } else {
-            # 镜像同步模式
             Write-Warning "应用镜像同步规则: 恢复所有云端用户文件夹"
             $sourceDataPath = Join-Path $tempDir "data"
             $destDataPath = Join-Path $ST_Dir "data"
@@ -641,7 +600,6 @@ function Restore-FromCloud {
     Press-Any-Key
 }
 
-# 清除 Git 同步配置
 function Clear-GitSyncConfig {
     if (Test-Path $GitSyncConfigFile) {
         $confirm = Read-Host "确认要清除已保存的Git同步配置吗？(y/n)"
@@ -657,7 +615,6 @@ function Clear-GitSyncConfig {
     Press-Any-Key
 }
 
-# 导出已安装扩展的 Git 链接
 function Export-ExtensionLinks {
     Clear-Host
     Write-Header "导出扩展链接"
@@ -718,7 +675,6 @@ function Export-ExtensionLinks {
     Press-Any-Key
 }
 
-# 显示 Git 同步配置管理菜单
 function Show-ManageGitConfigMenu {
     while ($true) {
         Clear-Host
@@ -736,7 +692,6 @@ function Show-ManageGitConfigMenu {
     }
 }
 
-# 更新同步规则配置文件中的键值
 function Update-SyncRuleValue($key, $value, $file) {
     $config = Parse-ConfigFile $file
     if ([string]::IsNullOrWhiteSpace($value)) {
@@ -748,7 +703,6 @@ function Update-SyncRuleValue($key, $value, $file) {
     Set-Content -Path $file -Value $newContent -Encoding utf8
 }
 
-# 显示高级同步设置菜单
 function Show-AdvancedSyncSettingsMenu {
     while ($true) {
         Clear-Host
@@ -796,7 +750,6 @@ function Show-AdvancedSyncSettingsMenu {
     }
 }
 
-# 显示 Git 数据同步主菜单
 function Show-GitSyncMenu {
     while ($true) {
         Clear-Host
@@ -835,12 +788,10 @@ function Show-GitSyncMenu {
     }
 }
 
-
 # =========================================================================
 #   核心功能函数
 # =========================================================================
 
-# 启动 SillyTavern
 function Start-SillyTavern {
     Clear-Host
     Write-Header "启动 SillyTavern"
@@ -863,7 +814,6 @@ function Start-SillyTavern {
     Press-Any-Key
 }
 
-# 首次安装 SillyTavern
 function Install-SillyTavern {
     param([bool]$autoStart = $true)
     Clear-Host
@@ -935,7 +885,6 @@ function Install-SillyTavern {
     }
 }
 
-# 创建一个新的本地 Zip 备份
 function New-LocalZipBackup {
     param([string]$BackupType, [string[]]$PathsToBackup)
     if (-not (Test-Path $ST_Dir)) {
@@ -999,7 +948,6 @@ function New-LocalZipBackup {
     }
 }
 
-# 更新 SillyTavern 主程序
 function Update-SillyTavern {
     Clear-Host
     Write-Header "更新 SillyTavern 主程序"
@@ -1119,7 +1067,6 @@ function Update-SillyTavern {
     Press-Any-Key
 }
 
-# 交互式创建本地备份
 function Run-BackupInteractive {
     Clear-Host
     if (-not (Test-Path $ST_Dir)) {
@@ -1187,7 +1134,6 @@ function Run-BackupInteractive {
     Press-Any-Key
 }
 
-# 显示本地备份管理菜单
 function Show-ManageBackupsMenu {
     while ($true) {
         Clear-Host
@@ -1243,7 +1189,6 @@ function Show-ManageBackupsMenu {
     }
 }
 
-# 显示本地备份主菜单
 function Show-BackupMenu {
     while ($true) {
         Clear-Host
@@ -1261,7 +1206,6 @@ function Show-BackupMenu {
     }
 }
 
-# 打开帮助文档
 function Open-HelpDocs {
     Clear-Host
     Write-Header "查看帮助文档"
@@ -1277,10 +1221,9 @@ function Open-HelpDocs {
     Press-Any-Key
 }
 
-# 更新助手脚本自身
 function Update-AssistantScript {
     Clear-Host
-    Write-Header "更新助手脚本"
+    Write-Header "更新咕咕助手脚本"
     Write-Warning "正在从服务器获取最新版本..."
     try {
         $newScriptContent = (Invoke-WebRequest -Uri $ScriptSelfUpdateUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop).Content
@@ -1301,7 +1244,7 @@ function Update-AssistantScript {
         Write-Host "`n  1. " -NoNewline; Write-Host "在即将自动打开的文件夹中..." -ForegroundColor Cyan
         Write-Host "  2. " -NoNewline; Write-Host "先删除旧的 'pc-st.ps1' 文件。" -ForegroundColor Cyan
         Write-Host "  3. " -NoNewline; Write-Host "再将 '$newFileName' 重命名为 'pc-st.ps1'。" -ForegroundColor Cyan
-        Write-Host "`n完成后，请手动关闭本窗口，并重新运行 '酒馆助手.bat' 即可。" -ForegroundColor Green
+        Write-Host "`n完成后，请手动关闭本窗口，并重新运行 '咕咕助手.bat' 即可。" -ForegroundColor Green
         Write-Host "`n"
         Write-Warning "4秒后将自动为您打开文件夹..."
         Start-Sleep -Seconds 4
@@ -1312,7 +1255,6 @@ function Update-AssistantScript {
     }
 }
 
-# 启动时在后台检查更新
 function Check-ForUpdatesOnStart {
     $jobScriptBlock = {
         param($url, $flag, $path)
@@ -1331,34 +1273,27 @@ function Check-ForUpdatesOnStart {
     Start-Job -ScriptBlock $jobScriptBlock -ArgumentList $ScriptSelfUpdateUrl, $UpdateFlagFile, $PSCommandPath | Out-Null
 }
 
-
 # =========================================================================
 #   主菜单与脚本入口
 # =========================================================================
 
-# 启动时应用代理并检查更新
 Apply-Proxy
 Check-ForUpdatesOnStart
+git config --global --add safe.directory '*' | Out-Null
 
-# 主循环
 while ($true) {
     Clear-Host
-    Write-Host @"
-    ╔═════════════════════════════════╗
-    ║      SillyTavern 助手 v2.1      ║
-    ║   by Qingjue | XHS:826702880    ║
-    ╚═════════════════════════════════╝
-"@ -ForegroundColor Cyan
+    Show-Header
     $updateNoticeText = if (Test-Path $UpdateFlagFile) { " [!] 有更新" } else { "" }
     Write-Host "`n    选择一个操作来开始：`n"
     Write-Host "      [1] " -NoNewline -ForegroundColor Green; Write-Host "启动 SillyTavern"
     Write-Host "      [2] " -NoNewline -ForegroundColor Cyan; Write-Host "数据同步 (Git 云端)"
     Write-Host "      [3] " -NoNewline -ForegroundColor Cyan; Write-Host "本地备份管理"
     Write-Host "      [4] " -NoNewline -ForegroundColor Yellow; Write-Host "首次部署 (全新安装)`n"
-    Write-Host "      [5] 更新 ST 主程序    [6] 更新助手脚本$($updateNoticeText)"
+    Write-Host "      [5] 更新 ST 主程序    [6] 更新咕咕助手$($updateNoticeText)"
     Write-Host "      [7] 打开 ST 文件夹    [8] 查看帮助文档"
     Write-Host "      [9] 配置网络代理`n"
-    Write-Host "      [0] " -NoNewline -ForegroundColor Red; Write-Host "退出助手`n"
+    Write-Host "      [0] " -NoNewline -ForegroundColor Red; Write-Host "退出咕咕助手`n"
     $choice = Read-Host "    请输入选项数字"
     switch ($choice) {
         "1" { Start-SillyTavern }
@@ -1370,7 +1305,7 @@ while ($true) {
         "7" { if (Test-Path $ST_Dir) { Invoke-Item $ST_Dir } else { Write-Warning '目录不存在，请先部署！'; Start-Sleep 1.5 } }
         "8" { Open-HelpDocs }
         "9" { Show-ManageProxyMenu }
-        "0" { if (Test-Path $UpdateFlagFile) { Remove-Item $UpdateFlagFile -Force }; Write-Host "感谢使用，助手已退出。"; exit }
+        "0" { if (Test-Path $UpdateFlagFile) { Remove-Item $UpdateFlagFile -Force }; Write-Host "感谢使用，咕咕助手已退出。"; exit }
         default { Write-Warning "无效输入，请重新选择。"; Start-Sleep -Seconds 1.5 }
     }
 }
