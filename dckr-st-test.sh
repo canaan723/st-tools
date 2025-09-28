@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# SillyTavern 助手 v1.5
-# 作者: Qingjue | 小红书号: 826702880
+# 咕咕助手 v1.6
+# 作者: 清绝 | 网址: blog.qjyg.de
 
 # --- [核心] 确保脚本由 Bash 执行 ---
 if [ -z "$BASH_VERSION" ]; then
@@ -47,6 +47,11 @@ log_error() { echo -e "\n${RED}[ERROR] $1${NC}\n"; exit 1; }
 log_action() { echo -e "${YELLOW}[ACTION] $1${NC}"; }
 log_step() { echo -e "\n${BLUE}--- $1: $2 ---${NC}"; }
 log_success() { echo -e "${GREEN}✓ $1${NC}"; }
+
+fn_show_main_header() {
+    echo -e "    ${YELLOW}>>${GREEN} 咕咕助手 v1.6${NC}"
+    echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
+}
 
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then
@@ -101,7 +106,7 @@ fn_optimize_docker() {
         "https://dockerproxy.1panel.live" "https://hub.rat.dev" "https://docker.m.ixdev.cn" 
         "https://hub2.nat.tf" "https://docker.1panel.dev" "https://docker.amingg.com" "https://docker.xuanyuan.me" 
         "https://dytt.online" "https://lispy.org" "https://docker.xiaogenban1993.com" 
-        "https://docker-0.unsee.tech" "https://666860.xyz"
+        "https://docker-0.unsee.tech" "https://666860.xyz" "https://hubproxy-advj.onrender.com"
     )
     docker rmi hello-world > /dev/null 2>&1 || true
     local results=""; local official_hub_ok=false
@@ -896,10 +901,8 @@ EOF
 main_menu() {
     while true; do
         tput reset
-        echo -e "${CYAN}╔═════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║     ${BOLD}SillyTavern 助手 v1.5${NC}       ${CYAN}║${NC}"
-        echo -e "${CYAN}║   by Qingjue | XHS:826702880    ${CYAN}║${NC}"
-        echo -e "${CYAN}╚═════════════════════════════════╝${NC}"
+        fn_show_main_header
+        echo
 
         if [ "$IS_DEBIAN_LIKE" = false ]; then
             echo -e "\n${YELLOW}╔═════════════════════════════════════════════════════════════════════════════╗${NC}"
