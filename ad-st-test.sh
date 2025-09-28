@@ -89,6 +89,61 @@ fn_find_fastest_mirror() {
     if [[ " ${MIRROR_LIST[*]} " =~ " ${github_url} " ]]; then
         echo -e "  - 优先测试: GitHub 官方源..." >&2
         if timeout 10s git ls-remote "$github_url" HEAD >/dev/null 2>&1; then
+            fn_print_success "GitHub 官方源直连可用！将置于列表顶部。" >&2
+            sorted_successful_mirrors+=("$github_url")
+        else
+            fn_print_error "GitHub 官方源连接超时，将测试其他镜像..."
+        fi
+    fi
+
+    local other_mirrors=()
+    for mirror in "${MIRROR_LIST[@]}"; do
+        [[ "$mirror" != "$github_url" ]] && other_mirrors+=("$mirror")
+    done
+
+    if [ ${#other_mirrors[@]} -gt 0 ]; then
+        echo -e "${YELLOW}已启动并行测试，将完整测试所有线路...${NC}" >&2
+        local results_file; results_file=$(mktemp); local pids=()
+        for mirror_url in "${other_mirrors[@]}"; do
+            (
+                local mirror_host; mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
+                local start_time; start_time=$(date +%s.%N)
+                if timeout 10s git ls-remote "$mirror_url" HEAD >/dev/null 2>&1; then
+                    local end_time; end_time=$(date +%s.%N)
+                    local elapsed_time; elapsed_time=$(echo "$end_time - $start_time" | bc)
+                    echo "$elapsed_time $mirror_url" >>"$results_file"
+                    echo -e "  - 测试: ${CYAN}${mirror_host}${NC} - 耗时 ${GREEN}${elapsed_time}s${NC} ${GREEN}[成功]${NC}" >&2
+                else
+                    echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${RED}[失败]${NC}" >&2
+                fi
+            ) &
+            pids+=($!)
+        done
+        wait "${pids[@]}"
+
+        if [ -s "$results_file" ]; then
+            mapfile -t other_successful_mirrors < <(sort -n "$results_file" | awk '{print $2}')
+            sorted_successful_mirrors+=("${other_successful_mirrors[@]}")
+        fi
+        rm -f "$results_file"
+    fi
+
+    if [ ${#sorted_successful_mirrors[@]} -gt 0 ]; then
+        fn_print_success "测试完成，找到 ${#sorted_successful_mirrors[@]} 个可用线路。" >&2
+        CACHED_MIRRORS=("${sorted_successful_mirrors[@]}")
+        printf '%s\n' "${CACHED_MIRRORS[@]}"
+    else
+        fn_print_error "所有线路均测试失败。"; return 1
+    fi
+}
+
+    fn_print_warning "开始测试 Git 镜像连通性与速度 (用于下载)..."
+    local github_url="https://github.com/SillyTavern/SillyTavern.git"
+    local sorted_successful_mirrors=()
+    
+    if [[ " ${MIRROR_LIST[*]} " =~ " ${github_url} " ]]; then
+        echo -e "  - 优先测试: GitHub 官方源..." >&2
+        if timeout 10s git ls-remote "$github_url" HEAD >/dev/null 2>&1; then
             fn_print_success "GitHub 官方源直连可用！将优先使用。" >&2
             sorted_successful_mirrors+=("$github_url")
             CACHED_MIRRORS=("${sorted_successful_mirrors[@]}")
@@ -291,8 +346,6 @@ fn_git_find_pushable_mirror() {
         if fn_git_test_one_mirror_push "$official_url"; then 
             echo -e "    ${GREEN}[成功]${NC}" >&2
             successful_urls+=("$official_url")
-            printf '%s\n' "${successful_urls[@]}"
-            return 0
         else 
             echo -e "    ${RED}[失败]${NC}" >&2
         fi
