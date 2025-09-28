@@ -173,8 +173,10 @@ fn_run_npm_install() {
 fn_update_termux_source() {
     fn_print_header "1/5: 配置软件源"
     echo -e "${YELLOW}即将开始配置 Termux 软件源...${NC}"
-    echo -e "  - 稍后会弹出一个蓝白色窗口，请根据提示操作。"
-    echo -e "  - ${GREEN}推荐：${NC}依次选择 ${BOLD}第一项${NC} -> ${BOLD}第三项${NC} (国内最优)。"
+    echo -e "  - 安装开始时，屏幕会弹出蓝白色确认窗口。"
+    echo -e "  - ${GREEN}国内网络${NC}: ${BOLD}依次触屏选择【第一项】和【第三项】并点击 OK${NC}。"
+    echo -e "  - ${GREEN}国外网络${NC}: ${BOLD}选择两次【第一项】并点击 OK${NC}。"
+    echo -e "  - 之后安装会自动进行，无需其他操作。"
     echo -e "\n${CYAN}请按任意键以继续...${NC}"; read -n 1 -s
 
     for i in {1..3}; do
