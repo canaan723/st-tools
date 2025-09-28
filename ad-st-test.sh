@@ -1050,6 +1050,7 @@ fn_create_zip_backup() {
         fn_print_success "本地备份成功：${backup_name} (当前: ${#new_all_backups[@]}/${BACKUP_LIMIT})"
         echo -e "  ${CYAN}保存路径: ${backup_zip_path}${NC}"
         cd "$HOME"
+        echo "$backup_zip_path"
         return 0
     else
         fn_print_error "创建本地 .zip 备份失败！"
@@ -1184,28 +1185,34 @@ fn_update_st() {
         "" | 'b' | 'B')
             clear
             fn_print_header "步骤 1/5: 创建本地备份"
-            if ! fn_create_zip_backup "更新前"; then
+            local data_backup_zip_path
+            data_backup_zip_path=$(fn_create_zip_backup "更新前")
+            if [ $? -ne 0 ] || [ -z "$data_backup_zip_path" ]; then
                 fn_print_error_exit "本地备份创建失败，更新流程终止。"
             fi
+            
             fn_print_header "步骤 2/5: 完整备份当前目录"
             local renamed_backup_dir="${ST_DIR}_backup_$(date +%Y%m%d%H%M%S)"
             cd "$HOME"
             mv "$ST_DIR" "$renamed_backup_dir" || fn_print_error_exit "备份失败！请检查权限或手动重命名后重试。"
             fn_print_success "旧目录已完整备份为: $(basename "$renamed_backup_dir")"
+            
             fn_print_header "步骤 3/5: 下载并安装新版 SillyTavern"
             fn_install_st "no-start"
             if [ ! -d "$ST_DIR" ]; then
                 fn_print_error_exit "新版本安装失败，流程终止。"
             fi
+            
             fn_print_header "步骤 4/5: 自动恢复用户数据"
             fn_print_warning "正在将备份数据解压至新目录..."
-            if ! unzip -o "$BACKUP_ROOT_DIR"/ST_备份_更新前_*.zip -d "$ST_DIR" >/dev/null 2>&1; then
+            if ! unzip -o "$data_backup_zip_path" -d "$ST_DIR" >/dev/null 2>&1; then
                 fn_print_error_exit "数据恢复失败！请检查zip文件是否有效。"
             fi
             fn_print_success "用户数据已成功恢复到新版本中。"
+            
             fn_print_header "步骤 5/5: 更新完成，请确认"
             fn_print_success "SillyTavern 已更新并恢复数据！"
-            fn_print_warning "请注意:\n  - 您的聊天记录、角色卡、插件和设置已恢复。\n  - 如果您曾手动修改过酒馆核心文件(如 server.js)，这些修改需要您重新操作。\n  - 您的完整旧版本已备份在: ${CYAN}$(basename "$renamed_backup_dir")${NC}\n  - 本次恢复所用的核心本地备份位于: ${CYAN}$(basename "$BACKUP_ROOT_DIR")/ST_备份_更新前_...zip${NC}"
+            fn_print_warning "请注意:\n  - 您的聊天记录、角色卡、插件和设置已恢复。\n  - 如果您曾手动修改过酒馆核心文件(如 server.js)，这些修改需要您重新操作。\n  - 您的完整旧版本已备份在: ${CYAN}$(basename "$renamed_backup_dir")${NC}\n  - 本次恢复所用的核心本地备份位于: ${CYAN}$(basename "$data_backup_zip_path")${NC}"
             echo -e "\n${CYAN}请按任意键，启动更新后的 SillyTavern...${NC}"
             read -n 1 -s
             fn_start_st
