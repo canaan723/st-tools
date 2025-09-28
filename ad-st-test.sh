@@ -50,7 +50,7 @@ MIRROR_LIST=(
 # =========================================================================
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.2${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.3${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
 }
 fn_print_header() { echo -e "\n${CYAN}═══ ${BOLD}$1 ${NC}═══${NC}"; }
@@ -1060,112 +1060,157 @@ fn_update_st() {
         return
     fi
     cd "$ST_DIR" || fn_print_error_exit "无法进入 SillyTavern 目录: $ST_DIR"
+
     local update_success=false
-    while ! $update_success; do
-        mapfile -t sorted_mirrors < <(fn_find_fastest_mirror)
-        if [ ${#sorted_mirrors[@]} -eq 0 ]; then
-            read -p $'\n'"${RED}所有 Git 镜像均测试失败。是否重新测速并重试？(直接回车=是, 输入n=否): ${NC}" retry_choice
-            if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
-                fn_print_warning "更新失败，用户取消操作。"
-                fn_press_any_key
-                return
+    local github_url="https://github.com/SillyTavern/SillyTavern.git"
+
+    # 封装冲突处理逻辑，避免代码重复
+    handle_merge_conflict() {
+        local git_output="$1"
+        clear
+        fn_print_header "检测到更新冲突！"
+        fn_print_warning "原因: 你可能修改过酒馆的文件，导致无法自动合并新版本。"
+        echo "--- 冲突文件预览 ---"
+        echo "$git_output" | grep -E "^\s+" | head -n 5
+        echo "--------------------"
+        echo -e "\n请选择操作方式：\n  [${GREEN}回车${NC}] ${BOLD}自动备份并重新安装 (推荐)${NC}\n  [1]    ${YELLOW}强制覆盖更新 (危险)${NC}\n  [0]    ${CYAN}放弃更新${NC}"
+        read -p "请输入选项: " choice
+        case "$choice" in
+        "" | 'b' | 'B')
+            clear
+            fn_print_header "步骤 1/5: 创建本地备份"
+            if ! fn_create_zip_backup "更新前"; then
+                fn_print_error_exit "本地备份创建失败，更新流程终止。"
             fi
-            CACHED_MIRRORS=()
-            continue
-        fi
-        local pull_attempted_in_loop=false
-        for mirror_url in "${sorted_mirrors[@]}"; do
-            local mirror_host
-            mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
-            fn_print_warning "正在尝试使用镜像 [${mirror_host}] 更新..."
+            fn_print_header "步骤 2/5: 完整备份当前目录"
+            local renamed_backup_dir="${ST_DIR}_backup_$(date +%Y%m%d%H%M%S)"
+            cd "$HOME"
+            mv "$ST_DIR" "$renamed_backup_dir" || fn_print_error_exit "备份失败！请检查权限或手动重命名后重试。"
+            fn_print_success "旧目录已完整备份为: $(basename "$renamed_backup_dir")"
+            fn_print_header "步骤 3/5: 下载并安装新版 SillyTavern"
+            fn_install_st "no-start"
+            if [ ! -d "$ST_DIR" ]; then
+                fn_print_error_exit "新版本安装失败，流程终止。"
+            fi
+            fn_print_header "步骤 4/5: 自动恢复用户数据"
+            fn_print_warning "正在将备份数据解压至新目录..."
+            if ! unzip -o "$BACKUP_ROOT_DIR"/ST_备份_更新前_*.zip -d "$ST_DIR" >/dev/null 2>&1; then
+                fn_print_error_exit "数据恢复失败！请检查zip文件是否有效。"
+            fi
+            fn_print_success "用户数据已成功恢复到新版本中。"
+            fn_print_header "步骤 5/5: 更新完成，请确认"
+            fn_print_success "SillyTavern 已更新并恢复数据！"
+            fn_print_warning "请注意:\n  - 您的聊天记录、角色卡、插件和设置已恢复。\n  - 如果您曾手动修改过酒馆核心文件(如 server.js)，这些修改需要您重新操作。\n  - 您的完整旧版本已备份在: ${CYAN}$(basename "$renamed_backup_dir")${NC}\n  - 本次恢复所用的核心本地备份位于: ${CYAN}$(basename "$BACKUP_ROOT_DIR")/ST_备份_更新前_...zip${NC}"
+            echo -e "\n${CYAN}请按任意键，启动更新后的 SillyTavern...${NC}"
+            read -n 1 -s
+            fn_start_st
+            exit 0 # 正常退出脚本
+            ;;
+        '1')
+            fn_print_warning "正在执行强制覆盖 (git reset --hard)..."
+            if git reset --hard "origin/$REPO_BRANCH" && git pull origin "$REPO_BRANCH"; then
+                fn_print_success "强制更新成功。"
+                if fn_run_npm_install; then
+                    update_success=true
+                fi
+            else
+                fn_print_error "强制更新失败！"
+            fi
+            # 无论成功失败，都跳出主循环
+            return 1
+            ;;
+        *) 
+            fn_print_warning "已取消更新。"
+            return 1
+            ;;
+        esac
+    }
+
+    # 主更新循环
+    while ! $update_success; do
+        local mirrors_to_try=()
+        local pull_succeeded_this_round=false
+
+        # 阶段一：尝试官方源
+        fn_print_warning "正在尝试使用官方源 [github.com] 更新..."
+        mirrors_to_try=("$github_url")
+        for mirror_url in "${mirrors_to_try[@]}"; do
             git remote set-url origin "$mirror_url"
             local git_output
             git_output=$(git pull origin "$REPO_BRANCH" 2>&1)
             if [ $? -eq 0 ]; then
-                fn_print_success "代码更新成功。"
-                if fn_run_npm_install; then
-                    update_success=true
-                fi
-                break
+                pull_succeeded_this_round=true; break
+            elif echo "$git_output" | grep -qE "overwritten by merge|Please commit|unmerged files"; then
+                handle_merge_conflict "$git_output"
+                # handle_merge_conflict 会自行处理流程，这里直接返回
+                fn_press_any_key; return
             else
-                if echo "$git_output" | grep -qE "overwritten by merge|Please commit|unmerged files"; then
-                    clear
-                    fn_print_header "检测到更新冲突！"
-                    fn_print_warning "原因: 你可能修改过酒馆的文件，导致无法自动合并新版本。"
-                    echo "--- 冲突文件预览 ---"
-                    echo "$git_output" | grep -E "^\s+" | head -n 5
-                    echo "--------------------"
-                    echo -e "\n请选择操作方式：\n  [${GREEN}回车${NC}] ${BOLD}自动备份并重新安装 (推荐)${NC}\n  [1]    ${YELLOW}强制覆盖更新 (危险)${NC}\n  [0]    ${CYAN}放弃更新${NC}"
-                    read -p "请输入选项: " choice
-                    case "$choice" in
-                    "" | 'b' | 'B')
-                        clear
-                        fn_print_header "步骤 1/5: 创建本地备份"
-                        if ! fn_create_zip_backup "更新前"; then
-                            fn_print_error_exit "本地备份创建失败，更新流程终止。"
-                        fi
-                        fn_print_header "步骤 2/5: 完整备份当前目录"
-                        local renamed_backup_dir="${ST_DIR}_backup_$(date +%Y%m%d%H%M%S)"
-                        cd "$HOME"
-                        mv "$ST_DIR" "$renamed_backup_dir" || fn_print_error_exit "备份失败！请检查权限或手动重命名后重试。"
-                        fn_print_success "旧目录已完整备份为: $(basename "$renamed_backup_dir")"
-                        fn_print_header "步骤 3/5: 下载并安装新版 SillyTavern"
-                        fn_install_st "no-start"
-                        if [ ! -d "$ST_DIR" ]; then
-                            fn_print_error_exit "新版本安装失败，流程终止。"
-                        fi
-                        fn_print_header "步骤 4/5: 自动恢复用户数据"
-                        fn_print_warning "正在将备份数据解压至新目录..."
-                        if ! unzip -o "$BACKUP_ROOT_DIR"/ST_备份_更新前_*.zip -d "$ST_DIR" >/dev/null 2>&1; then
-                            fn_print_error_exit "数据恢复失败！请检查zip文件是否有效。"
-                        fi
-                        fn_print_success "用户数据已成功恢复到新版本中。"
-                        fn_print_header "步骤 5/5: 更新完成，请确认"
-                        fn_print_success "SillyTavern 已更新并恢复数据！"
-                        fn_print_warning "请注意:\n  - 您的聊天记录、角色卡、插件和设置已恢复。\n  - 如果您曾手动修改过酒馆核心文件(如 server.js)，这些修改需要您重新操作。\n  - 您的完整旧版本已备份在: ${CYAN}$(basename "$renamed_backup_dir")${NC}\n  - 本次恢复所用的核心本地备份位于: ${CYAN}$(basename "$BACKUP_ROOT_DIR")/ST_备份_更新前_...zip${NC}"
-                        echo -e "\n${CYAN}请按任意键，启动更新后的 SillyTavern...${NC}"
-                        read -n 1 -s
-                        fn_start_st
-                        return
-                        ;;
-                    '1')
-                        fn_print_warning "正在执行强制覆盖 (git reset --hard)..."
-                        if git reset --hard "origin/$REPO_BRANCH" && git pull origin "$REPO_BRANCH"; then
-                            fn_print_success "强制更新成功。"
-                            if fn_run_npm_install; then
-                                update_success=true
-                            fi
-                        else
-                            fn_print_error "强制更新失败！"
-                        fi
-                        pull_attempted_in_loop=true
-                        break
-                        ;;
-                    *) 
-                        fn_print_warning "已取消更新。"
-                        fn_press_any_key
-                        return
-                        ;;
-                    esac
-                else
-                    fn_print_error "使用镜像 [${mirror_host}] 更新失败！错误: $(echo "$git_output" | tail -n 1)"
-                    fn_print_error "正在切换下一条线路..."
-                    sleep 1
-                fi
+                fn_print_error "使用官方源更新失败！错误: $(echo "$git_output" | tail -n 1)"
             fi
         done
-        if $pull_attempted_in_loop; then
-            break
+
+        # 阶段二：如果官方失败，尝试镜像
+        if ! $pull_succeeded_this_round; then
+            fn_print_warning "将开始测试并尝试使用镜像源..."
+            mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "mirrors_only")
+            for mirror_url in "${mirrors_to_try[@]}"; do
+                local mirror_host
+                mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
+                fn_print_warning "正在尝试使用镜像 [${mirror_host}] 更新..."
+                git remote set-url origin "$mirror_url"
+                git_output=$(git pull origin "$REPO_BRANCH" 2>&1)
+                if [ $? -eq 0 ]; then
+                    pull_succeeded_this_round=true; break
+                elif echo "$git_output" | grep -qE "overwritten by merge|Please commit|unmerged files"; then
+                    handle_merge_conflict "$git_output"
+                    fn_press_any_key; return
+                else
+                    fn_print_error "使用镜像 [${mirror_host}] 更新失败！错误: $(echo "$git_output" | tail -n 1)"
+                fi
+            done
         fi
-        if ! $update_success; then
+        
+        # 阶段三：如果仍然失败，进行全量测试和最终尝试
+        if ! $pull_succeeded_this_round; then
+            fn_print_error "预选线路均更新失败。"
+            fn_print_warning "将进行全量测速并重试所有可用线路..."
+            mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "all")
+            for mirror_url in "${mirrors_to_try[@]}"; do
+                mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
+                fn_print_warning "正在尝试使用镜像 [${mirror_host}] 更新..."
+                git remote set-url origin "$mirror_url"
+                git_output=$(git pull origin "$REPO_BRANCH" 2>&1)
+                if [ $? -eq 0 ]; then
+                    pull_succeeded_this_round=true; break
+                elif echo "$git_output" | grep -qE "overwritten by merge|Please commit|unmerged files"; then
+                    handle_merge_conflict "$git_output"
+                    fn_press_any_key; return
+                else
+                    fn_print_error "使用镜像 [${mirror_host}] 更新失败！错误: $(echo "$git_output" | tail -n 1)"
+                fi
+            done
+        fi
+
+        # 检查本轮所有尝试的最终结果
+        if $pull_succeeded_this_round; then
+            fn_print_success "代码更新成功。"
+            if fn_run_npm_install; then
+                update_success=true # 完全成功，跳出主循环
+            else
+                fn_print_error "代码已更新，但依赖安装失败。更新未全部完成。"
+                break # 依赖安装失败，也跳出循环
+            fi
+        else
+            # 所有阶段的所有线路都失败了
             read -p $'\n'"${RED}所有线路均更新失败。是否重新测速并重试？(直接回车=是, 输入n=否): ${NC}" retry_choice
             if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
                 fn_print_warning "更新失败，用户取消操作。"
-                break
+                break # 用户取消，跳出主循环
             fi
-            CACHED_MIRRORS=()
+            # 用户选择重试，主循环将继续
         fi
     done
+
     if $update_success; then
         fn_print_success "SillyTavern 更新完成！"
     fi
