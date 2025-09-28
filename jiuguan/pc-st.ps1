@@ -36,7 +36,7 @@ $Mirror_List = @(
 $CachedMirrors = @()
 
 function Show-Header {
-    Write-Host "    " -NoNewline; Write-Host ">>" -ForegroundColor Yellow -NoNewline; Write-Host " 清绝咕咕助手 v2.3" -ForegroundColor Green
+    Write-Host "    " -NoNewline; Write-Host ">>" -ForegroundColor Yellow -NoNewline; Write-Host " 清绝咕咕助手 v2.4" -ForegroundColor Green
     Write-Host "       " -NoNewline; Write-Host "作者: 清绝 | 网址: blog.qjyg.de" -ForegroundColor DarkGray
 }
 
@@ -299,16 +299,17 @@ function Test-OneMirrorPush($authedUrl) {
         $testTag = "st-sync-test-$(Get-Date -UFormat %s%N)"
         
         $pushJob = Start-Job -ScriptBlock {
-            param($tag)
-            git push origin "HEAD:refs/tags/$tag"
+            param($path, $tag)
+            Set-Location $path
+            git push origin "HEAD:refs/tags/$tag" 2>$null
             return ($LASTEXITCODE -eq 0)
-        } -ArgumentList $testTag
+        } -ArgumentList $tempRepoDir, $testTag
 
         if (Wait-Job $pushJob -Timeout 15) {
             $pushResult = Receive-Job $pushJob
             if ($pushResult) {
                 $isSuccess = $true
-                $deleteJob = Start-Job -ScriptBlock { param($tag) git push origin --delete "refs/tags/$tag" } -ArgumentList $testTag
+                $deleteJob = Start-Job -ScriptBlock { param($path, $tag) Set-Location $path; git push origin --delete "refs/tags/$tag" 2>$null } -ArgumentList $tempRepoDir, $testTag
                 Wait-Job $deleteJob -Timeout 15 | Out-Null
                 Remove-Job $deleteJob -Force
             }
