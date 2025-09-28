@@ -341,7 +341,7 @@ fn_git_find_pushable_mirror() {
     if [[ "$mode" == "official_only" || "$mode" == "all" ]]; then
         if [[ " ${MIRROR_LIST[*]} " =~ " ${github_public_url} " ]]; then
             local official_url
-            official_url=$(fn_git_construct_authed_url "https://github.com")
+            official_url=$(fn_git_construct_authed_url "https://github.com/SillyTavern/SillyTavern.git")
             echo -e "  - 优先测试: 官方 GitHub ..." >&2
             if fn_git_test_one_mirror_push "$official_url"; then 
                 echo -e "    ${GREEN}[成功]${NC}" >&2
