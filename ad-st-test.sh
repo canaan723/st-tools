@@ -1465,7 +1465,7 @@ while true; do
     echo -e "      [2] ${CYAN}${BOLD}数据同步 (Git 云端)${NC}"
     echo -e "      [3] ${CYAN}${BOLD}本地备份管理${NC}"
     echo -e "      [4] ${YELLOW}${BOLD}首次部署 (全新安装)${NC}\n"
-    echo -e "      [5] 更新 ST 主程序    [6] 更新咕咕助手${update_notice}"
+    echo -e "      [5] 更新酒馆主程序    [6] 更新咕咕助手${update_notice}"
     echo -e "      [7] 管理助手自启      [8] 查看帮助文档"
     echo -e "      [9] 配置网络代理\n"
     echo -e "      ${RED}[0] 退出咕咕助手${NC}\n"
