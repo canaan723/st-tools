@@ -76,56 +76,76 @@ fn_get_user_folders() {
 }
 
 fn_find_fastest_mirror() {
-    if [ ${#CACHED_MIRRORS[@]} -gt 0 ]; then
+    local mode="$1" # "official_only", "mirrors_only", "all"
+    if [ -z "$mode" ]; then mode="all"; fi
+
+    if [[ "$mode" != "all" && ${#CACHED_MIRRORS[@]} -gt 0 ]]; then
         fn_print_success "已使用缓存的测速结果。" >&2
         printf '%s\n' "${CACHED_MIRRORS[@]}"
         return 0
+    fi
+    if [[ "$mode" == "all" ]]; then
+        CACHED_MIRRORS=() # 全量测试时清空缓存
     fi
 
     fn_print_warning "开始测试 Git 镜像连通性与速度 (用于下载)..."
     local github_url="https://github.com/SillyTavern/SillyTavern.git"
     local sorted_successful_mirrors=()
     
-    if [[ " ${MIRROR_LIST[*]} " =~ " ${github_url} " ]]; then
-        echo -e "  - 优先测试: GitHub 官方源..." >&2
-        if timeout 10s git ls-remote "$github_url" HEAD >/dev/null 2>&1; then
-            fn_print_success "GitHub 官方源直连可用！将置于列表顶部。" >&2
-            sorted_successful_mirrors+=("$github_url")
-        else
-            fn_print_error "GitHub 官方源连接超时，将测试其他镜像..."
+    # 测试官方源
+    if [[ "$mode" == "official_only" || "$mode" == "all" ]]; then
+        if [[ " ${MIRROR_LIST[*]} " =~ " ${github_url} " ]]; then
+            echo -e "  - 优先测试: GitHub 官方源..." >&2
+            if timeout 10s git ls-remote "$github_url" HEAD >/dev/null 2>&1; then
+                fn_print_success "GitHub 官方源直连可用！" >&2
+                sorted_successful_mirrors+=("$github_url")
+            else
+                fn_print_error "GitHub 官方源连接超时。"
+            fi
+        fi
+        if [[ "$mode" == "official_only" ]]; then
+            if [ ${#sorted_successful_mirrors[@]} -gt 0 ]; then
+                printf '%s\n' "${sorted_successful_mirrors[@]}"
+                return 0
+            else
+                return 1
+            fi
         fi
     fi
 
-    local other_mirrors=()
-    for mirror in "${MIRROR_LIST[@]}"; do
-        [[ "$mirror" != "$github_url" ]] && other_mirrors+=("$mirror")
-    done
-
-    if [ ${#other_mirrors[@]} -gt 0 ]; then
-        echo -e "${YELLOW}已启动并行测试，将完整测试所有线路...${NC}" >&2
-        local results_file; results_file=$(mktemp); local pids=()
-        for mirror_url in "${other_mirrors[@]}"; do
-            (
-                local mirror_host; mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
-                local start_time; start_time=$(date +%s.%N)
-                if timeout 10s git ls-remote "$mirror_url" HEAD >/dev/null 2>&1; then
-                    local end_time; end_time=$(date +%s.%N)
-                    local elapsed_time; elapsed_time=$(echo "$end_time - $start_time" | bc)
-                    echo "$elapsed_time $mirror_url" >>"$results_file"
-                    echo -e "  - 测试: ${CYAN}${mirror_host}${NC} - 耗时 ${GREEN}${elapsed_time}s${NC} ${GREEN}[成功]${NC}" >&2
-                else
-                    echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${RED}[失败]${NC}" >&2
-                fi
-            ) &
-            pids+=($!)
+    # 测试镜像源
+    if [[ "$mode" == "mirrors_only" || "$mode" == "all" ]]; then
+        local other_mirrors=()
+        for mirror in "${MIRROR_LIST[@]}"; do
+            [[ "$mirror" != "$github_url" ]] && other_mirrors+=("$mirror")
         done
-        wait "${pids[@]}"
 
-        if [ -s "$results_file" ]; then
-            mapfile -t other_successful_mirrors < <(sort -n "$results_file" | awk '{print $2}')
-            sorted_successful_mirrors+=("${other_successful_mirrors[@]}")
+        if [ ${#other_mirrors[@]} -gt 0 ]; then
+            echo -e "${YELLOW}已启动并行测试，将完整测试所有镜像线路...${NC}" >&2
+            local results_file; results_file=$(mktemp); local pids=()
+            for mirror_url in "${other_mirrors[@]}"; do
+                (
+                    local mirror_host; mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
+                    local start_time; start_time=$(date +%s.%N)
+                    if timeout 10s git ls-remote "$mirror_url" HEAD >/dev/null 2>&1; then
+                        local end_time; end_time=$(date +%s.%N)
+                        local elapsed_time; elapsed_time=$(echo "$end_time - $start_time" | bc)
+                        echo "$elapsed_time $mirror_url" >>"$results_file"
+                        echo -e "  - 测试: ${CYAN}${mirror_host}${NC} - 耗时 ${GREEN}${elapsed_time}s${NC} ${GREEN}[成功]${NC}" >&2
+                    else
+                        echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${RED}[失败]${NC}" >&2
+                    fi
+                ) &
+                pids+=($!)
+            done
+            wait "${pids[@]}"
+
+            if [ -s "$results_file" ]; then
+                mapfile -t other_successful_mirrors < <(sort -n "$results_file" | awk '{print $2}')
+                sorted_successful_mirrors+=("${other_successful_mirrors[@]}")
+            fi
+            rm -f "$results_file"
         fi
-        rm -f "$results_file"
     fi
 
     if [ ${#sorted_successful_mirrors[@]} -gt 0 ]; then
@@ -957,17 +977,29 @@ fn_install_st() {
         fn_print_error_exit "目录 $ST_DIR 已存在但安装不完整。请手动删除该目录后再试。"
     else
         local download_success=false
-        while ! $download_success; do
-            mapfile -t sorted_mirrors < <(fn_find_fastest_mirror)
-            if [ ${#sorted_mirrors[@]} -eq 0 ]; then
-                read -p $'\n'"${RED}所有 Git 镜像均测试失败。是否重新测速并重试？(直接回车=是, 输入n=否): ${NC}" retry_choice
+        local mirrors_to_try=()
+        
+        # 阶段一：只测官方
+        mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "official_only")
+        
+        # 阶段二：官方失败，测镜像
+        if [ ${#mirrors_to_try[@]} -eq 0 ]; then
+            mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "mirrors_only")
+            if [ ${#mirrors_to_try[@]} -eq 0 ]; then
+                 read -p $'\n'"${RED}所有 Git 镜像均测试失败。是否重新测速并重试？(直接回车=是, 输入n=否): ${NC}" retry_choice
                 if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
                     fn_print_error_exit "下载失败，用户取消操作。"
+                else
+                    # 用户选择重试，需要一个方式来重新开始循环，这里简单退出，让用户重选菜单
+                    fn_print_warning "请重新选择部署选项以重试。"
+                    fn_press_any_key
+                    return
                 fi
-                CACHED_MIRRORS=()
-                continue
             fi
-            for mirror_url in "${sorted_mirrors[@]}"; do
+        fi
+
+        while ! $download_success; do
+            for mirror_url in "${mirrors_to_try[@]}"; do
                 local mirror_host
                 mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
                 fn_print_warning "正在尝试从镜像 [${mirror_host}] 下载 (${REPO_BRANCH} 分支)..."
@@ -980,12 +1012,22 @@ fn_install_st() {
                     rm -rf "$ST_DIR"
                 fi
             done
+
             if ! $download_success; then
-                read -p $'\n'"${RED}所有线路均下载失败。是否重新测速并重试？(直接回车=是, 输入n=否): ${NC}" retry_choice
-                if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
-                    fn_print_error_exit "下载失败，用户取消操作。"
+                # 阶段三：实际下载失败，全量测速后重试
+                fn_print_error "已尝试所有预选线路，但下载均失败。"
+                fn_print_warning "将进行全量测速并重试所有可用线路..."
+                mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "all")
+                if [ ${#mirrors_to_try[@]} -eq 0 ]; then
+                    read -p $'\n'"${RED}全量测速后未找到任何可用线路。是否重新测速并重试？(直接回车=是, 输入n=否): ${NC}" retry_choice
+                    if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
+                        fn_print_error_exit "下载失败，用户取消操作。"
+                    fi
+                    # 继续循环以重新测速
+                else
+                    # 找到新线路，循环将继续尝试
+                    continue
                 fi
-                CACHED_MIRRORS=()
             fi
         done
     fi
