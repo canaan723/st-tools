@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # 作者: 清绝 | 网址: blog.qjyg.de
-# 清绝咕咕助手 v2.2
+# 清绝咕咕助手 v2.3
 
 BOLD='\033[1m'
 CYAN='\033[1;36m'
@@ -42,7 +42,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.2${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.3${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
 }
 
@@ -445,7 +445,11 @@ fn_git_backup_to_cloud() {
         fn_press_any_key
         return
     fi
-    
+    local SYNC_CONFIG_YAML="false"
+    local USER_MAP=""
+    if [ -f "$SYNC_RULES_CONFIG_FILE" ]; then
+        source "$SYNC_RULES_CONFIG_FILE"
+    fi
     local push_urls=()
     mapfile -t push_urls < <(fn_git_find_pushable_mirror "official_only")
 
