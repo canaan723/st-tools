@@ -278,16 +278,49 @@ fn_git_test_one_mirror_push() {
 }
 
 fn_git_construct_authed_url() {
-    local mirror_base_url="$1"
+    local public_mirror_url="$1"
+    # shellcheck source=/dev/null
+    source "$GIT_SYNC_CONFIG_FILE"
+    
+    # 提前检查配置是否存在
+    if [[ -z "$REPO_URL" || -z "$REPO_TOKEN" ]]; then
+        return 1
+    fi
+
     local repo_path
     repo_path=$(echo "$REPO_URL" | sed 's|https://github.com/||')
-    case "$mirror_base_url" in
-        *"github.com"*) echo "https://${REPO_TOKEN}@github.com/${repo_path}" ;;
-        *"hub.gitmirror.com"*) echo "https://${REPO_TOKEN}@hub.gitmirror.com/${repo_path}" ;;
-        *"/gh") local domain; domain=$(echo "$mirror_base_url" | sed -e 's|https://||' -e 's|/.*$||'); echo "https://${REPO_TOKEN}@${domain}/gh/${repo_path}" ;;
-        *"gh-proxy.com"*|*"gh.llkk.cc"*|*"tvv.tw"*|*"proxy.pipers.cn"*|*"gh.catmak.name"*|*"gh-proxy.net"*|*"hubproxy-advj.onrender.com"*) echo "${mirror_base_url}/https://${REPO_TOKEN}@github.com/${repo_path}";;
-        *) return 1 ;;
-    esac
+    local authed_private_url="https://${REPO_TOKEN}@github.com/${repo_path}"
+
+    # 规则1: 直接推送到官方 GitHub
+    if [[ "$public_mirror_url" == "https://github.com/SillyTavern/SillyTavern.git" ]]; then
+        echo "$authed_private_url"
+        return 0
+    fi
+    
+    # 规则2: 直接替换域名的镜像 (如 hub.gitmirror.com)
+    if [[ "$public_mirror_url" =~ ^https://hub\.gitmirror\.com/ ]]; then
+        echo "https://${REPO_TOKEN}@hub.gitmirror.com/${repo_path}"
+        return 0
+    fi
+
+    # 规则3: 路径中包含 /gh/ 的镜像 (如 git.ark.xx.kg/gh/, xget.xi-xu.me/gh/)
+    if [[ "$public_mirror_url" =~ ^https://([^/]+)/gh/ ]]; then
+        local proxy_domain="${BASH_REMATCH[1]}"
+        echo "https://${REPO_TOKEN}@${proxy_domain}/gh/${repo_path}"
+        return 0
+    fi
+
+    # 规则4: 将完整URL作为路径的代理 (如 gh-proxy.com, gh.llkk.cc 等)
+    # 提取代理前缀，例如 "https://gh-proxy.com/"
+    local proxy_prefix
+    proxy_prefix=$(echo "$public_mirror_url" | sed -E 's|/(https?://)?github.com/.*||')
+    if [[ -n "$proxy_prefix" && "$proxy_prefix" != "$public_mirror_url" ]]; then
+        echo "${proxy_prefix}/${authed_private_url}"
+        return 0
+    fi
+
+    # 如果以上规则都未匹配，则返回失败
+    return 1
 }
 
 fn_git_find_pushable_mirror() {
