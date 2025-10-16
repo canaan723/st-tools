@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# 咕咕助手 v2.0
+# 咕咕助手 v2.1
 # 作者: 清绝 | 网址: blog.qjyg.de
 
 # --- [核心] 确保脚本由 Bash 执行 ---
@@ -49,7 +49,7 @@ log_step() { echo -e "\n${BLUE}--- $1: $2 ---${NC}"; }
 log_success() { echo -e "${GREEN}✓ $1${NC}"; }
 
 fn_show_main_header() {
-    echo -e "${YELLOW}>>${GREEN} 咕咕助手 v2.0${NC}"
+    echo -e "${YELLOW}>>${GREEN} 咕咕助手 v2.1${NC}"
     echo -e "   ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
 }
 
@@ -204,12 +204,10 @@ create_dynamic_swap() {
     local swap_size_mb
     local swap_size_display
 
-    if [ "$mem_total_mb" -lt 2048 ]; then
+    if [ "$mem_total_mb" -lt 1024 ]; then
         swap_size_mb=$((mem_total_mb * 2))
-    elif [ "$mem_total_mb" -lt 8192 ]; then
-        swap_size_mb=$mem_total_mb
     else
-        swap_size_mb=4096
+        swap_size_mb=2048
     fi
 
     swap_size_display=$(echo "scale=1; $swap_size_mb / 1024" | bc | sed 's/^\./0./')G
@@ -811,10 +809,10 @@ EOF
   ${YELLOW}┌──────────────────────────────────────────────────┐${NC}
   ${YELLOW}│${NC} ${CYAN}带宽${NC}      ${BOLD}|${NC} ${CYAN}下载速度${NC}    ${BOLD}|${NC} ${CYAN}预估最快时间${NC}           ${YELLOW}│${NC}
   ${YELLOW}├──────────────────────────────────────────────────┤${NC}
-  ${YELLOW}│${NC} 1M 带宽   ${BOLD}|${NC} ~0.125 MB/s ${BOLD}|${NC} 约 27 分钟             ${YELLOW}│${NC}
-  ${YELLOW}│${NC} 2M 带宽   ${BOLD}|${NC} ~0.25 MB/s  ${BOLD}|${NC} 约 13.5 分钟           ${YELLOW}│${NC}
-  ${YELLOW}│${NC} 10M 带宽  ${BOLD}|${NC} ~1.25 MB/s  ${BOLD}|${NC} 约 2.7 分钟            ${YELLOW}│${NC}
-  ${YELLOW}│${NC} 100M 带宽 ${BOLD}|${NC} ~12.5 MB/s  ${BOLD}|${NC} 约 16 秒               ${YELLOW}│${NC}
+  ${YELLOW}│${NC} 1M 带宽   ${BOLD}|${NC} ~0.125 MB/s ${BOLD}|${NC} 约 1 小时 14 分 31 秒 ${YELLOW}│${NC}
+  ${YELLOW}│${NC} 2M 带宽   ${BOLD}|${NC} ~0.25 MB/s  ${BOLD}|${NC} 约 37 分 15 秒        ${YELLOW}│${NC}
+  ${YELLOW}│${NC} 10M 带宽  ${BOLD}|${NC} ~1.25 MB/s  ${BOLD}|${NC} 约 7 分 27 秒         ${YELLOW}│${NC}
+  ${YELLOW}│${NC} 100M 带宽 ${BOLD}|${NC} ~12.5 MB/s  ${BOLD}|${NC} 约 45 秒              ${YELLOW}│${NC}
   ${YELLOW}└──────────────────────────────────────────────────┘${NC}
 EOF
 )
