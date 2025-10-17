@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# 咕咕助手 v2.42test
+# 咕咕助手 v2.43test
 # 作者: 清绝 | 网址: blog.qjyg.de
 
 # --- [核心] 确保脚本由 Bash 执行 ---
@@ -57,7 +57,7 @@ log_step() { echo -e "\n${BLUE}--- $1: $2 ---${NC}"; }
 log_success() { echo -e "${GREEN}✓ $1${NC}"; }
 
 fn_show_main_header() {
-    echo -e "${YELLOW}>>${GREEN} 咕咕助手 v2.42test${NC}"
+    echo -e "${YELLOW}>>${GREEN} 咕咕助手 v2.43test${NC}"
     echo -e "   ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
 }
 
@@ -255,10 +255,6 @@ fn_apply_docker_optimization() {
  
     local DAEMON_JSON="/etc/docker/daemon.json"
     log_action "正在应用 Docker 优化配置..."
-    # --- DEBUG START ---
-    echo -e "\n${CYAN}[DEBUG] 最终将写入 /etc/docker/daemon.json 的内容如下:${NC}"
-    echo -e "${YELLOW}${final_json_content}${NC}\n"
-    # --- DEBUG END ---
     # Note: This implementation overwrites existing daemon.json.
     # A more advanced version could merge JSON objects.
     echo "$final_json_content" | sudo tee "$DAEMON_JSON" > /dev/null
@@ -1109,17 +1105,12 @@ run_automated_install() {
     if [[ "$install_type" == "mainland" ]]; then
         log_info "正在为大陆服务器自动配置最快镜像源..."
         local test_results; test_results=$(fn_internal_test_mirrors)
-        # --- DEBUG START ---
-        echo -e "\n${CYAN}[DEBUG] 测速函数 (fn_internal_test_mirrors) 返回的原始结果:${NC}"
-        echo -e "${YELLOW}${test_results}${NC}\n"
-        # --- DEBUG END ---
         if [[ "$test_results" != "OFFICIAL_HUB_OK" && -n "$test_results" ]]; then
-            local mirrors_to_process; mirrors_to_process=$(echo -e "$test_results" | head -n 5 | cut -d'|' -f2)
-            # --- DEBUG START ---
-            echo -e "\n${CYAN}[DEBUG] 经过 head 和 cut 处理后，准备放入数组的镜像列表:${NC}"
-            echo -e "${YELLOW}${mirrors_to_process}${NC}\n"
-            # --- DEBUG END ---
-            local best_mirrors; best_mirrors=($mirrors_to_process)
+            # 使用 awk 更稳定地提取镜像地址，并限制最多3个
+            local best_mirrors_str; best_mirrors_str=$(echo -e "$test_results" | awk -F'|' '{print $2}' | head -n 3)
+            # 使用 mapfile 或 read -a 是更安全的做法，避免 word splitting 问题
+            read -r -d '' -a best_mirrors < <(printf '%s\n' "$best_mirrors_str")
+            
             if [ ${#best_mirrors[@]} -gt 0 ]; then
                 log_success "将自动配置最快的 ${#best_mirrors[@]} 个镜像源。"
                 local mirrors_json_array; mirrors_json_array=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
