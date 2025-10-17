@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# 咕咕助手 v2.4test
+# 咕咕助手 v2.41test
 # 作者: 清绝 | 网址: blog.qjyg.de
 
 # --- [核心] 确保脚本由 Bash 执行 ---
@@ -57,7 +57,7 @@ log_step() { echo -e "\n${BLUE}--- $1: $2 ---${NC}"; }
 log_success() { echo -e "${GREEN}✓ $1${NC}"; }
 
 fn_show_main_header() {
-    echo -e "${YELLOW}>>${GREEN} 咕咕助手 v2.4test${NC}"
+    echo -e "${YELLOW}>>${GREEN} 咕咕助手 v2.41test${NC}"
     echo -e "   ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
 }
 
@@ -1041,88 +1041,83 @@ EOF
 run_expert_install() {
     local CONTAINER_NAME="sillytavern"
 
-    fn_confirm_step() {
-        local step_desc="$1"
-        read -rp "是否执行此步骤: ${step_desc}？[Y/n]: " confirm < /dev/tty
-        if [[ "${confirm:-y}" =~ ^[Yy]$ ]]; then return 0; else log_info "已跳过: ${step_desc}"; return 1; fi
-    }
+    # 步骤 1: 环境检查
+    fn_print_step "[ 专家模式 ] 步骤 1/6: 环境检查与准备"
+    fn_check_base_deps
+    fn_check_dependencies
+    fn_check_existing_container "$CONTAINER_NAME"
 
-    if fn_confirm_step "环境检查与准备"; then
-        fn_print_step "[ 专家模式 ] 步骤 1/7: 环境检查与准备"
-        fn_check_base_deps
-        fn_check_dependencies
-        fn_check_existing_container "$CONTAINER_NAME"
+    # 步骤 2: Docker 优化 (已拆分)
+    fn_print_step "[ 专家模式 ] 步骤 2/6: Docker 优化配置"
+    DAEMON_JSON_PARTS=() # 重置配置数组
+    fn_configure_docker_logging
+    echo # 增加换行以提高可读性
+    fn_configure_docker_mirrors
+    fn_apply_docker_optimization
+
+    # 步骤 3: 拉取镜像
+    fn_print_step "[ 专家模式 ] 步骤 3/6: 选择并拉取 SillyTavern 镜像"
+    fn_pull_sillytavern_image
+
+    # 步骤 4: 配置安装选项
+    fn_print_step "[ 专家模式 ] 步骤 4/6: 选择运行模式与路径"
+    TARGET_USER="${SUDO_USER:-root}"
+    if [ "$TARGET_USER" = "root" ]; then
+        USER_HOME="/root"
+    else
+        USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
+        if [ -z "$USER_HOME" ]; then fn_print_error "无法找到用户 '$TARGET_USER' 的家目录。"; fi
     fi
 
-    if fn_confirm_step "配置 Docker 优化选项 (镜像加速/日志)"; then
-        fn_optimize_docker
+    echo "选择运行模式："
+    echo -e "  [1] ${CYAN}单用户模式${NC} (弹窗认证，适合个人使用)"
+    echo -e "  [2] ${CYAN}多用户模式${NC} (独立登录页，适合多人或单人使用)"
+    echo -e "  [3] ${RED}维护者模式${NC} (作者专用，普通用户请勿选择！)"
+    read -p "请输入选项数字 [默认为 1]: " run_mode < /dev/tty
+    run_mode=${run_mode:-1}
+
+    case "$run_mode" in
+        1)
+            read -p "请输入自定义用户名: " single_user < /dev/tty
+            read -p "请输入自定义密码: " single_pass < /dev/tty
+            if [ -z "$single_user" ] || [ -z "$single_pass" ]; then fn_print_error "用户名和密码不能为空！"; fi
+            ;;
+        2|3) ;;
+        *) fn_print_error "无效输入，脚本已终止." ;;
+    esac
+
+    local default_parent_path="$USER_HOME"
+    read -rp "安装路径: SillyTavern 将被安装在 <上级目录>/sillytavern 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
+    local parent_path="${custom_parent_path:-$default_parent_path}"
+    INSTALL_DIR="${parent_path}/sillytavern"
+    log_info "安装路径最终设置为: ${INSTALL_DIR}"
+    CONFIG_FILE="$INSTALL_DIR/config.yaml"
+    COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
+
+    # 步骤 5: 创建项目文件
+    fn_print_step "[ 专家模式 ] 步骤 5/6: 创建项目文件"
+    if [ -z "$INSTALL_DIR" ]; then fn_print_error "安装路径未设置，无法创建项目文件。"; fi
+    if [ -d "$INSTALL_DIR" ]; then
+        fn_confirm_and_delete_dir "$INSTALL_DIR" "$CONTAINER_NAME"
     fi
 
-    if fn_confirm_step "选择并拉取 SillyTavern 镜像"; then
-        fn_print_step "[ 专家模式 ] 步骤 3/7: 选择并拉取 SillyTavern 镜像"
-        fn_pull_sillytavern_image
+    if [[ "$run_mode" == "3" ]]; then
+        fn_print_info "正在创建开发者模式项目目录结构..."
+        mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"
+        mkdir -p "$INSTALL_DIR/custom/images"
+        touch "$INSTALL_DIR/custom/login.html"
+        chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
+        log_success "开发者项目目录创建并授权成功！"
+    else
+        fn_create_project_structure
     fi
 
-    if fn_confirm_step "选择运行模式与安装路径"; then
-        fn_print_step "[ 专家模式 ] 步骤 4/7: 选择运行模式与路径"
-        TARGET_USER="${SUDO_USER:-root}"
-        if [ "$TARGET_USER" = "root" ]; then
-            USER_HOME="/root"
-        else
-            USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
-            if [ -z "$USER_HOME" ]; then fn_print_error "无法找到用户 '$TARGET_USER' 的家目录。"; fi
-        fi
+    cd "$INSTALL_DIR"
+    fn_print_info "工作目录已切换至: $(pwd)"
 
-        echo "选择运行模式："
-        echo -e "  [1] ${CYAN}单用户模式${NC} (弹窗认证，适合个人使用)"
-        echo -e "  [2] ${CYAN}多用户模式${NC} (独立登录页，适合多人或单人使用)"
-        echo -e "  [3] ${RED}维护者模式${NC} (作者专用，普通用户请勿选择！)"
-        read -p "请输入选项数字 [默认为 1]: " run_mode < /dev/tty
-        run_mode=${run_mode:-1}
-
-        case "$run_mode" in
-            1)
-                read -p "请输入自定义用户名: " single_user < /dev/tty
-                read -p "请输入自定义密码: " single_pass < /dev/tty
-                if [ -z "$single_user" ] || [ -z "$single_pass" ]; then fn_print_error "用户名和密码不能为空！"; fi
-                ;;
-            2|3) ;;
-            *) fn_print_error "无效输入，脚本已终止." ;;
-        esac
-
-        local default_parent_path="$USER_HOME"
-        read -rp "安装路径: SillyTavern 将被安装在 <上级目录>/sillytavern 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
-        local parent_path="${custom_parent_path:-$default_parent_path}"
-        INSTALL_DIR="${parent_path}/sillytavern"
-        log_info "安装路径最终设置为: ${INSTALL_DIR}"
-        CONFIG_FILE="$INSTALL_DIR/config.yaml"
-        COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
-    fi
-
-    if fn_confirm_step "创建项目文件"; then
-        fn_print_step "[ 专家模式 ] 步骤 5/7: 创建项目文件"
-        if [ -z "$INSTALL_DIR" ]; then fn_print_error "安装路径未设置，无法创建项目文件。"; fi
-        if [ -d "$INSTALL_DIR" ]; then
-            fn_confirm_and_delete_dir "$INSTALL_DIR" "$CONTAINER_NAME"
-        fi
-
-        if [[ "$run_mode" == "3" ]]; then
-            fn_print_info "正在创建开发者模式项目目录结构..."
-            mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"
-            mkdir -p "$INSTALL_DIR/custom/images"
-            touch "$INSTALL_DIR/custom/login.html"
-            chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
-            log_success "开发者项目目录创建并授权成功！"
-        else
-            fn_create_project_structure
-        fi
-
-        cd "$INSTALL_DIR"
-        fn_print_info "工作目录已切换至: $(pwd)"
-
-        local compose_content
-        if [[ "$run_mode" == "3" ]]; then
-            compose_content=$(cat <<EOF
+    local compose_content
+    if [[ "$run_mode" == "3" ]]; then
+        compose_content=$(cat <<EOF
 services:
   sillytavern:
     container_name: ${CONTAINER_NAME}
@@ -1136,8 +1131,8 @@ services:
       - "./custom/images:/home/node/app/public/images:Z"
 EOF
 )
-        else
-            compose_content=$(cat <<EOF
+    else
+        compose_content=$(cat <<EOF
 services:
   sillytavern:
     container_name: ${CONTAINER_NAME}
@@ -1149,9 +1144,9 @@ services:
       - "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party:Z"
 EOF
 )
-        fi
-        
-        cat <<EOF > "$COMPOSE_FILE"
+    fi
+    
+    cat <<EOF > "$COMPOSE_FILE"
 ${compose_content}
     hostname: ${CONTAINER_NAME}
     security_opt:
@@ -1163,66 +1158,62 @@ ${compose_content}
       - "8000:8000"
     restart: unless-stopped
 EOF
-        log_success "docker-compose.yml 文件创建成功！"
-    fi
+    log_success "docker-compose.yml 文件创建成功！"
 
-    if fn_confirm_step "初始化与配置"; then
-        fn_print_step "[ 专家模式 ] 步骤 6/7: 初始化与配置"
-        if [ -z "$DOCKER_COMPOSE_CMD" ]; then fn_print_error "Docker Compose 命令未找到。"; fi
-        if [ ! -f "$COMPOSE_FILE" ]; then fn_print_error "docker-compose.yml 文件不存在。"; fi
+    # 步骤 6: 初始化与启动
+    fn_print_step "[ 专家模式 ] 步骤 6/6: 初始化与启动服务"
+    if [ -z "$DOCKER_COMPOSE_CMD" ]; then fn_print_error "Docker Compose 命令未找到。"; fi
+    if [ ! -f "$COMPOSE_FILE" ]; then fn_print_error "docker-compose.yml 文件不存在。"; fi
 
-        fn_print_info "正在进行首次启动以生成官方配置文件..."
-        $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d
-        local timeout=60
-        while [ ! -f "$CONFIG_FILE" ]; do
-            if [ $timeout -eq 0 ]; then
-                fn_print_error "等待配置文件生成超时！"
-            fi
-            sleep 1; ((timeout--))
-        done
-        $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down > /dev/null 2>&1
-        log_success "config.yaml 文件已生成！"
-        
-        fn_apply_config_changes
-        log_success "自定义配置已应用。"
-    fi
-
-    if fn_confirm_step "启动服务并验证"; then
-        fn_print_step "[ 专家模式 ] 步骤 7/7: 启动并验证服务"
-        if [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
-            fn_print_info "正在临时启动服务以设置管理员..."
-            sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true/" "$CONFIG_FILE"
-            $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d
-            fn_verify_container_health "$CONTAINER_NAME"
-            fn_wait_for_service
-            SERVER_IP=$(fn_get_public_ip)
-            echo -e "${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}"
-            echo -e "访问: ${GREEN}http://${SERVER_IP}:8000${NC} 使用默认账号(user)密码(password)登录并设置管理员。"
-            read -p "完成后按回车键继续..." < /dev/tty
-            sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false/" "$CONFIG_FILE"
-            log_success "已切换到多用户登录页模式。"
+    fn_print_info "正在进行首次启动以生成官方配置文件..."
+    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d
+    local timeout=60
+    while [ ! -f "$CONFIG_FILE" ]; do
+        if [ $timeout -eq 0 ]; then
+            fn_print_error "等待配置文件生成超时！"
         fi
+        sleep 1; ((timeout--))
+    done
+    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down > /dev/null 2>&1
+    log_success "config.yaml 文件已生成！"
+    
+    fn_apply_config_changes
+    log_success "自定义配置已应用。"
 
-        fn_print_info "正在应用最终配置并重启服务..."
-        $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate
+    if [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
+        fn_print_info "正在临时启动服务以设置管理员..."
+        sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true/" "$CONFIG_FILE"
+        $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d
         fn_verify_container_health "$CONTAINER_NAME"
         fn_wait_for_service
         SERVER_IP=$(fn_get_public_ip)
-        fn_display_final_info
-
-        while true; do
-            echo -e "\n${CYAN}--- 部署后操作 ---${NC}"
-            echo -e "  [1] 查看容器状态\n  [2] 查看日志\n  [3] 重新显示访问信息\n  [q] 退出菜单"
-            read -p "请输入选项: " choice < /dev/tty
-            case "$choice" in
-                1) fn_check_and_explain_status "$CONTAINER_NAME";;
-                2) docker logs -f "$CONTAINER_NAME" || true;;
-                3) fn_display_final_info;;
-                q|Q) break;;
-                *) log_warn "无效输入。";;
-            esac
-        done
+        echo -e "${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}"
+        echo -e "访问: ${GREEN}http://${SERVER_IP}:8000${NC} 使用默认账号(user)密码(password)登录并设置管理员。"
+        read -p "完成后按回车键继续..." < /dev/tty
+        sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false/" "$CONFIG_FILE"
+        log_success "已切换到多用户登录页模式。"
     fi
+
+    fn_print_info "正在应用最终配置并重启服务..."
+    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate
+    fn_verify_container_health "$CONTAINER_NAME"
+    fn_wait_for_service
+    SERVER_IP=$(fn_get_public_ip)
+    fn_display_final_info
+
+    while true; do
+        echo -e "\n${CYAN}--- 部署后操作 ---${NC}"
+        echo -e "  [1] 查看容器状态\n  [2] 查看日志\n  [3] 重新显示访问信息\n  [q] 退出菜单"
+        read -p "请输入选项: " choice < /dev/tty
+        case "$choice" in
+            1) fn_check_and_explain_status "$CONTAINER_NAME";;
+            2) docker logs -f "$CONTAINER_NAME" || true;;
+            3) fn_display_final_info;;
+            q|Q) break;;
+            *) log_warn "无效输入。";;
+        esac
+    done
+    
     log_success "专家模式安装流程已完成。"
 }
 
