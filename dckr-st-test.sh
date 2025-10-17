@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# 咕咕助手 v2.2
+# 咕咕助手 v2.3test
 # 作者: 清绝 | 网址: blog.qjyg.de
 
 # --- [核心] 确保脚本由 Bash 执行 ---
@@ -57,7 +57,7 @@ log_step() { echo -e "\n${BLUE}--- $1: $2 ---${NC}"; }
 log_success() { echo -e "${GREEN}✓ $1${NC}"; }
 
 fn_show_main_header() {
-    echo -e "${YELLOW}>>${GREEN} 咕咕助手 v2.2${NC}"
+    echo -e "${YELLOW}>>${GREEN} 咕咕助手 v2.3test${NC}"
     echo -e "   ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
 }
 
