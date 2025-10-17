@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# 咕咕助手 v2.43test
+# 咕咕助手 v2.44test
 # 作者: 清绝 | 网址: blog.qjyg.de
 
 # --- [核心] 确保脚本由 Bash 执行 ---
@@ -57,7 +57,7 @@ log_step() { echo -e "\n${BLUE}--- $1: $2 ---${NC}"; }
 log_success() { echo -e "${GREEN}✓ $1${NC}"; }
 
 fn_show_main_header() {
-    echo -e "${YELLOW}>>${GREEN} 咕咕助手 v2.43test${NC}"
+    echo -e "${YELLOW}>>${GREEN} 咕咕助手 v2.44test${NC}"
     echo -e "   ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
 }
 
@@ -597,6 +597,29 @@ fn_print_error() { echo -e "\n${RED}✗ 错误: $1${NC}\n" >&2; exit 1; }
 
 fn_get_cleaned_version_num() { echo "$1" | grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1; }
 
+fn_ensure_docker_running() {
+    # Use `docker info` as a reliable check for daemon connectivity.
+    if ! docker info > /dev/null 2>&1; then
+        log_warn "无法连接到 Docker daemon。这可能是因为它没有运行或已经停止。"
+        if command -v systemctl &> /dev/null; then
+            log_action "正在尝试使用 systemctl 启动 Docker 服务..."
+            systemctl start docker
+            # Wait a few seconds to give the daemon time to initialize.
+            sleep 5
+            if ! docker info > /dev/null 2>&1; then
+                fn_print_error "尝试启动 Docker 服务失败。请手动执行 'systemctl status docker' 来诊断问题。"
+            else
+                log_success "Docker 服务已成功启动。"
+            fi
+        else
+            # Fallback for non-systemd systems, though the script is Debian-focused.
+            log_warn "未找到 systemctl 命令。无法自动启动 Docker。请确保 Docker 服务正在运行。"
+        fi
+    else
+        log_info "Docker daemon 状态正常，连接成功。"
+    fi
+}
+ 
 fn_report_dependencies() {
     local DOCKER_VER="$1" DOCKER_STATUS="$2" COMPOSE_VER="$3" COMPOSE_STATUS="$4"
     fn_print_info "--- Docker 环境诊断摘要 ---"
@@ -1042,8 +1065,10 @@ install_sillytavern() {
     tput reset
     echo -e "${CYAN}SillyTavern Docker 自动化安装流程${NC}"
 
+    fn_ensure_docker_running
+ 
     fn_select_server_type
-
+ 
     case "$INSTALL_TYPE" in
         "overseas")
             run_overseas_install
