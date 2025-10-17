@@ -100,6 +100,43 @@ fn_check_base_deps() {
 # 全局数组，用于存储 daemon.json 的配置项
 DAEMON_JSON_PARTS=()
 
+# Internal function to test Docker mirrors and return sorted results
+fn_internal_test_mirrors() {
+    log_info "正在自动检测 Docker 镜像源可用性..."
+    local mirrors=(
+        "docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live"
+        "https://dockerproxy.1panel.live" "https://hub.rat.dev" "https://docker.m.ixdev.cn"
+        "https://hub2.nat.tf" "https://docker.1panel.dev" "https://docker.amingg.com" "https://docker.xuanyuan.me"
+        "https://dytt.online" "https://lispy.org" "https://docker.xiaogenban1993.com"
+        "https://docker-0.unsee.tech" "https://666860.xyz" "https://hubproxy-advj.onrender.com"
+    )
+    docker rmi hello-world > /dev/null 2>&1 || true
+    local results=""; local official_hub_ok=false
+    for mirror in "${mirrors[@]}"; do
+        local pull_target="hello-world"; local display_name="$mirror"; local timeout_duration=10
+        if [[ "$mirror" == "docker.io" ]]; then timeout_duration=15; display_name="Official Docker Hub"; else pull_target="${mirror#https://}/library/hello-world"; fi
+        echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..."
+        local start_time; start_time=$(date +%s.%N)
+        if (timeout -k 15 "$timeout_duration" docker pull "$pull_target" >/dev/null) 2>/dev/null; then
+            local end_time; end_time=$(date +%s.%N); local duration; duration=$(echo "$end_time - $start_time" | bc)
+            printf " ${GREEN}%.2f 秒${NC}\n" "$duration"
+            if [[ "$mirror" != "docker.io" ]]; then results+="${duration}|${mirror}|${display_name}\n"; fi
+            docker rmi "$pull_target" > /dev/null 2>&1 || true
+            if [[ "$mirror" == "docker.io" ]]; then official_hub_ok=true; break; fi
+        else
+            echo -e " ${RED}超时或失败${NC}"
+        fi
+    done
+
+    if [ "$official_hub_ok" = true ]; then
+        # Return a special value to indicate official hub is fine
+        echo "OFFICIAL_HUB_OK"
+    else
+        # Return the sorted results
+        echo -e "$results" | grep '.' | LC_ALL=C sort -n
+    fi
+}
+
 # Function to configure Docker logging settings
 fn_configure_docker_logging() {
     log_action "是否需要限制 Docker 日志大小以防止磁盘占满？"
@@ -131,38 +168,13 @@ fn_configure_docker_mirrors() {
 
     case "$choice" in
         1)
-            log_info "正在自动检测 Docker 镜像源可用性..."
-            local mirrors=(
-                "docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live"
-                "https://dockerproxy.1panel.live" "https://hub.rat.dev" "https://docker.m.ixdev.cn"
-                "https://hub2.nat.tf" "https://docker.1panel.dev" "https://docker.amingg.com" "https://docker.xuanyuan.me"
-                "https://dytt.online" "https://lispy.org" "https://docker.xiaogenban1993.com"
-                "https://docker-0.unsee.tech" "https://666860.xyz" "https://hubproxy-advj.onrender.com"
-            )
-            docker rmi hello-world > /dev/null 2>&1 || true
-            local results=""; local official_hub_ok=false
-            for mirror in "${mirrors[@]}"; do
-                local pull_target="hello-world"; local display_name="$mirror"; local timeout_duration=10
-                if [[ "$mirror" == "docker.io" ]]; then timeout_duration=15; display_name="Official Docker Hub"; else pull_target="${mirror#https://}/library/hello-world"; fi
-                echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..."
-                local start_time; start_time=$(date +%s.%N)
-                if (timeout -k 15 "$timeout_duration" docker pull "$pull_target" >/dev/null) 2>/dev/null; then
-                    local end_time; end_time=$(date +%s.%N); local duration; duration=$(echo "$end_time - $start_time" | bc)
-                    printf " ${GREEN}%.2f 秒${NC}\n" "$duration"
-                    if [[ "$mirror" != "docker.io" ]]; then results+="${duration}|${mirror}|${display_name}\n"; fi
-                    docker rmi "$pull_target" > /dev/null 2>&1 || true
-                    if [[ "$mirror" == "docker.io" ]]; then official_hub_ok=true; break; fi
-                else
-                    echo -e " ${RED}超时或失败${NC}"
-                fi
-            done
-
-            if [ "$official_hub_ok" = true ]; then
+            local test_results; test_results=$(fn_internal_test_mirrors)
+            if [[ "$test_results" == "OFFICIAL_HUB_OK" ]]; then
                 log_success "官方 Docker Hub 可用，将直接使用官方源，不配置镜像加速。"
             else
                 log_warn "官方 Docker Hub 连接失败，将自动从可用备用镜像中配置最快的源。"
-                if [ -n "$results" ]; then
-                    local best_mirrors; best_mirrors=($(echo -e "$results" | grep '.' | LC_ALL=C sort -n | head -n 5 | cut -d'|' -f2))
+                if [ -n "$test_results" ]; then
+                    local best_mirrors; best_mirrors=($(echo -e "$test_results" | head -n 5 | cut -d'|' -f2))
                     log_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
                     mirrors_json_array=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
                 else
@@ -250,49 +262,6 @@ fn_apply_docker_optimization() {
         log_success "Docker 服务已重启，优化配置已生效！"
     else
         log_error "Docker 服务重启失败！请检查 ${DAEMON_JSON} 格式。"
-    fi
-}
-
-fn_configure_docker_mirrors_simple() {
-    log_info "正在为傻瓜模式自动配置最快的 Docker 镜像源..."
-    # 此函数直接调用自动测速逻辑，不进行交互
-    local mirrors=(
-        "docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live"
-        "https://dockerproxy.1panel.live" "https://hub.rat.dev" "https://docker.m.ixdev.cn"
-        "https://hub2.nat.tf" "https://docker.1panel.dev" "https://docker.amingg.com" "https://docker.xuanyuan.me"
-        "https://dytt.online" "https://lispy.org" "https://docker.xiaogenban1993.com"
-        "https://docker-0.unsee.tech" "https://666860.xyz" "https://hubproxy-advj.onrender.com"
-    )
-    docker rmi hello-world > /dev/null 2>&1 || true
-    local results=""; local official_hub_ok=false
-    for mirror in "${mirrors[@]}"; do
-        local pull_target="hello-world"; local display_name="$mirror"; local timeout_duration=10
-        if [[ "$mirror" == "docker.io" ]]; then timeout_duration=15; display_name="Official Docker Hub"; else pull_target="${mirror#https://}/library/hello-world"; fi
-        echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..."
-        local start_time; start_time=$(date +%s.%N)
-        if (timeout -k 15 "$timeout_duration" docker pull "$pull_target" >/dev/null) 2>/dev/null; then
-            local end_time; end_time=$(date +%s.%N); local duration; duration=$(echo "$end_time - $start_time" | bc)
-            printf " ${GREEN}%.2f 秒${NC}\n" "$duration"
-            if [[ "$mirror" != "docker.io" ]]; then results+="${duration}|${mirror}|${display_name}\n"; fi
-            docker rmi "$pull_target" > /dev/null 2>&1 || true
-            if [[ "$mirror" == "docker.io" ]]; then official_hub_ok=true; break; fi
-        else
-            echo -e " ${RED}超时或失败${NC}"
-        fi
-    done
-
-    if [ "$official_hub_ok" = true ]; then
-        log_success "官方 Docker Hub 可用，将直接使用官方源。"
-    else
-        log_warn "官方 Docker Hub 连接失败，将自动配置最快的备用镜像。"
-        if [ -n "$results" ]; then
-            local best_mirrors; best_mirrors=($(echo -e "$results" | grep '.' | LC_ALL=C sort -n | head -n 5 | cut -d'|' -f2))
-            local mirrors_json_array; mirrors_json_array=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
-            DAEMON_JSON_PARTS+=("\"registry-mirrors\": [${mirrors_json_array}]")
-            log_success "已自动选择 ${#best_mirrors[@]} 个最快的镜像源。"
-        else
-            log_warn "所有备用镜像均测试失败！将不配置镜像加速。"
-        fi
     fi
 }
 
@@ -610,8 +579,8 @@ install_1panel() {
 # 全局变量，用于在不同函数间传递状态
 DOCKER_COMPOSE_CMD=""
 SILLY_TAVERN_IMAGE=""
-INSTALL_MODE="" # 'simple' or 'expert'
-# 专家模式下的变量
+INSTALL_TYPE="" # 'overseas', 'mainland', or 'custom'
+# 自定义模式下的变量
 SERVER_IP=""
 INSTALL_DIR=""
 CONFIG_FILE=""
@@ -745,61 +714,6 @@ fn_pull_sillytavern_image() {
     fn_pull_image_with_progress "$SILLY_TAVERN_IMAGE"
 }
 
-fn_monitor_network_speed() {
-    local pid=$1
-    local interface
-    interface=$(ip route | awk '/default/ {print $5}' | head -n1)
-    if [ -z "$interface" ]; then
-        log_warn "无法自动检测到网络接口，速度监控将不可用。"
-        # Just wait for the process to finish without monitoring
-        wait "$pid"
-        return
-    fi
-
-    local rx_bytes_path="/sys/class/net/${interface}/statistics/rx_bytes"
-    if [ ! -f "$rx_bytes_path" ]; then
-        log_warn "找不到网络统计文件 (${rx_bytes_path})，速度监控将不可用。"
-        wait "$pid"
-        return
-    fi
-
-    log_info "正在监控网络接口 [${interface}] 的下行速度..."
-    local old_rx_bytes; old_rx_bytes=$(cat "$rx_bytes_path")
-    local old_time; old_time=$(date +%s.%N)
-
-    while kill -0 "$pid" 2>/dev/null; do
-        sleep 1
-        local new_rx_bytes; new_rx_bytes=$(cat "$rx_bytes_path")
-        local new_time; new_time=$(date +%s.%N)
-        
-        local time_diff; time_diff=$(echo "$new_time - $old_time" | bc)
-        local byte_diff; byte_diff=$((new_rx_bytes - old_rx_bytes))
-
-        if (( $(echo "$time_diff > 0" | bc -l) )); then
-            local speed_bps; speed_bps=$(echo "scale=2; $byte_diff / $time_diff" | bc)
-            # Handle case where speed is 0 to avoid division by zero in subsequent bc calls if needed
-            if (( $(echo "$speed_bps == 0" | bc -l) )); then
-                printf "  当前下行速度: ${YELLOW}0.00 KB/s${NC}   \r"
-            else
-                local speed_kbps; speed_kbps=$(echo "scale=2; $speed_bps / 1024" | bc)
-                local speed_mbps; speed_mbps=$(echo "scale=2; $speed_kbps / 1024" | bc)
-
-                if (( $(echo "$speed_mbps >= 1" | bc -l) )); then
-                    printf "  当前下行速度: ${YELLOW}%.2f MB/s${NC}  \r" "$speed_mbps"
-                else
-                    printf "  当前下行速度: ${YELLOW}%.2f KB/s${NC}  \r" "$speed_kbps"
-                fi
-            fi
-        fi
-        
-        old_rx_bytes=$new_rx_bytes
-        old_time=$new_time
-    done
-    
-    # Clear the speed line
-    echo -e "                                           \r"
-}
-
 fn_pull_image_with_progress() {
     local image_to_pull="$1"
     if [ -z "$image_to_pull" ]; then
@@ -822,29 +736,75 @@ fn_pull_image_with_progress() {
 EOF
 )
     
-    clear || true
-    echo -e "${time_estimate_table}"
-    echo -e "\n${CYAN}--- 开始拉取镜像，下方将实时显示网速与 Docker 日志 ---${NC}"
-
     local PULL_LOG
     PULL_LOG=$(mktemp)
-    # Ensure log is cleaned up on script exit
     trap 'rm -f "$PULL_LOG"' EXIT
 
-    # Run pull in the background, redirecting all output to the log file
     docker pull "$image_to_pull" > "$PULL_LOG" 2>&1 &
     local pid=$!
 
-    # Run speed monitor in the foreground
-    fn_monitor_network_speed "$pid"
+    # --- 实时仪表盘 ---
+    local interface
+    interface=$(ip route | awk '/default/ {print $5}' | head -n1)
+    local rx_bytes_path="/sys/class/net/${interface}/statistics/rx_bytes"
+    local can_monitor_speed=true
+    if [[ -z "$interface" || ! -f "$rx_bytes_path" ]]; then
+        can_monitor_speed=false
+    fi
 
-    # Wait for the pull command to finish and get its exit code
+    local old_rx_bytes=0
+    local old_time=0
+    if $can_monitor_speed; then
+        old_rx_bytes=$(cat "$rx_bytes_path")
+        old_time=$(date +%s.%N)
+    fi
+
+    while kill -0 "$pid" 2>/dev/null; do
+        clear || true
+        echo -e "${time_estimate_table}"
+        
+        # 计算并显示网速
+        if $can_monitor_speed; then
+            local new_rx_bytes; new_rx_bytes=$(cat "$rx_bytes_path")
+            local new_time; new_time=$(date +%s.%N)
+            local time_diff; time_diff=$(echo "$new_time - $old_time" | bc)
+            local byte_diff; byte_diff=$((new_rx_bytes - old_rx_bytes))
+
+            local speed_str="计算中..."
+            if (( $(echo "$time_diff > 0" | bc -l) )); then
+                local speed_bps; speed_bps=$(echo "scale=2; $byte_diff / $time_diff" | bc)
+                if (( $(echo "$speed_bps > 0" | bc -l) )); then
+                    local speed_kbps; speed_kbps=$(echo "scale=2; $speed_bps / 1024" | bc)
+                    local speed_mbps; speed_mbps=$(echo "scale=2; $speed_kbps / 1024" | bc)
+                    if (( $(echo "$speed_mbps >= 1" | bc -l) )); then
+                        speed_str=$(printf "%.2f MB/s" "$speed_mbps")
+                    else
+                        speed_str=$(printf "%.2f KB/s" "$speed_kbps")
+                    fi
+                else
+                    speed_str="0.00 KB/s"
+                fi
+            fi
+            echo -e "\n  ${CYAN}实时下行速度:${NC} ${YELLOW}${speed_str}${NC}"
+            old_rx_bytes=$new_rx_bytes
+            old_time=$new_time
+        else
+            echo -e "\n  ${YELLOW}无法监控网速 (未找到网络接口或统计文件)${NC}"
+        fi
+
+        # 显示 Docker 日志
+        echo -e "\n${CYAN}--- Docker 实时拉取进度 (最新日志) ---${NC}"
+        grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists|Waiting' "$PULL_LOG" | tail -n 10 || true
+        
+        sleep 1
+    done
+    # --- 仪表盘结束 ---
+
     wait "$pid"
     local exit_code=$?
-    # Disable the trap now that we're handling the log file manually
     trap - EXIT
 
-    echo # Newline for clean output
+    clear || true
 
     if [ $exit_code -ne 0 ]; then
         log_error "Docker 镜像拉取失败！"
@@ -985,86 +945,19 @@ fn_apply_config_changes() {
     fi
 }
 
-# --- 安装流程的主函数 ---
+fn_create_compose_file() {
+    local compose_file_path="$1"
+    local container_name="$2"
+    local image_name="$3"
+    local current_run_mode="$4"
 
-install_sillytavern() {
-    tput reset
-    echo -e "${CYAN}SillyTavern Docker 自动化安装流程${NC}"
-
-    fn_select_install_mode
-
-    if [[ "$INSTALL_MODE" == "simple" ]]; then
-        run_simple_install
-    else
-        run_expert_install
-    fi
-}
-
-fn_select_install_mode() {
-    fn_print_step "步骤 1/X: 选择安装模式"
-    echo -e "请选择您希望的安装模式："
-    echo -e "  [1] ${CYAN}傻瓜模式 (Simple Mode)${NC}"
-    echo -e "      一键全自动安装，使用默认推荐配置，适合绝大多数用户。"
-    echo -e "  [2] ${YELLOW}专家模式 (Expert Mode)${NC}"
-    echo -e "      自定义安装过程中的每一个步骤，适合需要高度定制的用户。"
-    read -rp "请输入选项 [默认为 1]: " choice < /dev/tty
-    choice=${choice:-1}
-
-    case "$choice" in
-        1)
-            INSTALL_MODE="simple"
-            log_info "已选择傻瓜模式。"
-            ;;
-        2)
-            INSTALL_MODE="expert"
-            log_info "已选择专家模式。"
-            ;;
-        *)
-            log_warn "无效输入，将使用默认的傻瓜模式。"
-            INSTALL_MODE="simple"
-            ;;
-    esac
-}
-
-run_simple_install() {
-    fn_print_step "[ 傻瓜模式 ] 环境检查与准备"
-    fn_check_base_deps
-    fn_check_dependencies
-
-    fn_print_step "[ 傻瓜模式 ] 自动配置 Docker"
-    DAEMON_JSON_PARTS=()
-    DAEMON_JSON_PARTS+=('"log-driver": "json-file", "log-opts": {"max-size": "50m", "max-file": "3"}')
-    fn_configure_docker_mirrors_simple
-    fn_apply_docker_optimization
-
-    fn_print_step "[ 傻瓜模式 ] 自动拉取镜像"
-    SILLY_TAVERN_IMAGE="ghcr.io/sillytavern/sillytavern:latest"
-    fn_pull_image_with_progress "$SILLY_TAVERN_IMAGE"
-
-    TARGET_USER="${SUDO_USER:-root}"
-    if [ "$TARGET_USER" = "root" ]; then USER_HOME="/root"; else USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6); fi
-    INSTALL_DIR="$USER_HOME/sillytavern"
-    CONFIG_FILE="$INSTALL_DIR/config.yaml"
-    COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
-    log_info "傻瓜模式将使用默认安装路径: ${INSTALL_DIR}"
-
-    local container_name="sillytavern"
-    if [ -d "$INSTALL_DIR" ]; then
-        log_warn "检测到已存在的安装目录，将自动清理..."
-        docker stop "$container_name" > /dev/null 2>&1 || true
-        docker rm "$container_name" > /dev/null 2>&1 || true
-        sudo rm -rf "$INSTALL_DIR"
-        log_success "旧目录和容器已清理。"
-    fi
-
-    fn_create_project_structure
-    cd "$INSTALL_DIR"
-
-    cat <<EOF > "$COMPOSE_FILE"
+    if [[ "$current_run_mode" == "3" ]]; then
+        # 维护者模式
+        cat <<EOF > "$compose_file_path"
 services:
   sillytavern:
     container_name: ${container_name}
-    image: ${SILLY_TAVERN_IMAGE}
+    image: ${image_name}
     hostname: ${container_name}
     security_opt:
       - apparmor:unconfined
@@ -1076,32 +969,65 @@ services:
     volumes:
       - "./:/home/node/app/config:Z"
       - "./data:/home/node/app/data:Z"
+      - "./plugins:/home/node/app/plugins:Z"
+      - "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party:Z"
+      - "./custom/login.html:/home/node/app/public/login.html:Z"
+      - "./custom/images:/home/node/app/public/images:Z"
     restart: unless-stopped
 EOF
+    else
+        # 普通或专家模式
+        cat <<EOF > "$compose_file_path"
+services:
+  sillytavern:
+    container_name: ${container_name}
+    image: ${image_name}
+    hostname: ${container_name}
+    security_opt:
+      - apparmor:unconfined
+    environment:
+      - NODE_ENV=production
+      - FORCE_COLOR=1
+    ports:
+      - "8000:8000"
+    volumes:
+      - "./:/home/node/app/config:Z"
+      - "./data:/home/node/app/data:Z"
+      - "./plugins:/home/node/app/plugins:Z"
+      - "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party:Z"
+    restart: unless-stopped
+EOF
+    fi
     log_success "docker-compose.yml 文件创建成功！"
+}
 
-    fn_print_step "[ 傻瓜模式 ] 初始化与配置"
-    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d
+fn_generate_initial_config() {
+    local compose_cmd="$1"
+    local compose_file="$2"
+    local config_file="$3"
+
+    fn_print_info "正在进行首次启动以生成官方配置文件..."
+    if ! $compose_cmd -f "$compose_file" up -d > /dev/null 2>&1; then
+        fn_print_error "首次启动容器失败！请检查日志。"
+    fi
+
     local timeout=60
-    while [ ! -f "$CONFIG_FILE" ]; do
-        if [ $timeout -eq 0 ]; then fn_print_error "等待配置文件生成超时！"; fi
-        sleep 1; ((timeout--))
+    while [ ! -f "$config_file" ]; do
+        if [ $timeout -eq 0 ]; then
+            fn_print_error "等待配置文件生成超时！请检查容器日志。"
+        fi
+        sleep 1
+        ((timeout--))
     done
-    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down > /dev/null 2>&1
+
+    if ! $compose_cmd -f "$compose_file" down > /dev/null 2>&1; then
+        log_warn "首次关闭容器时出错，但这通常不影响后续步骤。"
+    fi
     log_success "config.yaml 文件已生成！"
+}
 
-    sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true/" "$CONFIG_FILE"
-    sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false/" "$CONFIG_FILE"
-    sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false/" "$CONFIG_FILE"
-    log_success "默认配置已应用。"
-
-    fn_print_step "[ 傻瓜模式 ] 启动并验证服务"
-    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate
-    fn_verify_container_health "$container_name"
-    fn_wait_for_service
-    SERVER_IP=$(fn_get_public_ip)
-    fn_display_final_info
-
+fn_post_deployment_menu() {
+    local container_name="$1"
     while true; do
         echo -e "\n${CYAN}--- 部署后操作 ---${NC}"
         echo -e "  [1] 查看容器状态\n  [2] 查看日志\n  [3] 重新显示访问信息\n  [q] 退出菜单"
@@ -1116,29 +1042,160 @@ EOF
     done
 }
 
-run_expert_install() {
+# --- 安装流程的主函数 ---
+
+install_sillytavern() {
+    tput reset
+    echo -e "${CYAN}SillyTavern Docker 自动化安装流程${NC}"
+
+    fn_select_server_type
+
+    case "$INSTALL_TYPE" in
+        "overseas")
+            run_overseas_install
+            ;;
+        "mainland")
+            run_mainland_install
+            ;;
+        "custom")
+            run_custom_install
+            ;;
+    esac
+}
+
+fn_select_server_type() {
+    fn_print_step "步骤 1/X: 选择服务器类型"
+    echo -e "请根据您服务器所在的地理位置选择合适的安装模式："
+    echo -e "  [1] ${CYAN}海外服务器 (Overseas Server)${NC}"
+    echo -e "      一键全自动安装，直连官方镜像源，适合网络环境良好的非大陆服务器。"
+    echo -e "  [2] ${YELLOW}大陆服务器 (Mainland China Server)${NC}"
+    echo -e "      一键全自动安装，自动配置最快的镜像加速器，适合国内服务器。"
+    echo -e "  [3] ${GREEN}完全自定义 (Fully Custom)${NC}"
+    echo -e "      手动配置安装过程中的每一个步骤，适合需要高度定制的高级用户。"
+    read -rp "请输入选项 [默认为 1]: " choice < /dev/tty
+    choice=${choice:-1}
+
+    case "$choice" in
+        1)
+            INSTALL_TYPE="overseas"
+            log_info "已选择 [海外服务器] 模式。"
+            ;;
+        2)
+            INSTALL_TYPE="mainland"
+            log_info "已选择 [大陆服务器] 模式。"
+            ;;
+        3)
+            INSTALL_TYPE="custom"
+            log_info "已选择 [完全自定义] 模式。"
+            ;;
+        *)
+            log_warn "无效输入，将使用默认的 [海外服务器] 模式。"
+            INSTALL_TYPE="overseas"
+            ;;
+    esac
+}
+
+run_automated_install() {
+    local install_type="$1" # "overseas" or "mainland"
+    local mode_name=""
+    if [[ "$install_type" == "overseas" ]]; then mode_name="海外服务器"; else mode_name="大陆服务器"; fi
+
+    fn_print_step "[ ${mode_name} ] 环境检查与准备"
+    fn_check_base_deps
+    fn_check_dependencies
+
+    fn_print_step "[ ${mode_name} ] 自动配置 Docker"
+    DAEMON_JSON_PARTS=()
+    DAEMON_JSON_PARTS+=('"log-driver": "json-file", "log-opts": {"max-size": "50m", "max-file": "3"}')
+    
+    if [[ "$install_type" == "mainland" ]]; then
+        log_info "正在为大陆服务器自动配置最快镜像源..."
+        fn_test_mirrors
+        if [ ${#BEST_MIRRORS[@]} -gt 0 ]; then
+            local mirrors_json_array; mirrors_json_array=$(printf '"%s",' "${BEST_MIRRORS[@]}" | sed 's/,$//')
+            DAEMON_JSON_PARTS+=("\"registry-mirrors\": [${mirrors_json_array}]")
+            log_success "已自动选择最快的镜像源。"
+        fi
+    else
+        log_info "海外服务器，跳过镜像加速配置。"
+    fi
+    fn_apply_docker_optimization
+
+    fn_print_step "[ ${mode_name} ] 自动拉取镜像"
+    SILLY_TAVERN_IMAGE="ghcr.io/sillytavern/sillytavern:latest"
+    fn_pull_image_with_progress "$SILLY_TAVERN_IMAGE"
+
+    TARGET_USER="${SUDO_USER:-root}"
+    if [ "$TARGET_USER" = "root" ]; then USER_HOME="/root"; else USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6); fi
+    INSTALL_DIR="$USER_HOME/sillytavern"
+    CONFIG_FILE="$INSTALL_DIR/config.yaml"
+    COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
+    log_info "将使用默认安装路径: ${INSTALL_DIR}"
+
+    local container_name="sillytavern"
+    if [ -d "$INSTALL_DIR" ]; then
+        log_warn "检测到已存在的安装目录，将自动清理..."
+        docker stop "$container_name" > /dev/null 2>&1 || true
+        docker rm "$container_name" > /dev/null 2>&1 || true
+        sudo rm -rf "$INSTALL_DIR"
+        log_success "旧目录和容器已清理。"
+    fi
+
+    fn_create_project_structure
+    cd "$INSTALL_DIR"
+
+    # 自动模式不进入维护者模式，所以 run_mode 传 "1" (代表普通用户)
+    fn_create_compose_file "$COMPOSE_FILE" "$container_name" "$SILLY_TAVERN_IMAGE" "1"
+
+    fn_print_step "[ ${mode_name} ] 初始化与配置"
+    fn_generate_initial_config "$DOCKER_COMPOSE_CMD" "$COMPOSE_FILE" "$CONFIG_FILE"
+
+    sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false/" "$CONFIG_FILE"
+    sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false/" "$CONFIG_FILE"
+    log_success "默认配置已应用。"
+
+    fn_print_step "[ ${mode_name} ] 启动并验证服务"
+    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate
+    fn_verify_container_health "$container_name"
+    fn_wait_for_service
+    SERVER_IP=$(fn_get_public_ip)
+    fn_display_final_info
+
+    fn_post_deployment_menu "$container_name"
+}
+
+run_overseas_install() {
+    run_automated_install "overseas"
+}
+
+run_mainland_install() {
+    run_automated_install "mainland"
+}
+
+run_custom_install() {
     local CONTAINER_NAME="sillytavern"
 
     # 步骤 1: 环境检查
-    fn_print_step "[ 专家模式 ] 步骤 1/6: 环境检查与准备"
+    fn_print_step "[ 完全自定义 ] 步骤 1/6: 环境检查与准备"
     fn_check_base_deps
     fn_check_dependencies
     fn_check_existing_container "$CONTAINER_NAME"
 
-    # 步骤 2: Docker 优化 (已拆分)
-    fn_print_step "[ 专家模式 ] 步骤 2/6: Docker 优化配置"
+    # 步骤 2: Docker 优化
+    fn_print_step "[ 完全自定义 ] 步骤 2/6: Docker 优化配置"
     DAEMON_JSON_PARTS=() # 重置配置数组
     fn_configure_docker_logging
-    echo # 增加换行以提高可读性
+    echo
     fn_configure_docker_mirrors
     fn_apply_docker_optimization
 
     # 步骤 3: 拉取镜像
-    fn_print_step "[ 专家模式 ] 步骤 3/6: 选择并拉取 SillyTavern 镜像"
+    fn_print_step "[ 完全自定义 ] 步骤 3/6: 选择并拉取 SillyTavern 镜像"
     fn_pull_sillytavern_image
 
     # 步骤 4: 配置安装选项
-    fn_print_step "[ 专家模式 ] 步骤 4/6: 选择运行模式与路径"
+    fn_print_step "[ 完全自定义 ] 步骤 4/6: 选择运行模式与路径"
     TARGET_USER="${SUDO_USER:-root}"
     if [ "$TARGET_USER" = "root" ]; then
         USER_HOME="/root"
@@ -1173,7 +1230,7 @@ run_expert_install() {
     COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 
     # 步骤 5: 创建项目文件
-    fn_print_step "[ 专家模式 ] 步骤 5/6: 创建项目文件"
+    fn_print_step "[ 完全自定义 ] 步骤 5/6: 创建项目文件"
     if [ -z "$INSTALL_DIR" ]; then fn_print_error "安装路径未设置，无法创建项目文件。"; fi
     if [ -d "$INSTALL_DIR" ]; then
         fn_confirm_and_delete_dir "$INSTALL_DIR" "$CONTAINER_NAME"
@@ -1193,67 +1250,14 @@ run_expert_install() {
     cd "$INSTALL_DIR"
     fn_print_info "工作目录已切换至: $(pwd)"
 
-    local compose_content
-    if [[ "$run_mode" == "3" ]]; then
-        compose_content=$(cat <<EOF
-services:
-  sillytavern:
-    container_name: ${CONTAINER_NAME}
-    image: ${SILLY_TAVERN_IMAGE}
-    volumes:
-      - "./:/home/node/app/config:Z"
-      - "./data:/home/node/app/data:Z"
-      - "./plugins:/home/node/app/plugins:Z"
-      - "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party:Z"
-      - "./custom/login.html:/home/node/app/public/login.html:Z"
-      - "./custom/images:/home/node/app/public/images:Z"
-EOF
-)
-    else
-        compose_content=$(cat <<EOF
-services:
-  sillytavern:
-    container_name: ${CONTAINER_NAME}
-    image: ${SILLY_TAVERN_IMAGE}
-    volumes:
-      - "./:/home/node/app/config:Z"
-      - "./data:/home/node/app/data:Z"
-      - "./plugins:/home/node/app/plugins:Z"
-      - "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party:Z"
-EOF
-)
-    fi
-    
-    cat <<EOF > "$COMPOSE_FILE"
-${compose_content}
-    hostname: ${CONTAINER_NAME}
-    security_opt:
-      - apparmor:unconfined
-    environment:
-      - NODE_ENV=production
-      - FORCE_COLOR=1
-    ports:
-      - "8000:8000"
-    restart: unless-stopped
-EOF
-    log_success "docker-compose.yml 文件创建成功！"
+    fn_create_compose_file "$COMPOSE_FILE" "$CONTAINER_NAME" "$SILLY_TAVERN_IMAGE" "$run_mode"
 
     # 步骤 6: 初始化与启动
-    fn_print_step "[ 专家模式 ] 步骤 6/6: 初始化与启动服务"
+    fn_print_step "[ 完全自定义 ] 步骤 6/6: 初始化与启动服务"
     if [ -z "$DOCKER_COMPOSE_CMD" ]; then fn_print_error "Docker Compose 命令未找到。"; fi
     if [ ! -f "$COMPOSE_FILE" ]; then fn_print_error "docker-compose.yml 文件不存在。"; fi
 
-    fn_print_info "正在进行首次启动以生成官方配置文件..."
-    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d
-    local timeout=60
-    while [ ! -f "$CONFIG_FILE" ]; do
-        if [ $timeout -eq 0 ]; then
-            fn_print_error "等待配置文件生成超时！"
-        fi
-        sleep 1; ((timeout--))
-    done
-    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down > /dev/null 2>&1
-    log_success "config.yaml 文件已生成！"
+    fn_generate_initial_config "$DOCKER_COMPOSE_CMD" "$COMPOSE_FILE" "$CONFIG_FILE"
     
     fn_apply_config_changes
     log_success "自定义配置已应用。"
@@ -1279,20 +1283,9 @@ EOF
     SERVER_IP=$(fn_get_public_ip)
     fn_display_final_info
 
-    while true; do
-        echo -e "\n${CYAN}--- 部署后操作 ---${NC}"
-        echo -e "  [1] 查看容器状态\n  [2] 查看日志\n  [3] 重新显示访问信息\n  [q] 退出菜单"
-        read -p "请输入选项: " choice < /dev/tty
-        case "$choice" in
-            1) fn_check_and_explain_status "$CONTAINER_NAME";;
-            2) docker logs -f "$CONTAINER_NAME" || true;;
-            3) fn_display_final_info;;
-            q|Q) break;;
-            *) log_warn "无效输入。";;
-        esac
-    done
+    fn_post_deployment_menu "$CONTAINER_NAME"
     
-    log_success "专家模式安装流程已完成。"
+    log_success "完全自定义安装流程已完成。"
 }
 
 main_menu() {
@@ -1317,7 +1310,7 @@ main_menu() {
             echo -e "\n${BOLD}使用说明 (Debian/Ubuntu):${NC}"
             echo -e "  • ${YELLOW}全新服务器${NC}: 请按 ${GREEN}1 -> 2 -> 3${NC} 的顺序分步执行。"
             echo -e "  • ${YELLOW}已有Docker环境${NC}: 可直接从【步骤3】开始。"
-            echo -e "  • ${YELLOW}部署SillyTavern时${NC}: 可选 ${GREEN}傻瓜模式${NC} (全自动) 或 ${GREEN}专家模式${NC} (自定义)。"
+            echo -e "  • ${YELLOW}部署SillyTavern时${NC}: 可根据服务器位置选择 ${GREEN}海外/大陆/自定义${NC} 模式。"
         fi
 
         echo -e "\n${BLUE}================================== 菜 单 ==================================${NC}"
