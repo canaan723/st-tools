@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# 咕咕助手 v2.41test
+# 咕咕助手 v2.42test
 # 作者: 清绝 | 网址: blog.qjyg.de
 
 # --- [核心] 确保脚本由 Bash 执行 ---
@@ -57,7 +57,7 @@ log_step() { echo -e "\n${BLUE}--- $1: $2 ---${NC}"; }
 log_success() { echo -e "${GREEN}✓ $1${NC}"; }
 
 fn_show_main_header() {
-    echo -e "${YELLOW}>>${GREEN} 咕咕助手 v2.41test${NC}"
+    echo -e "${YELLOW}>>${GREEN} 咕咕助手 v2.42test${NC}"
     echo -e "   ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
 }
 
@@ -735,43 +735,38 @@ fn_pull_image_with_progress() {
   ${YELLOW}└──────────────────────────────────────────────────┘${NC}
 EOF
 )
-    
-    local PULL_LOG
-    PULL_LOG=$(mktemp)
-    trap 'rm -f "$PULL_LOG"' EXIT
+    echo -e "${time_estimate_table}"
+    echo -e "\n${CYAN}--- Docker 正在拉取，请关注以下原生进度条 ---${NC}"
 
-    docker pull "$image_to_pull" > "$PULL_LOG" 2>&1 &
-    local pid=$!
-
-    # --- 实时仪表盘 ---
+    # --- 实时速度监控 (后台) ---
     local interface
     interface=$(ip route | awk '/default/ {print $5}' | head -n1)
     local rx_bytes_path="/sys/class/net/${interface}/statistics/rx_bytes"
-    local can_monitor_speed=true
+    
     if [[ -z "$interface" || ! -f "$rx_bytes_path" ]]; then
-        can_monitor_speed=false
+        log_warn "无法找到默认网络接口或统计文件，将不显示实时网速。"
+        # Fallback to simple pull without speed monitoring
+        if ! docker pull "$image_to_pull"; then
+            fn_print_error "Docker 镜像拉取失败！请检查网络或镜像地址后重试。"
+        fi
+        echo # Add a newline for clarity
+        log_success "镜像 ${image_to_pull} 拉取成功！"
+        return
     fi
 
-    local old_rx_bytes=0
-    local old_time=0
-    if $can_monitor_speed; then
-        old_rx_bytes=$(cat "$rx_bytes_path")
-        old_time=$(date +%s.%N)
-    fi
-
-    while kill -0 "$pid" 2>/dev/null; do
-        clear || true
-        echo -e "${time_estimate_table}"
-        
-        # 计算并显示网速
-        if $can_monitor_speed; then
+    # Start speed monitor in background
+    (
+        local old_rx_bytes; old_rx_bytes=$(cat "$rx_bytes_path")
+        local old_time; old_time=$(date +%s.%N)
+        while true; do
+            sleep 1
             local new_rx_bytes; new_rx_bytes=$(cat "$rx_bytes_path")
             local new_time; new_time=$(date +%s.%N)
             local time_diff; time_diff=$(echo "$new_time - $old_time" | bc)
             local byte_diff; byte_diff=$((new_rx_bytes - old_rx_bytes))
 
             local speed_str="计算中..."
-            if (( $(echo "$time_diff > 0" | bc -l) )); then
+            if (( $(echo "$time_diff > 0.1" | bc -l) )); then
                 local speed_bps; speed_bps=$(echo "scale=2; $byte_diff / $time_diff" | bc)
                 if (( $(echo "$speed_bps > 0" | bc -l) )); then
                     local speed_kbps; speed_kbps=$(echo "scale=2; $speed_bps / 1024" | bc)
@@ -785,40 +780,33 @@ EOF
                     speed_str="0.00 KB/s"
                 fi
             fi
-            echo -e "\n  ${CYAN}实时下行速度:${NC} ${YELLOW}${speed_str}${NC}"
+            # Print speed on the same line using carriage return
+            printf "  ${CYAN}实时下行速度:${NC} ${YELLOW}%-20s${NC}\r" "$speed_str"
+
             old_rx_bytes=$new_rx_bytes
             old_time=$new_time
-        else
-            echo -e "\n  ${YELLOW}无法监控网速 (未找到网络接口或统计文件)${NC}"
-        fi
+        done
+    ) &
+    local monitor_pid=$!
 
-        # 显示 Docker 日志
-        echo -e "\n${CYAN}--- Docker 实时拉取进度 (最新日志) ---${NC}"
-        grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists|Waiting' "$PULL_LOG" | tail -n 10 || true
-        
-        sleep 1
-    done
-    # --- 仪表盘结束 ---
+    # Ensure monitor is killed on exit
+    trap 'kill $monitor_pid 2>/dev/null; printf "\n"; exit' INT TERM EXIT
 
-    wait "$pid"
-    local exit_code=$?
-    trap - EXIT
-
-    clear || true
-
-    if [ $exit_code -ne 0 ]; then
-        log_error "Docker 镜像拉取失败！"
-        echo -e "${YELLOW}以下是来自 Docker 的原始错误日志：${NC}"
-        echo "--------------------------------------------------"
-        cat "$PULL_LOG"
-        echo "--------------------------------------------------"
-        rm -f "$PULL_LOG"
-        fn_print_error "请根据以上日志排查问题，可能原因包括网络不通、镜像源失效或 Docker 服务异常。"
-    else
+    # --- Docker 拉取 (前台) ---
+    if docker pull "$image_to_pull"; then
+        # Success
+        kill $monitor_pid 2>/dev/null
+        trap - INT TERM EXIT # remove trap
+        # Clear the speed line with spaces and add a newline
+        printf "%-40s\n" ""
         log_success "镜像 ${image_to_pull} 拉取成功！"
-        echo -e "${CYAN}--- Docker 拉取日志详情 ---${NC}"
-        cat "$PULL_LOG"
-        rm -f "$PULL_LOG"
+    else
+        # Failure
+        kill $monitor_pid 2>/dev/null
+        trap - INT TERM EXIT # remove trap
+        # Clear the speed line with spaces and add a newline
+        printf "%-40s\n" ""
+        fn_print_error "Docker 镜像拉取失败！请检查网络或镜像地址后重试。"
     fi
 }
 
@@ -882,15 +870,21 @@ fn_display_final_info() {
     echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
     echo -e "║                   ${BOLD}部署成功！尽情享受吧！${NC}                   ║"
     echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
-    echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC}"
     
-    if [[ "$INSTALL_MODE" == "expert" ]]; then
+    if [[ "$INSTALL_TYPE" == "custom" ]]; then
         if [[ "$run_mode" == "1" ]]; then
+            # 自定义 - 单用户模式
+            echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC}"
             echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"
             echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"
         elif [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
-            echo -e "  ${YELLOW}登录页面:${NC} ${GREEN}http://${SERVER_IP}:8000/login${NC}"
+            # 自定义 - 多用户/维护者模式
+            echo -e "\n  ${CYAN}访问地址 (平时用这个):${NC} ${GREEN}http://${SERVER_IP}:8000${NC}"
+            echo -e "  ${CYAN}登录页地址 (验证账号密码):${NC} ${GREEN}http://${SERVER_IP}:8000/login${NC}"
         fi
+    else
+        # 自动化模式 (海外/大陆)
+        echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC}"
     fi
     
     echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
@@ -1110,11 +1104,20 @@ run_automated_install() {
     
     if [[ "$install_type" == "mainland" ]]; then
         log_info "正在为大陆服务器自动配置最快镜像源..."
-        fn_test_mirrors
-        if [ ${#BEST_MIRRORS[@]} -gt 0 ]; then
-            local mirrors_json_array; mirrors_json_array=$(printf '"%s",' "${BEST_MIRRORS[@]}" | sed 's/,$//')
-            DAEMON_JSON_PARTS+=("\"registry-mirrors\": [${mirrors_json_array}]")
-            log_success "已自动选择最快的镜像源。"
+        local test_results; test_results=$(fn_internal_test_mirrors)
+        if [[ "$test_results" != "OFFICIAL_HUB_OK" && -n "$test_results" ]]; then
+            local best_mirrors; best_mirrors=($(echo -e "$test_results" | head -n 5 | cut -d'|' -f2))
+            if [ ${#best_mirrors[@]} -gt 0 ]; then
+                log_success "将自动配置最快的 ${#best_mirrors[@]} 个镜像源。"
+                local mirrors_json_array; mirrors_json_array=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
+                DAEMON_JSON_PARTS+=("\"registry-mirrors\": [${mirrors_json_array}]")
+            else
+                log_warn "所有备用镜像均测试失败！将不配置镜像加速。"
+            fi
+        elif [[ "$test_results" == "OFFICIAL_HUB_OK" ]]; then
+            log_success "官方 Docker Hub 可用，无需配置镜像加速。"
+        else
+            log_warn "所有备用镜像均测试失败！将不配置镜像加速。"
         fi
     else
         log_info "海外服务器，跳过镜像加速配置。"
