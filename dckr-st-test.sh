@@ -745,6 +745,61 @@ fn_pull_sillytavern_image() {
     fn_pull_image_with_progress "$SILLY_TAVERN_IMAGE"
 }
 
+fn_monitor_network_speed() {
+    local pid=$1
+    local interface
+    interface=$(ip route | awk '/default/ {print $5}' | head -n1)
+    if [ -z "$interface" ]; then
+        log_warn "无法自动检测到网络接口，速度监控将不可用。"
+        # Just wait for the process to finish without monitoring
+        wait "$pid"
+        return
+    fi
+
+    local rx_bytes_path="/sys/class/net/${interface}/statistics/rx_bytes"
+    if [ ! -f "$rx_bytes_path" ]; then
+        log_warn "找不到网络统计文件 (${rx_bytes_path})，速度监控将不可用。"
+        wait "$pid"
+        return
+    fi
+
+    log_info "正在监控网络接口 [${interface}] 的下行速度..."
+    local old_rx_bytes; old_rx_bytes=$(cat "$rx_bytes_path")
+    local old_time; old_time=$(date +%s.%N)
+
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep 1
+        local new_rx_bytes; new_rx_bytes=$(cat "$rx_bytes_path")
+        local new_time; new_time=$(date +%s.%N)
+        
+        local time_diff; time_diff=$(echo "$new_time - $old_time" | bc)
+        local byte_diff; byte_diff=$((new_rx_bytes - old_rx_bytes))
+
+        if (( $(echo "$time_diff > 0" | bc -l) )); then
+            local speed_bps; speed_bps=$(echo "scale=2; $byte_diff / $time_diff" | bc)
+            # Handle case where speed is 0 to avoid division by zero in subsequent bc calls if needed
+            if (( $(echo "$speed_bps == 0" | bc -l) )); then
+                printf "  当前下行速度: ${YELLOW}0.00 KB/s${NC}   \r"
+            else
+                local speed_kbps; speed_kbps=$(echo "scale=2; $speed_bps / 1024" | bc)
+                local speed_mbps; speed_mbps=$(echo "scale=2; $speed_kbps / 1024" | bc)
+
+                if (( $(echo "$speed_mbps >= 1" | bc -l) )); then
+                    printf "  当前下行速度: ${YELLOW}%.2f MB/s${NC}  \r" "$speed_mbps"
+                else
+                    printf "  当前下行速度: ${YELLOW}%.2f KB/s${NC}  \r" "$speed_kbps"
+                fi
+            fi
+        fi
+        
+        old_rx_bytes=$new_rx_bytes
+        old_time=$new_time
+    done
+    
+    # Clear the speed line
+    echo -e "                                           \r"
+}
+
 fn_pull_image_with_progress() {
     local image_to_pull="$1"
     if [ -z "$image_to_pull" ]; then
@@ -767,20 +822,43 @@ fn_pull_image_with_progress() {
 EOF
 )
     
-    # 清屏并显示预估时间
     clear || true
     echo -e "${time_estimate_table}"
-    echo -e "\n${CYAN}--- 开始拉取镜像，请关注 Docker 原生进度条 ---${NC}"
+    echo -e "\n${CYAN}--- 开始拉取镜像，下方将实时显示网速与 Docker 日志 ---${NC}"
 
-    # 直接在前台执行 pull 命令，以便显示原生进度条
-    if ! docker pull "$image_to_pull"; then
-        # 拉取失败
-        echo # 添加一个换行
-        fn_print_error "Docker 镜像拉取失败！请检查网络连接、镜像名称 (${image_to_pull}) 是否正确或 Docker 服务状态。"
+    local PULL_LOG
+    PULL_LOG=$(mktemp)
+    # Ensure log is cleaned up on script exit
+    trap 'rm -f "$PULL_LOG"' EXIT
+
+    # Run pull in the background, redirecting all output to the log file
+    docker pull "$image_to_pull" > "$PULL_LOG" 2>&1 &
+    local pid=$!
+
+    # Run speed monitor in the foreground
+    fn_monitor_network_speed "$pid"
+
+    # Wait for the pull command to finish and get its exit code
+    wait "$pid"
+    local exit_code=$?
+    # Disable the trap now that we're handling the log file manually
+    trap - EXIT
+
+    echo # Newline for clean output
+
+    if [ $exit_code -ne 0 ]; then
+        log_error "Docker 镜像拉取失败！"
+        echo -e "${YELLOW}以下是来自 Docker 的原始错误日志：${NC}"
+        echo "--------------------------------------------------"
+        cat "$PULL_LOG"
+        echo "--------------------------------------------------"
+        rm -f "$PULL_LOG"
+        fn_print_error "请根据以上日志排查问题，可能原因包括网络不通、镜像源失效或 Docker 服务异常。"
     else
-        # 拉取成功
-        echo # 添加一个换行
         log_success "镜像 ${image_to_pull} 拉取成功！"
+        echo -e "${CYAN}--- Docker 拉取日志详情 ---${NC}"
+        cat "$PULL_LOG"
+        rm -f "$PULL_LOG"
     fi
 }
 
