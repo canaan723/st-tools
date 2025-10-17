@@ -666,14 +666,11 @@ fn_check_dependencies() {
         if [[ "$DOCKER_STATUS" == "Not Found" || "$COMPOSE_STATUS" == "Not Found" ]]; then
             if [ "$IS_DEBIAN_LIKE" = true ]; then
                 log_warn "未检测到 Docker 或 Docker-Compose。"
-                read -rp "是否立即尝试自动安装 Docker? [Y/n]: " confirm_install_docker < /dev/tty
-                if [[ "${confirm_install_docker:-y}" =~ ^[Yy]$ ]]; then
-                    log_action "正在使用官方推荐脚本安装 Docker..."
-                    bash <(curl -sSL https://linuxmirrors.cn/docker.sh)
-                    continue
-                else
-                    fn_print_error "用户选择不安装 Docker，脚本无法继续。"
-                fi
+                log_warn "未检测到 Docker 或 Docker-Compose。"
+                read -rp "按 Enter 键将继续自动安装 Docker (或按 Ctrl+C 退出脚本)..." < /dev/tty
+                log_action "正在使用官方推荐脚本安装 Docker..."
+                bash <(curl -sSL https://linuxmirrors.cn/docker.sh)
+                continue
             else
                 fn_print_error "未检测到 Docker 或 Docker-Compose。请在您的系统 (${DETECTED_OS}) 上手动安装它们后重试。"
             fi
@@ -887,8 +884,8 @@ fn_create_project_structure() {
 fn_confirm_and_delete_dir() {
     local dir_to_delete="$1" container_name="$2"
     log_warn "目录 '$dir_to_delete' 已存在，可能包含旧数据。"
-    read -r -p "确定要【彻底清理】并继续吗？此操作会删除旧容器和数据！[y/N]: " c1 < /dev/tty
-    if [[ ! "$c1" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。"; fi
+    log_warn "为了进行全新安装，必须清理该目录。此操作不可逆！"
+    read -r -p "按 Enter 键确认【彻底清理】并继续 (或按 Ctrl+C 退出脚本)..." < /dev/tty
     read -r -p "$(echo -e "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}")" c3 < /dev/tty
     if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。"; fi
     docker stop "$container_name" > /dev/null 2>&1 || true
