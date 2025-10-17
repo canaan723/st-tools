@@ -756,10 +756,6 @@ fn_pull_image_with_progress() {
 
     log_action "正在拉取镜像: ${image_to_pull}"
     
-    local PULL_LOG
-    PULL_LOG=$(mktemp)
-    trap 'rm -f "$PULL_LOG"' EXIT
-
     local time_estimate_table
     time_estimate_table=$(cat <<EOF
   下载速度取决于网络带宽，以下为预估时间参考：
@@ -774,30 +770,19 @@ fn_pull_image_with_progress() {
 EOF
 )
     
-    docker pull "$image_to_pull" > "$PULL_LOG" 2>&1 &
-    local pid=$!
-    while kill -0 $pid 2>/dev/null; do
-        clear || true 
-        echo -e "${time_estimate_table}"
-        echo -e "\n${CYAN}--- 实时拉取进度 (镜像: ${image_to_pull}) ---${NC}"
-        grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists' "$PULL_LOG" | tail -n 10 || true
-        sleep 1
-    done
-    
-    wait $pid
-    local exit_code=$?
-    trap - EXIT
-
+    # 清屏并显示预估时间
     clear || true
+    echo -e "${time_estimate_table}"
+    echo -e "\n${CYAN}--- 开始拉取镜像，请关注 Docker 原生进度条 ---${NC}"
 
-    if [ $exit_code -ne 0 ]; then
-        echo -e "${RED}Docker 镜像拉取失败！${NC}" >&2
-        echo -e "${YELLOW}以下是来自 Docker 的原始错误日志：${NC}" >&2
-        cat "$PULL_LOG" >&2
-        rm -f "$PULL_LOG"
-        fn_print_error "请根据以上日志排查问题，可能原因包括网络不通、镜像源失效或 Docker 服务异常。"
+    # 直接在前台执行 pull 命令，以便显示原生进度条
+    if ! docker pull "$image_to_pull"; then
+        # 拉取失败
+        echo # 添加一个换行
+        fn_print_error "Docker 镜像拉取失败！请检查网络连接、镜像名称 (${image_to_pull}) 是否正确或 Docker 服务状态。"
     else
-        rm -f "$PULL_LOG"
+        # 拉取成功
+        echo # 添加一个换行
         log_success "镜像 ${image_to_pull} 拉取成功！"
     fi
 }
