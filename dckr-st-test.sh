@@ -252,9 +252,13 @@ fn_apply_docker_optimization() {
     local final_json_content
     final_json_content=$(printf ", %s" "${DAEMON_JSON_PARTS[@]}")
     final_json_content="{ ${final_json_content:2} }" # Remove leading comma and space
-
+ 
     local DAEMON_JSON="/etc/docker/daemon.json"
     log_action "正在应用 Docker 优化配置..."
+    # --- DEBUG START ---
+    echo -e "\n${CYAN}[DEBUG] 最终将写入 /etc/docker/daemon.json 的内容如下:${NC}"
+    echo -e "${YELLOW}${final_json_content}${NC}\n"
+    # --- DEBUG END ---
     # Note: This implementation overwrites existing daemon.json.
     # A more advanced version could merge JSON objects.
     echo "$final_json_content" | sudo tee "$DAEMON_JSON" > /dev/null
@@ -1105,8 +1109,17 @@ run_automated_install() {
     if [[ "$install_type" == "mainland" ]]; then
         log_info "正在为大陆服务器自动配置最快镜像源..."
         local test_results; test_results=$(fn_internal_test_mirrors)
+        # --- DEBUG START ---
+        echo -e "\n${CYAN}[DEBUG] 测速函数 (fn_internal_test_mirrors) 返回的原始结果:${NC}"
+        echo -e "${YELLOW}${test_results}${NC}\n"
+        # --- DEBUG END ---
         if [[ "$test_results" != "OFFICIAL_HUB_OK" && -n "$test_results" ]]; then
-            local best_mirrors; best_mirrors=($(echo -e "$test_results" | head -n 5 | cut -d'|' -f2))
+            local mirrors_to_process; mirrors_to_process=$(echo -e "$test_results" | head -n 5 | cut -d'|' -f2)
+            # --- DEBUG START ---
+            echo -e "\n${CYAN}[DEBUG] 经过 head 和 cut 处理后，准备放入数组的镜像列表:${NC}"
+            echo -e "${YELLOW}${mirrors_to_process}${NC}\n"
+            # --- DEBUG END ---
+            local best_mirrors; best_mirrors=($mirrors_to_process)
             if [ ${#best_mirrors[@]} -gt 0 ]; then
                 log_success "将自动配置最快的 ${#best_mirrors[@]} 个镜像源。"
                 local mirrors_json_array; mirrors_json_array=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
