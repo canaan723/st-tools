@@ -599,24 +599,31 @@ fn_get_cleaned_version_num() { echo "$1" | grep -oE '[0-9]+(\.[0-9]+)+' | head -
 
 fn_ensure_docker_running() {
     # Use `docker info` as a reliable check for daemon connectivity.
-    if ! docker info > /dev/null 2>&1; then
-        log_warn "无法连接到 Docker daemon。这可能是因为它没有运行或已经停止。"
-        if command -v systemctl &> /dev/null; then
-            log_action "正在尝试使用 systemctl 启动 Docker 服务..."
-            systemctl start docker
-            # Wait a few seconds to give the daemon time to initialize.
-            sleep 5
-            if ! docker info > /dev/null 2>&1; then
-                fn_print_error "尝试启动 Docker 服务失败。请手动执行 'systemctl status docker' 来诊断问题。"
-            else
-                log_success "Docker 服务已成功启动。"
-            fi
-        else
-            # Fallback for non-systemd systems, though the script is Debian-focused.
-            log_warn "未找到 systemctl 命令。无法自动启动 Docker。请确保 Docker 服务正在运行。"
-        fi
-    else
+    if docker info > /dev/null 2>&1; then
         log_info "Docker daemon 状态正常，连接成功。"
+        return 0
+    fi
+
+    log_warn "无法连接到 Docker daemon。这可能是因为它没有运行或已经停止。"
+    
+    if ! command -v systemctl &> /dev/null; then
+        # This case is for non-systemd systems.
+        fn_print_error "Docker 服务未运行，且系统中未找到 systemctl 命令，无法自动启动。请在手动启动 Docker 后重试。"
+        return 1
+    fi
+
+    log_action "正在尝试使用 systemctl 启动 Docker 服务..."
+    # Use `|| true` to prevent `set -e` from exiting the script if systemctl fails.
+    systemctl start docker > /dev/null 2>&1 || true
+    
+    log_info "等待 5 秒以确保 Docker 服务完成初始化..."
+    sleep 5
+
+    if ! docker info > /dev/null 2>&1; then
+        # The daemon is still not running. Now we give the user the specific systemd commands.
+        fn_print_error "尝试启动 Docker 服务后，仍然无法连接到 Docker daemon。这通常意味着 Docker 服务本身存在配置问题或已损坏。请在终端中手动执行以下命令来诊断根本原因：\n\n  1. ${YELLOW}systemctl status docker.service${NC}\n  2. ${YELLOW}journalctl -xeu docker.service${NC}\n\n根据错误信息修复 Docker 后，再重新运行本脚本。"
+    else
+        log_success "Docker 服务已成功启动。"
     fi
 }
  
