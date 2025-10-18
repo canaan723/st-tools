@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# 咕咕助手 v2.44test
+# 咕咕助手 v2.45test
 # 作者: 清绝 | 网址: blog.qjyg.de
 
 # --- [核心] 确保脚本由 Bash 执行 ---
@@ -57,7 +57,7 @@ log_step() { echo -e "\n${BLUE}--- $1: $2 ---${NC}"; }
 log_success() { echo -e "${GREEN}✓ $1${NC}"; }
 
 fn_show_main_header() {
-    echo -e "${YELLOW}>>${GREEN} 咕咕助手 v2.44test${NC}"
+    echo -e "${YELLOW}>>${GREEN} 咕咕助手 v2.45test${NC}"
     echo -e "   ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
 }
 
@@ -100,29 +100,54 @@ fn_check_base_deps() {
 # 全局数组，用于存储 daemon.json 的配置项
 DAEMON_JSON_PARTS=()
 
+# 全局数组，定义所有可用的 Docker 镜像源
+readonly DOCKER_MIRRORS=(
+    "https://docker.1ms.run (北京)"
+    "https://hub1.nat.tf (上海)"
+    "https://docker.1panel.live (北京)"
+    "https://dockerproxy.1panel.live (北京)"
+    "https://hub.rat.dev"
+    "https://docker.m.ixdev.cn (北京)"
+    "https://hub2.nat.tf"
+    "https://docker.1panel.dev"
+    "https://docker.amingg.com (腾讯广州)"
+    "https://docker.xuanyuan.me (腾讯上海)"
+    "https://dytt.online"
+    "https://lispy.org"
+    "https://docker.xiaogenban1993.com"
+    "https://docker-0.unsee.tech"
+    "https://666860.xyz"
+    "https://hubproxy-advj.onrender.com"
+)
+
 # Internal function to test Docker mirrors and return sorted results
 fn_internal_test_mirrors() {
     log_info "正在自动检测 Docker 镜像源可用性..."
-    local mirrors=(
-        "docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live"
-        "https://dockerproxy.1panel.live" "https://hub.rat.dev" "https://docker.m.ixdev.cn"
-        "https://hub2.nat.tf" "https://docker.1panel.dev" "https://docker.amingg.com" "https://docker.xuanyuan.me"
-        "https://dytt.online" "https://lispy.org" "https://docker.xiaogenban1993.com"
-        "https://docker-0.unsee.tech" "https://666860.xyz" "https://hubproxy-advj.onrender.com"
-    )
+    # 将官方源和全局镜像列表合并进行测试
+    local mirrors_to_test=("docker.io" "${DOCKER_MIRRORS[@]}")
+
     docker rmi hello-world > /dev/null 2>&1 || true
     local results=""; local official_hub_ok=false
-    for mirror in "${mirrors[@]}"; do
-        local pull_target="hello-world"; local display_name="$mirror"; local timeout_duration=10
-        if [[ "$mirror" == "docker.io" ]]; then timeout_duration=15; display_name="Official Docker Hub"; else pull_target="${mirror#https://}/library/hello-world"; fi
+    for full_mirror_entry in "${mirrors_to_test[@]}"; do
+        # 从 "https://url.com (描述)" 中提取 URL
+        local mirror_url; mirror_url=$(echo "$full_mirror_entry" | awk '{print $1}')
+        
+        local pull_target="hello-world"; local display_name="$full_mirror_entry"; local timeout_duration=10
+        if [[ "$mirror_url" == "docker.io" ]]; then
+            timeout_duration=15
+            display_name="Official Docker Hub"
+        else
+            pull_target="${mirror_url#https://}/library/hello-world"
+        fi
+        
         echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..."
         local start_time; start_time=$(date +%s.%N)
         if (timeout -k 15 "$timeout_duration" docker pull "$pull_target" >/dev/null) 2>/dev/null; then
             local end_time; end_time=$(date +%s.%N); local duration; duration=$(echo "$end_time - $start_time" | bc)
             printf " ${GREEN}%.2f 秒${NC}\n" "$duration"
-            if [[ "$mirror" != "docker.io" ]]; then results+="${duration}|${mirror}|${display_name}\n"; fi
+            if [[ "$mirror_url" != "docker.io" ]]; then results+="${duration}|${mirror_url}|${display_name}\n"; fi
             docker rmi "$pull_target" > /dev/null 2>&1 || true
-            if [[ "$mirror" == "docker.io" ]]; then official_hub_ok=true; break; fi
+            if [[ "$mirror_url" == "docker.io" ]]; then official_hub_ok=true; break; fi
         else
             echo -e " ${RED}超时或失败${NC}"
         fi
@@ -133,7 +158,9 @@ fn_internal_test_mirrors() {
         echo "OFFICIAL_HUB_OK"
     else
         # Return the sorted results
-        echo -e "$results" | grep '.' | LC_ALL=C sort -n
+        if [ -n "$results" ]; then
+            echo -e "$results" | grep '.' | LC_ALL=C sort -n
+        fi
     fi
 }
 
@@ -174,7 +201,7 @@ fn_configure_docker_mirrors() {
             else
                 log_warn "官方 Docker Hub 连接失败，将自动从可用备用镜像中配置最快的源。"
                 if [ -n "$test_results" ]; then
-                    local best_mirrors; best_mirrors=($(echo -e "$test_results" | head -n 5 | cut -d'|' -f2))
+                    local best_mirrors; best_mirrors=($(echo -e "$test_results" | head -n 1 | cut -d'|' -f2))
                     log_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
                     mirrors_json_array=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
                 else
@@ -183,23 +210,16 @@ fn_configure_docker_mirrors() {
             fi
             ;;
         2)
-            local available_mirrors=(
-                "https://docker.1ms.run (北京)"
-                "https://hub1.nat.tf (上海)"
-                "https://docker.1panel.live (北京)"
-                "https://docker.m.ixdev.cn (北京)"
-                "https://docker.amingg.com (腾讯广州)"
-                "https://docker.xuanyuan.me (腾讯上海)"
-            )
             log_action "请从以下列表中选择一个或多个镜像源 (用空格分隔序号):"
-            for i in "${!available_mirrors[@]}"; do
-                echo "  [$((i+1))] ${available_mirrors[$i]}"
+            for i in "${!DOCKER_MIRRORS[@]}"; do
+                echo "  [$((i+1))] ${DOCKER_MIRRORS[$i]}"
             done
             read -rp "请输入序号: " -a selected_indices < /dev/tty
             local selected_mirrors=()
             for index in "${selected_indices[@]}"; do
-                if [[ "$index" =~ ^[0-9]+$ ]] && [ "$index" -ge 1 ] && [ "$index" -le "${#available_mirrors[@]}" ]; then
-                    selected_mirrors+=("$(echo "${available_mirrors[$((index-1))]}" | awk '{print $1}')")
+                if [[ "$index" =~ ^[0-9]+$ ]] && [ "$index" -ge 1 ] && [ "$index" -le "${#DOCKER_MIRRORS[@]}" ]; then
+                    # 从 "https://url.com (描述)" 中提取 URL
+                    selected_mirrors+=("$(echo "${DOCKER_MIRRORS[$((index-1))]}" | awk '{print $1}')")
                 fi
             done
             if [ ${#selected_mirrors[@]} -gt 0 ]; then
@@ -1138,8 +1158,8 @@ run_automated_install() {
         log_info "正在为大陆服务器自动配置最快镜像源..."
         local test_results; test_results=$(fn_internal_test_mirrors)
         if [[ "$test_results" != "OFFICIAL_HUB_OK" && -n "$test_results" ]]; then
-            # 使用 awk 更稳定地提取镜像地址，并限制最多3个
-            local best_mirrors_str; best_mirrors_str=$(echo -e "$test_results" | awk -F'|' '{print $2}' | head -n 3)
+            # 使用 awk 更稳定地提取镜像地址，并限制最多1个
+            local best_mirrors_str; best_mirrors_str=$(echo -e "$test_results" | awk -F'|' '{print $2}' | head -n 1)
             # 使用 mapfile 或 read -a 是更安全的做法，避免 word splitting 问题
             read -r -d '' -a best_mirrors < <(printf '%s\n' "$best_mirrors_str")
             
