@@ -294,6 +294,10 @@ done
     log_step "步骤 7" "优化内核参数并创建Swap"
     log_info "目的: 启用BBR优化网络，并创建Swap防止内存溢出。"
     log_action "正在向 /etc/sysctl.conf 添加配置..."
+    if [ ! -f /etc/sysctl.conf ]; then
+        echo "[INFO] /etc/sysctl.conf 不存在，正在创建..."
+        touch /etc/sysctl.conf
+    fi
     sed -i -e '/net.core.default_qdisc=fq/d' \
            -e '/net.ipv4.tcp_congestion_control=bbr/d' \
            -e '/vm.swappiness=10/d' /etc/sysctl.conf
