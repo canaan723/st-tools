@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # 作者: 清绝 | 网址: blog.qjyg.de
-# 清绝咕咕助手 v2.6
+# 清绝咕咕助手 v2.4
 
 BOLD=$'\e[1m'
 CYAN=$'\e[1;36m'
@@ -42,7 +42,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.6${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.4${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
 }
 
@@ -1211,7 +1211,6 @@ fn_update_st() {
             
             if [[ "$confirm_choice" =~ ^[nN]$ ]]; then
                 fn_print_warning "已取消更新。"
-                # 用户取消，直接跳出循环，不再尝试其他镜像
                 break
             fi
 
@@ -1227,7 +1226,6 @@ fn_update_st() {
             else
                 fn_print_error "强制覆盖失败！"
             fi
-            # 无论成功与否，处理完冲突后都应跳出循环
             break
         else
             fn_print_error "使用线路 [${mirror_host}] 更新失败，正在切换..."
@@ -1713,7 +1711,6 @@ fi
 
 git config --global --add safe.directory '*' 2>/dev/null || true
 
-# 新增：版本管理菜单
 fn_menu_version_management() {
     while true; do
         clear

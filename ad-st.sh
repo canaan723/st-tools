@@ -1,13 +1,13 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # 作者: 清绝 | 网址: blog.qjyg.de
-# 清绝咕咕助手 v2.3
+# 清绝咕咕助手 v2.4
 
-BOLD='\033[1m'
-CYAN='\033[1;36m'
-GREEN='\033[1;32m'
-YELLOW='\033[1;33m'
-RED='\033[1;31m'
-NC='\033[0m'
+BOLD=$'\e[1m'
+CYAN=$'\e[1;36m'
+GREEN=$'\e[1;32m'
+YELLOW=$'\e[1;33m'
+RED=$'\e[1;31m'
+NC=$'\e[0m'
 
 ST_DIR="$HOME/SillyTavern"
 BACKUP_ROOT_DIR="$HOME/SillyTavern_Backups"
@@ -42,7 +42,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.3${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.4${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
 }
 
@@ -879,7 +879,7 @@ fn_menu_advanced_sync() {
 
 fn_menu_git_sync() {
     if [ ! -f "$ST_DIR/start.sh" ]; then
-        fn_print_warning "SillyTavern 尚未安装，无法使用数据同步功能。\n请先返回主菜单选择 [首次部署]。"
+        fn_print_warning "酒馆尚未安装，无法使用数据同步功能。\n请先返回主菜单选择 [首次部署]。"
         fn_press_any_key
         return
     fi
@@ -978,29 +978,29 @@ fn_menu_proxy() {
 
 fn_start_st() {
     clear
-    fn_print_header "启动 SillyTavern"
+    fn_print_header "启动酒馆"
     if [ ! -f "$ST_DIR/start.sh" ]; then
-        fn_print_warning "SillyTavern 尚未安装，请先部署。"
+        fn_print_warning "酒馆尚未安装，请先部署。"
         fn_press_any_key
         return
     fi
-    cd "$ST_DIR" || fn_print_error_exit "无法进入 SillyTavern 目录。"
+    cd "$ST_DIR" || fn_print_error_exit "无法进入酒馆目录。"
     echo -e "正在配置NPM镜像并准备启动环境..."
     npm config set registry https://registry.npmmirror.com
-    echo -e "${YELLOW}环境准备就绪，正在启动SillyTavern服务...${NC}"
+    echo -e "${YELLOW}环境准备就绪，正在启动酒馆服务...${NC}"
     echo -e "${YELLOW}首次启动或更新后会自动安装依赖，耗时可能较长...${NC}"
     bash start.sh
-    echo -e "\n${YELLOW}SillyTavern 已停止运行。${NC}"
+    echo -e "\n${YELLOW}酒馆已停止运行。${NC}"
     fn_press_any_key
 }
 
 fn_create_zip_backup() {
     local backup_type="$1"
     if [ ! -d "$ST_DIR" ]; then
-        fn_print_error "SillyTavern 目录不存在，无法创建本地备份。"
+        fn_print_error "酒馆目录不存在，无法创建本地备份。"
         return 1
     fi
-    cd "$ST_DIR" || { fn_print_error "无法进入 SillyTavern 目录进行备份。"; return 1; }
+    cd "$ST_DIR" || { fn_print_error "无法进入酒馆目录进行备份。"; return 1; }
     
     local default_paths=("./data" "./public/scripts/extensions/third-party" "./plugins" "./config.yaml")
     local paths_to_backup=()
@@ -1069,7 +1069,7 @@ fn_install_st() {
         auto_start=false
     fi
     clear
-    fn_print_header "SillyTavern 部署向导"
+    fn_print_header "酒馆部署向导"
     if [[ "$auto_start" == "true" ]]; then
         while true; do
             if ! fn_update_termux_source; then
@@ -1087,57 +1087,56 @@ fn_install_st() {
         yes | pkg install git nodejs-lts rsync zip unzip termux-api coreutils gawk bc || fn_print_error_exit "核心依赖安装失败！"
         fn_print_success "核心依赖安装完毕。"
     fi
-    fn_print_header "3/5: 下载 ST 主程序"
+    fn_print_header "3/5: 下载酒馆主程序"
     if [ -f "$ST_DIR/start.sh" ]; then
-        fn_print_warning "检测到完整的 SillyTavern 安装，跳过下载。"
+        fn_print_warning "检测到完整的酒馆安装，跳过下载。"
     elif [ -d "$ST_DIR" ] && [ -n "$(ls -A "$ST_DIR")" ]; then
         fn_print_error_exit "目录 $ST_DIR 已存在但安装不完整。请手动删除该目录后再试。"
     else
         local download_success=false
-        local mirrors_to_try=()
-        
-        mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "official_only")
-        
-        if [ ${#mirrors_to_try[@]} -eq 0 ]; then
-            mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "mirrors_only")
+        local full_retest_attempted=false
+        while ! $download_success; do
+            local mirrors_to_try=()
+            if [ "$full_retest_attempted" = false ]; then
+                mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "official_only")
+                if [ ${#mirrors_to_try[@]} -eq 0 ]; then
+                    mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "mirrors_only")
+                fi
+            else
+                mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "all")
+            fi
+
             if [ ${#mirrors_to_try[@]} -eq 0 ]; then
-                 read -p $'\n'"${RED}所有 Git 镜像均测试失败。是否重新测速并重试？(直接回车=是, 输入n=否): ${NC}" retry_choice
+                read -p $'\n'"${RED}所有线路均测试失败。是否重新测速并重试？(直接回车=是, 输入n=否): ${NC}" retry_choice
                 if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
                     fn_print_error_exit "下载失败，用户取消操作。"
-                else
-                    fn_print_warning "请重新选择部署选项以重试。"
-                    fn_press_any_key
-                    return
                 fi
+                full_retest_attempted=false
+                continue
             fi
-        fi
 
-        while ! $download_success; do
             for mirror_url in "${mirrors_to_try[@]}"; do
                 local mirror_host
                 mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
                 fn_print_warning "正在尝试从镜像 [${mirror_host}] 下载 (${REPO_BRANCH} 分支)..."
-                if git clone --depth 1 -b "$REPO_BRANCH" "$mirror_url" "$ST_DIR"; then
+                local git_output
+                git_output=$(git clone --depth 1 -b "$REPO_BRANCH" "$mirror_url" "$ST_DIR" 2>&1)
+                if [ $? -eq 0 ]; then
                     fn_print_success "主程序下载完成。"
                     download_success=true
                     break
                 else
-                    fn_print_error "使用镜像 [${mirror_host}] 下载失败！正在切换..."
+                    fn_print_error "使用镜像 [${mirror_host}] 下载失败！Git输出: $(echo "$git_output" | tail -n 2)"
                     rm -rf "$ST_DIR"
                 fi
             done
 
             if ! $download_success; then
-                fn_print_error "已尝试所有预选线路，但下载均失败。"
-                fn_print_warning "将进行全量测速并重试所有可用线路..."
-                mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "all")
-                if [ ${#mirrors_to_try[@]} -eq 0 ]; then
-                    read -p $'\n'"${RED}全量测速后未找到任何可用线路。是否重新测速并重试？(直接回车=是, 输入n=否): ${NC}" retry_choice
-                    if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
-                        fn_print_error_exit "下载失败，用户取消操作。"
-                    fi
+                if [ "$full_retest_attempted" = false ]; then
+                    full_retest_attempted=true
+                    fn_print_error "预选线路均下载失败。将进行全量测速并重试所有可用线路..."
                 else
-                    continue
+                    fn_print_error "已尝试所有可用线路，下载均失败。"
                 fi
             fi
         done
@@ -1148,7 +1147,7 @@ fn_install_st() {
             fn_print_error_exit "依赖安装最终失败，部署中断。"
         fi
     else
-        fn_print_warning "SillyTavern 目录不存在，跳过此步。"
+        fn_print_warning "酒馆目录不存在，跳过此步。"
     fi
     if $auto_start; then
         fn_print_header "5/5: 设置快捷方式与自启"
@@ -1164,162 +1163,238 @@ fn_install_st() {
 
 fn_update_st() {
     clear
-    fn_print_header "更新 SillyTavern 主程序"
+    fn_print_header "更新酒馆"
     if [ ! -d "$ST_DIR/.git" ]; then
         fn_print_warning "未找到Git仓库，请先完整部署。"
         fn_press_any_key
         return
     fi
-    cd "$ST_DIR" || fn_print_error_exit "无法进入 SillyTavern 目录: $ST_DIR"
+    cd "$ST_DIR" || fn_print_error_exit "无法进入酒馆目录: $ST_DIR"
 
-    local update_success=false
-    local github_url="https://github.com/SillyTavern/SillyTavern.git"
+    local mirrors_to_try=()
+    mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "official_only")
+    if [ ${#mirrors_to_try[@]} -eq 0 ]; then
+        mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "mirrors_only")
+    fi
+    if [ ${#mirrors_to_try[@]} -eq 0 ]; then
+        fn_print_error "所有线路均测试失败，无法更新。"
+        fn_press_any_key
+        return
+    fi
 
-    handle_merge_conflict() {
-        local git_output="$1"
-        clear
-        fn_print_header "检测到更新冲突！"
-        fn_print_warning "原因: 你可能修改过酒馆的文件，导致无法自动合并新版本。"
-        echo "--- 冲突文件预览 ---"
-        echo "$git_output" | grep -E "^\s+" | head -n 5
-        echo "--------------------"
-        echo -e "\n请选择操作方式：\n  [${GREEN}回车${NC}] ${BOLD}自动备份并重新安装 (推荐)${NC}\n  [1]    ${YELLOW}强制覆盖更新 (危险)${NC}\n  [0]    ${CYAN}放弃更新${NC}"
-        read -p "请输入选项: " choice
-        case "$choice" in
-        "" | 'b' | 'B')
+    local pull_succeeded=false
+    for mirror_url in "${mirrors_to_try[@]}"; do
+        local mirror_host
+        mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
+        fn_print_warning "正在尝试使用线路 [${mirror_host}] 更新..."
+        git remote set-url origin "$mirror_url" >/dev/null 2>&1
+
+        local git_output
+        git_output=$(git pull origin "$REPO_BRANCH" --allow-unrelated-histories 2>&1)
+        local exit_code=$?
+
+        if [ $exit_code -eq 0 ]; then
+            if [[ "$git_output" == *"Already up to date."* ]]; then
+                fn_print_success "代码已是最新，无需更新。"
+            else
+                fn_print_success "代码更新成功。"
+            fi
+            pull_succeeded=true
+            break
+        elif echo "$git_output" | grep -qE "overwritten by merge|Please commit|unmerged files|Pulling is not possible"; then
             clear
-            fn_print_header "步骤 1/5: 创建本地备份"
-            local data_backup_zip_path
-            data_backup_zip_path=$(fn_create_zip_backup "更新前")
-            if [ $? -ne 0 ] || [ -z "$data_backup_zip_path" ]; then
-                fn_print_error_exit "本地备份创建失败，更新流程终止。"
+            fn_print_header "检测到更新冲突"
+            fn_print_warning "原因: 您可能修改过酒馆的文件，导致无法自动合并新版本。"
+            echo -e "\n--- 冲突文件预览 ---\n$(echo "$git_output" | grep -E '^\s+' | head -n 5)\n--------------------"
+            echo -e "\n${CYAN}此操作将放弃您对代码文件的修改，但不会影响您的用户数据 (如聊天记录、角色卡等)。${NC}"
+            read -p "是否要强制覆盖本地修改以完成更新？(直接回车=是, 输入n=否): " confirm_choice
+            
+            if [[ "$confirm_choice" =~ ^[nN]$ ]]; then
+                fn_print_warning "已取消更新。"
+                break
             fi
-            
-            fn_print_header "步骤 2/5: 完整备份当前目录"
-            local renamed_backup_dir="${ST_DIR}_backup_$(date +%Y%m%d%H%M%S)"
-            cd "$HOME"
-            mv "$ST_DIR" "$renamed_backup_dir" || fn_print_error_exit "备份失败！请检查权限或手动重命名后重试。"
-            fn_print_success "旧目录已完整备份为: $(basename "$renamed_backup_dir")"
-            
-            fn_print_header "步骤 3/5: 下载并安装新版 SillyTavern"
-            fn_install_st "no-start"
-            if [ ! -d "$ST_DIR" ]; then
-                fn_print_error_exit "新版本安装失败，流程终止。"
-            fi
-            
-            fn_print_header "步骤 4/5: 自动恢复用户数据"
-            fn_print_warning "正在将备份数据解压至新目录..."
-            if ! unzip -o "$data_backup_zip_path" -d "$ST_DIR" >/dev/null 2>&1; then
-                fn_print_error_exit "数据恢复失败！请检查zip文件是否有效。"
-            fi
-            fn_print_success "用户数据已成功恢复到新版本中。"
-            
-            fn_print_header "步骤 5/5: 更新完成，请确认"
-            fn_print_success "SillyTavern 已更新并恢复数据！"
-            fn_print_warning "请注意:\n  - 您的聊天记录、角色卡、插件和设置已恢复。\n  - 如果您曾手动修改过酒馆核心文件(如 server.js)，这些修改需要您重新操作。\n  - 您的完整旧版本已备份在: ${CYAN}$(basename "$renamed_backup_dir")${NC}\n  - 本次恢复所用的核心本地备份位于: ${CYAN}$(basename "$data_backup_zip_path")${NC}"
-            echo -e "\n${CYAN}请按任意键，启动更新后的 SillyTavern...${NC}"
-            read -n 1 -s
-            fn_start_st
-            exit 0
-            ;;
-        '1')
+
             fn_print_warning "正在执行强制覆盖 (git reset --hard)..."
-            if git reset --hard "origin/$REPO_BRANCH" && git pull origin "$REPO_BRANCH"; then
-                fn_print_success "强制更新成功。"
-                if fn_run_npm_install; then
-                    update_success=true
-                fi
-            else
-                fn_print_error "强制更新失败！"
-            fi
-            return 1
-            ;;
-        *) 
-            fn_print_warning "已取消更新。"
-            return 1
-            ;;
-        esac
-    }
-
-    while ! $update_success; do
-        local mirrors_to_try=()
-        local pull_succeeded_this_round=false
-
-        fn_print_warning "正在尝试使用官方源 [github.com] 更新..."
-        mirrors_to_try=("$github_url")
-        for mirror_url in "${mirrors_to_try[@]}"; do
-            git remote set-url origin "$mirror_url"
-            local git_output
-            git_output=$(git pull origin "$REPO_BRANCH" 2>&1)
-            if [ $? -eq 0 ]; then
-                pull_succeeded_this_round=true; break
-            elif echo "$git_output" | grep -qE "overwritten by merge|Please commit|unmerged files"; then
-                handle_merge_conflict "$git_output"
-                fn_press_any_key; return
-            else
-                fn_print_error "使用官方源更新失败！错误: $(echo "$git_output" | tail -n 1)"
-            fi
-        done
-
-        if ! $pull_succeeded_this_round; then
-            fn_print_warning "将开始测试并尝试使用镜像源..."
-            mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "mirrors_only")
-            for mirror_url in "${mirrors_to_try[@]}"; do
-                local mirror_host
-                mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
-                fn_print_warning "正在尝试使用镜像 [${mirror_host}] 更新..."
-                git remote set-url origin "$mirror_url"
-                git_output=$(git pull origin "$REPO_BRANCH" 2>&1)
-                if [ $? -eq 0 ]; then
-                    pull_succeeded_this_round=true; break
-                elif echo "$git_output" | grep -qE "overwritten by merge|Please commit|unmerged files"; then
-                    handle_merge_conflict "$git_output"
-                    fn_press_any_key; return
+            if git reset --hard "origin/$REPO_BRANCH" >/dev/null 2>&1; then
+                fn_print_warning "正在重新拉取最新代码..."
+                if git pull origin "$REPO_BRANCH" --allow-unrelated-histories >/dev/null 2>&1; then
+                    fn_print_success "强制更新成功。"
+                    pull_succeeded=true
                 else
-                    fn_print_error "使用镜像 [${mirror_host}] 更新失败！错误: $(echo "$git_output" | tail -n 1)"
+                    fn_print_error "强制覆盖后拉取代码失败，请重试。"
                 fi
-            done
-        fi
-        
-        if ! $pull_succeeded_this_round; then
-            fn_print_error "预选线路均更新失败。"
-            fn_print_warning "将进行全量测速并重试所有可用线路..."
-            mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "all")
-            for mirror_url in "${mirrors_to_try[@]}"; do
-                mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
-                fn_print_warning "正在尝试使用镜像 [${mirror_host}] 更新..."
-                git remote set-url origin "$mirror_url"
-                git_output=$(git pull origin "$REPO_BRANCH" 2>&1)
-                if [ $? -eq 0 ]; then
-                    pull_succeeded_this_round=true; break
-                elif echo "$git_output" | grep -qE "overwritten by merge|Please commit|unmerged files"; then
-                    handle_merge_conflict "$git_output"
-                    fn_press_any_key; return
-                else
-                    fn_print_error "使用镜像 [${mirror_host}] 更新失败！错误: $(echo "$git_output" | tail -n 1)"
-                fi
-            done
-        fi
-
-        if $pull_succeeded_this_round; then
-            fn_print_success "代码更新成功。"
-            if fn_run_npm_install; then
-                update_success=true
             else
-                fn_print_error "代码已更新，但依赖安装失败。更新未全部完成。"
-                break
+                fn_print_error "强制覆盖失败！"
             fi
+            break
         else
-            read -p $'\n'"${RED}所有线路均更新失败。是否重新测速并重试？(直接回车=是, 输入n=否): ${NC}" retry_choice
-            if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
-                fn_print_warning "更新失败，用户取消操作。"
-                break
-            fi
+            fn_print_error "使用线路 [${mirror_host}] 更新失败，正在切换..."
         fi
     done
 
-    if $update_success; then
-        fn_print_success "SillyTavern 更新完成！"
+    if $pull_succeeded; then
+        if fn_run_npm_install; then
+            fn_print_success "酒馆更新完成！"
+        else
+            fn_print_error "代码已更新，但依赖安装失败。更新未全部完成。"
+        fi
+    else
+        fn_print_error "更新失败或已取消。"
+    fi
+    fn_press_any_key
+}
+
+fn_rollback_st() {
+    clear
+    fn_print_header "回退酒馆版本"
+    if [ ! -d "$ST_DIR/.git" ]; then
+        fn_print_warning "未找到Git仓库，请先完整部署。"
+        fn_press_any_key
+        return
+    fi
+    cd "$ST_DIR" || fn_print_error_exit "无法进入酒馆目录: $ST_DIR"
+
+    fn_print_warning "正在从远程仓库获取所有版本信息..."
+    local mirrors_to_try=()
+    mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "official_only")
+    if [ ${#mirrors_to_try[@]} -eq 0 ]; then
+        mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "mirrors_only")
+    fi
+    if [ ${#mirrors_to_try[@]} -eq 0 ]; then
+        fn_print_error "所有线路均测试失败，无法获取版本列表。"
+        fn_press_any_key
+        return
+    fi
+
+    local fetch_ok=false
+    for mirror_url in "${mirrors_to_try[@]}"; do
+        local mirror_host
+        mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
+        fn_print_warning "正在尝试使用线路 [${mirror_host}] 获取信息..."
+        git remote set-url origin "$mirror_url" >/dev/null 2>&1
+        if git fetch --all --tags >/dev/null 2>&1; then
+            fetch_ok=true
+            break
+        fi
+        fn_print_error "使用线路 [${mirror_host}] 获取失败，正在切换..."
+    done
+
+    if ! $fetch_ok; then
+        fn_print_error "尝试了所有可用线路，但无法从远程仓库获取版本信息。"
+        fn_press_any_key
+        return
+    fi
+
+    fn_print_success "版本信息获取成功。"
+    mapfile -t all_tags < <(git tag --sort=-v:refname | grep '^[0-9]')
+    if [ ${#all_tags[@]} -eq 0 ]; then
+        fn_print_error "未能找到任何有效的版本标签。"
+        fn_press_any_key
+        return
+    fi
+
+    local current_tags=("${all_tags[@]}")
+    local page_size=15
+    local page_num=0
+    local selected_tag=""
+
+    while true; do
+        clear
+        fn_print_header "选择要切换的版本"
+        local total_pages=$(( (${#current_tags[@]} + page_size - 1) / page_size ))
+        if [ $total_pages -eq 0 ]; then total_pages=1; fi
+        echo "第 $((page_num + 1)) / $total_pages 页 (共 ${#current_tags[@]} 个版本)"
+        echo "──────────────────────────────────"
+        
+        local start_index=$((page_num * page_size))
+        
+        local page_tags=("${current_tags[@]:$start_index:$page_size}")
+        for i in "${!page_tags[@]}"; do
+            printf "  [%2d] %s\n" "$((start_index + i + 1))" "${page_tags[$i]}"
+        done
+
+        echo "──────────────────────────────────"
+        echo -e "操作提示:"
+        echo -e "  - 直接输入 ${GREEN}序号${NC} (如 '1') 或 ${GREEN}版本全名${NC} (如 '1.10.0') 进行选择"
+        echo -e "  - 输入 ${GREEN}a${NC} 翻到上一页，${GREEN}d${NC} 翻到下一页"
+        echo -e "  - 输入 ${GREEN}f [关键词]${NC} 筛选版本 (如 'f 1.10')"
+        echo -e "  - 输入 ${GREEN}c${NC} 清除筛选，${GREEN}q${NC} 退出"
+        read -p "请输入操作: " user_input
+
+        case "$user_input" in
+            [qQ]) fn_print_warning "操作已取消。"; fn_press_any_key; return ;;
+            [aA]) if [ $page_num -gt 0 ]; then page_num=$((page_num - 1)); fi ;;
+            [dD]) if [ $(( (page_num + 1) * page_size )) -lt ${#current_tags[@]} ]; then page_num=$((page_num + 1)); fi ;;
+            [cC]) current_tags=("${all_tags[@]}"); page_num=0 ;;
+            f\ *)
+                local keyword="${user_input#f }"
+                mapfile -t filtered_tags < <(printf '%s\n' "${all_tags[@]}" | grep "$keyword")
+                if [ ${#filtered_tags[@]} -gt 0 ]; then
+                    current_tags=("${filtered_tags[@]}"); page_num=0
+                else
+                    fn_print_error "未找到包含 '$keyword' 的版本。"; sleep 1.5
+                fi
+                ;;
+            *)
+                if [[ "$user_input" =~ ^[0-9]+$ ]] && [ "$user_input" -ge 1 ] && [ "$user_input" -le ${#current_tags[@]} ]; then
+                    selected_tag="${current_tags[$((user_input - 1))]}"
+                    break
+                elif echo "${all_tags[@]}" | tr ' ' '\n' | grep -q -w "$user_input"; then
+                    selected_tag="$user_input"
+                    break
+                else
+                    fn_print_error "无效输入。"; sleep 1
+                fi
+                ;;
+        esac
+    done
+
+    if [ -n "$selected_tag" ]; then
+        echo -e "\n${CYAN}此操作仅会改变酒馆的程序版本，不会影响您的用户数据 (如聊天记录、角色卡等)。${NC}"
+        echo -en "确认要切换到版本 ${YELLOW}${selected_tag}${NC} 吗？(直接回车=是, 输入n=否): "
+        read confirm
+        if [[ "$confirm" =~ ^[nN]$ ]]; then
+            fn_print_warning "操作已取消。"
+            fn_press_any_key
+            return
+        fi
+
+        fn_print_warning "正在尝试切换到版本 ${selected_tag}..."
+        local checkout_output
+        checkout_output=$(git checkout "tags/$selected_tag" 2>&1)
+        local exit_code=$?
+        local checkout_succeeded=false
+
+        if [ $exit_code -eq 0 ]; then
+            fn_print_success "版本已成功切换到 ${selected_tag}"
+            checkout_succeeded=true
+        elif echo "$checkout_output" | grep -qE "overwritten by checkout|Please commit"; then
+            fn_print_header "检测到切换冲突"
+            fn_print_warning "原因: 您有本地文件修改，与目标版本冲突。"
+            echo -e "\n${CYAN}此操作将放弃您对代码文件的修改，但不会影响您的用户数据。${NC}"
+            read -p "是否要强制覆盖本地修改以完成切换？(直接回车=是, 输入n=否): " force_confirm
+            if [[ "$force_confirm" =~ ^[nN]$ ]]; then
+                fn_print_warning "已取消版本切换。"
+            else
+                fn_print_warning "正在执行强制切换 (git checkout -f)..."
+                if git checkout -f "tags/$selected_tag" >/dev/null 2>&1; then
+                    fn_print_success "版本已成功强制切换到 ${selected_tag}"
+                    checkout_succeeded=true
+                else
+                    fn_print_error "强制切换失败！"
+                fi
+            fi
+        else
+            fn_print_error "切换失败！Git输出: $(echo "$checkout_output" | tail -n 2)"
+        fi
+
+        if $checkout_succeeded; then
+            if fn_run_npm_install; then
+                fn_print_success "版本切换并同步依赖成功！"
+            else
+                fn_print_error "版本已切换，但依赖同步失败。请检查网络或手动运行 npm install。"
+            fi
+        fi
     fi
     fn_press_any_key
 }
@@ -1328,11 +1403,11 @@ fn_menu_backup_interactive() {
     clear
     fn_print_header "创建新的本地备份"
     if [ ! -f "$ST_DIR/start.sh" ]; then
-        fn_print_warning "SillyTavern 尚未安装，无法备份。"
+        fn_print_warning "酒馆尚未安装，无法备份。"
         fn_press_any_key
         return
     fi
-    cd "$ST_DIR" || fn_print_error_exit "无法进入 SillyTavern 目录: $ST_DIR"
+    cd "$ST_DIR" || fn_print_error_exit "无法进入酒馆目录: $ST_DIR"
 
     declare -A ALL_PATHS=( ["./data"]="用户数据 (聊天/角色/设置)" ["./public/scripts/extensions/third-party"]="前端扩展" ["./plugins"]="后端扩展" ["./config.yaml"]="服务器配置 (网络/安全)" )
     local options=("./data" "./public/scripts/extensions/third-party" "./plugins" "./config.yaml")
@@ -1636,6 +1711,23 @@ fi
 
 git config --global --add safe.directory '*' 2>/dev/null || true
 
+fn_menu_version_management() {
+    while true; do
+        clear
+        fn_print_header "酒馆版本管理"
+        echo -e "      [1] ${GREEN}更新酒馆${NC}"
+        echo -e "      [2] ${YELLOW}回退版本${NC}\n"
+        echo -e "      [0] ${CYAN}返回主菜单${NC}\n"
+        read -p "    请输入选项: " choice
+        case $choice in
+            1) fn_update_st; break ;;
+            2) fn_rollback_st; break ;;
+            0) break ;;
+            *) fn_print_error "无效输入。"; sleep 1 ;;
+        esac
+    done
+}
+
 while true; do
     clear
     fn_show_main_header
@@ -1646,11 +1738,11 @@ while true; do
     fi
 
     echo -e "\n    选择一个操作来开始：\n"
-    echo -e "      [1] ${GREEN}${BOLD}启动 SillyTavern${NC}"
+    echo -e "      [1] ${GREEN}${BOLD}启动酒馆${NC}"
     echo -e "      [2] ${CYAN}${BOLD}数据同步 (Git 云端)${NC}"
     echo -e "      [3] ${CYAN}${BOLD}本地备份管理${NC}"
     echo -e "      [4] ${YELLOW}${BOLD}首次部署 (全新安装)${NC}\n"
-    echo -e "      [5] 更新酒馆主程序    [6] 更新咕咕助手${update_notice}"
+    echo -e "      [5] 酒馆版本管理          [6] 更新咕咕助手${update_notice}"
     echo -e "      [7] 管理助手自启      [8] 查看帮助文档"
     echo -e "      [9] 配置网络代理\n"
     echo -e "      ${RED}[0] 退出咕咕助手${NC}\n"
@@ -1661,7 +1753,7 @@ while true; do
         2) fn_menu_git_sync ;;
         3) fn_menu_backup ;;
         4) fn_install_st ;;
-        5) fn_update_st ;;
+        5) fn_menu_version_management ;;
         6) fn_update_script ;;
         7) fn_manage_autostart ;;
         8) fn_open_docs ;;
