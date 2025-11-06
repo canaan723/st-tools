@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # 作者: 清绝 | 网址: blog.qjyg.de
-# 清绝咕咕助手 v2.4
+# 清绝咕咕助手 v2.5
 
 BOLD='\033[1m'
 CYAN='\033[1;36m'
@@ -42,7 +42,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.4${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.5${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
 }
 
@@ -1191,7 +1191,10 @@ fn_update_st() {
     }
 
     local mirrors_to_try=()
-    mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "all")
+    mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "official_only")
+    if [ ${#mirrors_to_try[@]} -eq 0 ]; then
+        mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "mirrors_only")
+    fi
     if [ ${#mirrors_to_try[@]} -eq 0 ]; then
         fn_print_error "所有线路均测试失败，无法更新。"
         fn_press_any_key
@@ -1257,7 +1260,10 @@ fn_rollback_st() {
 
     fn_print_warning "正在从远程仓库获取所有版本信息..."
     local mirrors_to_try=()
-    mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "all")
+    mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "official_only")
+    if [ ${#mirrors_to_try[@]} -eq 0 ]; then
+        mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "mirrors_only")
+    fi
     if [ ${#mirrors_to_try[@]} -eq 0 ]; then
         fn_print_error "所有线路均测试失败，无法获取版本列表。"
         fn_press_any_key
@@ -1312,11 +1318,11 @@ fn_rollback_st() {
         done
 
         echo "──────────────────────────────────"
-        echo "操作提示:"
-        echo "  - 直接输入 ${GREEN}序号${NC} (如 '1') 或 ${GREEN}版本全名${NC} (如 '1.10.0') 进行选择"
-        echo "  - 输入 ${GREEN}a${NC} 翻到上一页，${GREEN}d${NC} 翻到下一页"
-        echo "  - 输入 ${GREEN}f [关键词]${NC} 筛选版本 (如 'f 1.10')"
-        echo "  - 输入 ${GREEN}c${NC} 清除筛选，${GREEN}q${NC} 退出"
+        echo -e "操作提示:"
+        echo -e "  - 直接输入 ${GREEN}序号${NC} (如 '1') 或 ${GREEN}版本全名${NC} (如 '1.10.0') 进行选择"
+        echo -e "  - 输入 ${GREEN}a${NC} 翻到上一页，${GREEN}d${NC} 翻到下一页"
+        echo -e "  - 输入 ${GREEN}f [关键词]${NC} 筛选版本 (如 'f 1.10')"
+        echo -e "  - 输入 ${GREEN}c${NC} 清除筛选，${GREEN}q${NC} 退出"
         read -p "请输入操作: " user_input
 
         case "$user_input" in
