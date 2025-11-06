@@ -1,13 +1,13 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # 作者: 清绝 | 网址: blog.qjyg.de
-# 清绝咕咕助手 v2.5
+# 清绝咕咕助手 v2.6
 
-BOLD='\033[1m'
-CYAN='\033[1;36m'
-GREEN='\033[1;32m'
-YELLOW='\033[1;33m'
-RED='\033[1;31m'
-NC='\033[0m'
+BOLD=$'\e[1m'
+CYAN=$'\e[1;36m'
+GREEN=$'\e[1;32m'
+YELLOW=$'\e[1;33m'
+RED=$'\e[1;31m'
+NC=$'\e[0m'
 
 ST_DIR="$HOME/SillyTavern"
 BACKUP_ROOT_DIR="$HOME/SillyTavern_Backups"
@@ -42,7 +42,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.5${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.6${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
 }
 
@@ -1171,25 +1171,6 @@ fn_update_st() {
     fi
     cd "$ST_DIR" || fn_print_error_exit "无法进入酒馆目录: $ST_DIR"
 
-    handle_merge_conflict() {
-        fn_print_header "检测到更新冲突"
-        fn_print_warning "原因: 您可能修改过酒馆的文件，导致无法自动合并新版本。"
-        echo -e "\n${CYAN}此操作将放弃您对代码文件的修改，但不会影响您的用户数据 (如聊天记录、角色卡等)。${NC}"
-        read -p "是否要强制覆盖本地修改以完成更新？(直接回车=是, 输入n=否): " confirm_choice
-        if [[ "$confirm_choice" =~ ^[nN]$ ]]; then
-            fn_print_warning "已取消更新。"
-            return 1
-        fi
-        fn_print_warning "正在执行强制覆盖 (git reset --hard)..."
-        if git reset --hard "origin/$REPO_BRANCH" >/dev/null 2>&1; then
-            fn_print_success "强制覆盖成功。"
-            return 0
-        else
-            fn_print_error "强制覆盖失败！"
-            return 1
-        fi
-    }
-
     local mirrors_to_try=()
     mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "official_only")
     if [ ${#mirrors_to_try[@]} -eq 0 ]; then
@@ -1220,17 +1201,34 @@ fn_update_st() {
             fi
             pull_succeeded=true
             break
-        elif echo "$git_output" | grep -qE "overwritten by merge|Please commit|unmerged files"; then
-            if handle_merge_conflict; then
+        elif echo "$git_output" | grep -qE "overwritten by merge|Please commit|unmerged files|Pulling is not possible"; then
+            clear
+            fn_print_header "检测到更新冲突"
+            fn_print_warning "原因: 您可能修改过酒馆的文件，导致无法自动合并新版本。"
+            echo -e "\n--- 冲突文件预览 ---\n$(echo "$git_output" | grep -E '^\s+' | head -n 5)\n--------------------"
+            echo -e "\n${CYAN}此操作将放弃您对代码文件的修改，但不会影响您的用户数据 (如聊天记录、角色卡等)。${NC}"
+            read -p "是否要强制覆盖本地修改以完成更新？(直接回车=是, 输入n=否): " confirm_choice
+            
+            if [[ "$confirm_choice" =~ ^[nN]$ ]]; then
+                fn_print_warning "已取消更新。"
+                # 用户取消，直接跳出循环，不再尝试其他镜像
+                break
+            fi
+
+            fn_print_warning "正在执行强制覆盖 (git reset --hard)..."
+            if git reset --hard "origin/$REPO_BRANCH" >/dev/null 2>&1; then
                 fn_print_warning "正在重新拉取最新代码..."
                 if git pull origin "$REPO_BRANCH" --allow-unrelated-histories >/dev/null 2>&1; then
-                    fn_print_success "代码更新成功。"
+                    fn_print_success "强制更新成功。"
                     pull_succeeded=true
                 else
                     fn_print_error "强制覆盖后拉取代码失败，请重试。"
                 fi
+            else
+                fn_print_error "强制覆盖失败！"
             fi
-            break 
+            # 无论成功与否，处理完冲突后都应跳出循环
+            break
         else
             fn_print_error "使用线路 [${mirror_host}] 更新失败，正在切换..."
         fi
@@ -1243,7 +1241,7 @@ fn_update_st() {
             fn_print_error "代码已更新，但依赖安装失败。更新未全部完成。"
         fi
     else
-        fn_print_error "已尝试所有可用线路，更新均失败。"
+        fn_print_error "更新失败或已取消。"
     fi
     fn_press_any_key
 }
@@ -1355,23 +1353,49 @@ fn_rollback_st() {
 
     if [ -n "$selected_tag" ]; then
         echo -e "\n${CYAN}此操作仅会改变酒馆的程序版本，不会影响您的用户数据 (如聊天记录、角色卡等)。${NC}"
-        read -p $"确认要切换到版本 ${YELLOW}${selected_tag}${NC} 吗？(直接回车=是, 输入n=否): " confirm
+        echo -en "确认要切换到版本 ${YELLOW}${selected_tag}${NC} 吗？(直接回车=是, 输入n=否): "
+        read confirm
         if [[ "$confirm" =~ ^[nN]$ ]]; then
             fn_print_warning "操作已取消。"
             fn_press_any_key
             return
         fi
 
-        fn_print_warning "正在强制切换到版本 ${selected_tag}..."
-        if ! git checkout -f "tags/$selected_tag" >/dev/null 2>&1; then
-            fn_print_error_exit "切换失败！请检查您的本地文件修改或网络状态。"
-        fi
-        
-        fn_print_success "版本已成功切换到 ${selected_tag}"
-        if fn_run_npm_install; then
-            fn_print_success "版本切换并同步依赖成功！"
+        fn_print_warning "正在尝试切换到版本 ${selected_tag}..."
+        local checkout_output
+        checkout_output=$(git checkout "tags/$selected_tag" 2>&1)
+        local exit_code=$?
+        local checkout_succeeded=false
+
+        if [ $exit_code -eq 0 ]; then
+            fn_print_success "版本已成功切换到 ${selected_tag}"
+            checkout_succeeded=true
+        elif echo "$checkout_output" | grep -qE "overwritten by checkout|Please commit"; then
+            fn_print_header "检测到切换冲突"
+            fn_print_warning "原因: 您有本地文件修改，与目标版本冲突。"
+            echo -e "\n${CYAN}此操作将放弃您对代码文件的修改，但不会影响您的用户数据。${NC}"
+            read -p "是否要强制覆盖本地修改以完成切换？(直接回车=是, 输入n=否): " force_confirm
+            if [[ "$force_confirm" =~ ^[nN]$ ]]; then
+                fn_print_warning "已取消版本切换。"
+            else
+                fn_print_warning "正在执行强制切换 (git checkout -f)..."
+                if git checkout -f "tags/$selected_tag" >/dev/null 2>&1; then
+                    fn_print_success "版本已成功强制切换到 ${selected_tag}"
+                    checkout_succeeded=true
+                else
+                    fn_print_error "强制切换失败！"
+                fi
+            fi
         else
-            fn_print_error "版本已切换，但依赖同步失败。请检查网络或手动运行 npm install。"
+            fn_print_error "切换失败！Git输出: $(echo "$checkout_output" | tail -n 2)"
+        fi
+
+        if $checkout_succeeded; then
+            if fn_run_npm_install; then
+                fn_print_success "版本切换并同步依赖成功！"
+            else
+                fn_print_error "版本已切换，但依赖同步失败。请检查网络或手动运行 npm install。"
+            fi
         fi
     fi
     fn_press_any_key
