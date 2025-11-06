@@ -36,7 +36,7 @@ $Mirror_List = @(
 $CachedMirrors = @()
 
 function Show-Header {
-    Write-Host "    " -NoNewline; Write-Host ">>" -ForegroundColor Yellow -NoNewline; Write-Host " 清绝咕咕助手 v2.5" -ForegroundColor Green
+    Write-Host "    " -NoNewline; Write-Host ">>" -ForegroundColor Yellow -NoNewline; Write-Host " 清绝咕咕助手 v2.6" -ForegroundColor Green
     Write-Host "       " -NoNewline; Write-Host "作者: 清绝 | 网址: blog.qjyg.de" -ForegroundColor DarkGray
 }
 
@@ -695,7 +695,7 @@ function Show-GitSyncMenu {
         Clear-Host
         Write-Header "数据同步 (Git 方案)"
         if (-not (Test-Path (Join-Path $ST_Dir "start.bat"))) {
-            Write-Warning "SillyTavern 尚未安装，无法使用数据同步功能。`n请先返回主菜单选择 [首次部署]。"
+            Write-Warning "酒馆尚未安装，无法使用数据同步功能。`n请先返回主菜单选择 [首次部署]。"
             Press-Any-Key
             return
         }
@@ -816,22 +816,22 @@ function Export-ExtensionLinks {
 
 function Start-SillyTavern {
     Clear-Host
-    Write-Header "启动 SillyTavern"
+    Write-Header "启动酒馆"
     if (-not (Test-Path (Join-Path $ST_Dir "start.bat"))) {
-        Write-Warning "SillyTavern 尚未安装，请先部署。"
+        Write-Warning "酒馆尚未安装，请先部署。"
         Press-Any-Key
         return
     }
     Set-Location $ST_Dir
     Write-Host "正在配置NPM镜像并准备启动环境..."
     npm config set registry https://registry.npmmirror.com
-    Write-Warning "环境准备就绪，正在启动SillyTavern服务..."
+    Write-Warning "环境准备就绪，正在启动酒馆服务..."
     Write-Warning "首次启动或更新后会自动安装依赖，耗时可能较长，请耐心等待..."
     Write-Warning "服务将在此窗口中运行，请勿关闭。"
     try {
         cmd /c "start.bat"
     } catch {
-        Write-Warning "SillyTavern 服务已停止。"
+        Write-Warning "酒馆服务已停止。"
     }
     Press-Any-Key
 }
@@ -840,7 +840,7 @@ function Start-SillyTavern {
 function Install-SillyTavern {
     param([bool]$autoStart = $true)
     Clear-Host
-    Write-Header "SillyTavern 部署向导"
+    Write-Header "酒馆部署向导"
 
     Write-Header "1/3: 检查核心依赖"
     if (-not (Check-Command "git") -or -not (Check-Command "node")) {
@@ -849,7 +849,7 @@ function Install-SillyTavern {
     }
     Write-Success "核心依赖 (Git, Node.js) 已找到。"
 
-    Write-Header "2/3: 下载 ST 主程序"
+    Write-Header "2/3: 下载酒馆主程序"
     if (Test-Path $ST_Dir) {
         Write-Warning "目录 $ST_Dir 已存在，跳过下载。"
     } else {
@@ -876,9 +876,9 @@ function Install-SillyTavern {
                 $mirrorHost = ($mirrorUrl -split '/')[2]
                 Write-Warning "正在尝试从线路 [$($mirrorHost)] 下载 ($Repo_Branch 分支)..."
                 # 关键修复：添加 -c credential.helper='' 来禁用凭据弹窗
-                git -c credential.helper='' clone --depth 1 -b $Repo_Branch $mirrorUrl $ST_Dir
+                $gitOutput = git -c credential.helper='' clone --depth 1 -b $Repo_Branch $mirrorUrl $ST_Dir 2>&1
                 if ($LASTEXITCODE -eq 0) { $downloadSuccess = $true; break }
-                Write-Error "使用线路 [$($mirrorHost)] 下载失败！正在切换下一条..."
+                Write-Error "使用线路 [$($mirrorHost)] 下载失败！Git输出: $($gitOutput | Out-String)"
                 if (Test-Path $ST_Dir) { Remove-Item -Recurse -Force $ST_Dir }
             }
 
@@ -897,7 +897,7 @@ function Install-SillyTavern {
     Write-Header "3/3: 配置 NPM 环境并安装依赖"
     if (Test-Path $ST_Dir) {
         if (-not (Run-NpmInstallWithRetry)) { Write-ErrorExit "依赖安装最终失败，部署中断。" }
-    } else { Write-Warning "SillyTavern 目录不存在，跳过此步。" }
+    } else { Write-Warning "酒馆目录不存在，跳过此步。" }
 
     if ($autoStart) {
         Write-Host "`n"; Write-Success "部署完成！"; Write-Warning "即将进行首次启动..."; Start-Sleep -Seconds 3; Start-SillyTavern
@@ -907,7 +907,7 @@ function Install-SillyTavern {
 function New-LocalZipBackup {
     param([string]$BackupType, [string[]]$PathsToBackup)
     if (-not (Test-Path $ST_Dir)) {
-        Write-Error "SillyTavern 目录不存在，无法创建本地备份。"
+        Write-Error "酒馆目录不存在，无法创建本地备份。"
         return $null
     }
     if ($null -eq $PathsToBackup) {
@@ -970,7 +970,7 @@ function New-LocalZipBackup {
 # 替换旧的 Update-SillyTavern 函数
 function Update-SillyTavern {
     Clear-Host
-    Write-Header "更新 SillyTavern 主程序"
+    Write-Header "更新酒馆"
     if (-not (Test-Path (Join-Path $ST_Dir ".git"))) {
         Write-Warning "未找到Git仓库，请先完整部署。"; Press-Any-Key; return
     }
@@ -1001,67 +1001,32 @@ function Update-SillyTavern {
             Write-Warning "正在尝试使用线路 [$($mirrorHost)] 更新..."
             git remote set-url origin $mirrorUrl
             # 关键修复：添加 -c credential.helper='' 来禁用凭据弹窗
-            $gitOutput = git -c credential.helper='' pull origin $Repo_Branch 2>&1
+            $gitOutput = git -c credential.helper='' pull origin $Repo_Branch --allow-unrelated-histories 2>&1
             if ($LASTEXITCODE -eq 0) {
                 if ($gitOutput -match "Already up to date") { Write-Success "代码已是最新，无需更新。" } else { Write-Success "代码更新成功。" }
                 $pullSucceeded = $true; break
             } elseif ($gitOutput -match "Your local changes to the following files would be overwritten|conflict|error: Pulling is not possible because you have unmerged files.") {
-                # 此处省略冲突处理逻辑，因为它很长且与本问题无关，保持原样即可
-                # ... 原来的冲突处理 switch 语句 ...
-                # 为确保完整性，这里直接粘贴原冲突处理代码
                 Clear-Host
-                Write-Header "检测到更新冲突！"
-                Write-Warning "原因: 你可能修改过酒馆的某些文件，导致无法自动合并新版本。"
-                Write-Host "--- 冲突文件预览 ---`n$($gitOutput | Select-String -Pattern '^\s+' | Select -First 5)`n--------------------"
-                Write-Host "`n请选择操作方式："
-                Write-Host "  [回车] " -NoNewline -ForegroundColor Green; Write-Host "自动备份并重新安装 (推荐)"
-                Write-Host "  [1]    " -NoNewline -ForegroundColor Yellow; Write-Host "强制覆盖更新 (危险)"
-                Write-Host "  [0]    " -NoNewline -ForegroundColor Cyan; Write-Host "放弃更新"
-                $conflictChoice = Read-Host "`n请输入选项"
-                if ([string]::IsNullOrEmpty($conflictChoice)) { $conflictChoice = 'default' }
-                switch ($conflictChoice) {
-                    'default' {
-                        Clear-Host
-                        Write-Header "步骤 1/5: 创建本地备份"
-                        $dataBackupZipPath = New-LocalZipBackup -BackupType "更新前"
-                        if (-not $dataBackupZipPath) { Write-ErrorExit "本地备份创建失败，更新流程终止。" }
-                        Write-Header "步骤 2/5: 完整备份当前目录"
-                        $renamedBackupDir = "$($ST_Dir)_backup_$(Get-Date -Format 'yyyyMMddHHmmss')"
-                        try {
-                            Set-Location $ScriptBaseDir
-                            Rename-Item -Path $ST_Dir -NewName $renamedBackupDir -ErrorAction Stop
-                        } catch { Write-ErrorExit "备份失败，请检查权限或手动重命名后重试。" }
-                        Write-Success "旧目录已完整备份为: $($renamedBackupDir | Split-Path -Leaf)"
-                        Write-Header "步骤 3/5: 下载并安装新版 SillyTavern"
-                        Install-SillyTavern -autoStart $false
-                        if (-not (Test-Path $ST_Dir)) { Write-ErrorExit "新版本安装失败，流程终止。" }
-                        Write-Header "步骤 4/5: 自动恢复用户数据"
-                        try {
-                            Write-Warning "正在将备份数据解压至新目录..."
-                            Expand-Archive -Path $dataBackupZipPath -DestinationPath $ST_Dir -Force -ErrorAction Stop
-                            Write-Success "用户数据已成功恢复到新版本中。"
-                        } catch { Write-ErrorExit "数据恢复失败！错误: $($_.Exception.Message)" }
-                        Write-Header "步骤 5/5: 更新完成，请确认"
-                        Write-Success "SillyTavern 已更新并恢复数据！"
-                        Write-Warning "请注意:"
-                        Write-Host "  - 您的聊天记录、角色卡、插件和设置已恢复。"
-                        Write-Host "  - 如果您曾手动修改过酒馆核心文件(如 server.js)，这些修改需要您重新操作。"
-                        Write-Host "  - 您的完整旧版本已备份在: " -NoNewline; Write-Host ($renamedBackupDir | Split-Path -Leaf) -ForegroundColor Cyan
-                        Write-Host "  - 本次恢复所用的核心本地备份位于: " -NoNewline; Write-Host (Join-Path ($Backup_Root_Dir | Split-Path -Leaf) ($dataBackupZipPath | Split-Path -Leaf)) -ForegroundColor Cyan
-                        Write-Host "`n请按任意键，启动更新后的 SillyTavern..." -ForegroundColor Cyan
-                        $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null
-                        Start-SillyTavern; exit
-                    }
-                    '1' {
-                        Write-Warning "正在执行强制覆盖 (git reset --hard)..."
-                        git reset --hard origin/$Repo_Branch
-                        git -c credential.helper='' pull origin $Repo_Branch
-                        if ($LASTEXITCODE -eq 0) { Write-Success "强制更新成功。"; $pullSucceeded = $true } else { Write-Error "强制更新失败！" }
-                        break
-                    }
-                    default { Write-Warning "已取消更新。"; Press-Any-Key; return }
+                Write-Header "检测到更新冲突"
+                Write-Warning "原因: 您可能修改过酒馆的文件，导致无法自动合并新版本。"
+                Write-Host "`n--- 冲突文件预览 ---`n$($gitOutput | Select-String -Pattern '^\s+' | Select -First 5)`n--------------------"
+                Write-Host "`n此操作将放弃您对代码文件的修改，但不会影响您的用户数据 (如聊天记录、角色卡等)。" -ForegroundColor Cyan
+                $confirmChoice = Read-Host "是否要强制覆盖本地修改以完成更新？(直接回车=是, 输入n=否)"
+                if ($confirmChoice -eq 'n' -or $confirmChoice -eq 'N') {
+                    Write-Warning "已取消更新。"; Press-Any-Key; return
                 }
-            } else { Write-Error "使用线路 [$($mirrorHost)] 更新失败！正在切换下一条..." }
+                
+                Write-Warning "正在执行强制覆盖 (git reset --hard)..."
+                git reset --hard "origin/$Repo_Branch"
+                git -c credential.helper='' pull origin $Repo_Branch --allow-unrelated-histories
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Success "强制更新成功。"
+                    $pullSucceeded = $true
+                } else {
+                    Write-Error "强制更新失败！"
+                }
+                break
+            } else { Write-Error "使用线路 [$($mirrorHost)] 更新失败！Git输出: $($gitOutput | Out-String)" }
         }
 
         if ($pullSucceeded) {
@@ -1077,14 +1042,152 @@ function Update-SillyTavern {
         }
     }
     Set-Location $ScriptBaseDir
-    if ($updateSuccess) { Write-Success "SillyTavern 更新完成！" }
+    if ($updateSuccess) { Write-Success "酒馆更新完成！" }
     Press-Any-Key
+}
+
+# 新增：版本回退功能
+function Rollback-SillyTavern {
+    Clear-Host
+    Write-Header "回退酒馆版本"
+    if (-not (Test-Path (Join-Path $ST_Dir ".git"))) {
+        Write-Warning "未找到Git仓库，请先完整部署。"; Press-Any-Key; return
+    }
+
+    Set-Location $ST_Dir
+    Write-Warning "正在从远程仓库获取所有版本信息..."
+    
+    $fetchSuccess = $false
+    $fullRetestAttempted = $false
+    while (-not $fetchSuccess) {
+        $mirrorsToTry = @()
+        if (-not $fullRetestAttempted) {
+            $mirrorsToTry = Find-AvailableMirrors -TestType 'Download' -Mode 'OfficialOnly'
+            if ($mirrorsToTry.Count -eq 0) {
+                $mirrorsToTry = Find-AvailableMirrors -TestType 'Download' -Mode 'MirrorsOnly'
+            }
+        } else {
+            $mirrorsToTry = Find-AvailableMirrors -TestType 'Download' -Mode 'All'
+        }
+
+        if ($mirrorsToTry.Count -eq 0) {
+            $retryChoice = Read-Host "`n所有线路均测试失败。是否重新测速并重试？(直接回车=是, 输入n=否)"
+            if ($retryChoice -eq 'n') { Write-Error "用户取消操作。"; Press-Any-Key; return }
+            $fullRetestAttempted = $false; continue
+        }
+
+        foreach ($mirrorUrl in $mirrorsToTry) {
+            $mirrorHost = ($mirrorUrl -split '/')[2]
+            Write-Warning "正在尝试使用线路 [$($mirrorHost)] 获取版本列表..."
+            git remote set-url origin $mirrorUrl
+            git -c credential.helper='' fetch --all --tags 2>$null
+            if ($LASTEXITCODE -eq 0) { $fetchSuccess = $true; break }
+            Write-Error "使用线路 [$($mirrorHost)] 获取失败！正在切换下一条..."
+        }
+
+        if (-not $fetchSuccess) {
+            if (-not $fullRetestAttempted) {
+                $fullRetestAttempted = $true
+                Write-Error "预选线路均获取失败。将进行全量测速并重试所有可用线路..."
+            } else {
+                Write-Error "已尝试所有可用线路，获取版本信息均失败。"; Press-Any-Key; return
+            }
+        }
+    }
+
+    Write-Success "版本信息获取成功。"
+    # 优化：使用 -v:refname 实现版本号倒序排列
+    $allTags = git tag --sort=-v:refname | Where-Object { $_ -match '^\d' }
+    if ($allTags.Count -eq 0) {
+        Write-Error "未能获取到任何有效的版本标签。"; Press-Any-Key; return
+    }
+
+    $currentPage = 0
+    $pageSize = 15
+    $filter = ""
+    while ($true) {
+        Clear-Host
+        Write-Header "选择要回退的版本"
+        $filteredTags = if ([string]::IsNullOrWhiteSpace($filter)) { $allTags } else { $allTags | Select-String -Pattern $filter }
+        $totalPages = [Math]::Ceiling($filteredTags.Count / $pageSize)
+        $currentPage = [Math]::Max(0, [Math]::Min($currentPage, $totalPages - 1))
+        $tagsToShow = $filteredTags | Select-Object -Skip ($currentPage * $pageSize) -First $pageSize
+        
+        Write-Host "--- 共 $($filteredTags.Count) 个版本，第 $($currentPage + 1)/$totalPages 页 ---"
+        for ($i = 0; $i -lt $tagsToShow.Count; $i++) {
+            $index = ($currentPage * $pageSize) + $i + 1
+            Write-Host ("  [{0,3}] {1}" -f $index, $tagsToShow[$i])
+        }
+
+        Write-Host "`n操作提示:" -ForegroundColor Yellow
+        Write-Host "  - 直接输入 ${Green}序号${NC} (如 '123') 或 ${Green}版本全名${NC} (如 '1.10.0') 进行选择"
+        Write-Host "  - 输入 ${Green}a${NC} 翻到上一页，${Green}d${NC} 翻到下一页"
+        Write-Host "  - 输入 ${Green}f [关键词]${NC} 筛选版本 (如 'f 1.10' 或 'f 2023-')"
+        Write-Host "  - 输入 ${Green}c${NC} 清除筛选，${Green}q${NC} 退出"
+        $userInput = Read-Host "请输入"
+
+        if ($userInput -eq 'q') { Write-Warning "操作已取消。"; Press-Any-Key; return }
+        # 优化：翻页按键修改为 A/D
+        elseif ($userInput -eq 'a') { if ($currentPage -gt 0) { $currentPage-- } }
+        elseif ($userInput -eq 'd') { if (($currentPage + 1) * $pageSize -lt $filteredTags.Count) { $currentPage++ } }
+        elseif ($userInput.StartsWith("f ")) { $filter = $userInput.Substring(2); $currentPage = 0 }
+        elseif ($userInput -eq 'c') { $filter = ""; $currentPage = 0 }
+        else {
+            $selectedTag = $null
+            if ($userInput -match '^\d+$' -and [int]$userInput -ge 1 -and [int]$userInput -le $filteredTags.Count) {
+                $selectedTag = $filteredTags[[int]$userInput - 1]
+            } elseif ($filteredTags -contains $userInput) {
+                $selectedTag = $userInput
+            }
+
+            if ($selectedTag) {
+                Write-Host "`n此操作仅会改变酒馆的程序版本，不会影响您的用户数据 (如聊天记录、角色卡等)。" -ForegroundColor Cyan
+                $confirm = Read-Host "确认要切换到版本 $($selectedTag) 吗？(直接回车=是, 输入n=否)"
+                if ($confirm -eq 'n' -or $confirm -eq 'N') { Write-Warning "操作已取消。"; continue }
+
+                Write-Warning "正在切换到版本 $selectedTag ..."
+                # 关键修复：强制切换，不再需要二次确认
+                git checkout -f "tags/$selectedTag"
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Error "切换版本时发生未知错误: $checkoutOutput"; Press-Any-Key; return
+                }
+                
+                Write-Success "版本已成功切换到 $selectedTag"
+                if (Run-NpmInstallWithRetry) {
+                    Write-Success "版本回退完成！"
+                } else {
+                    Write-Error "版本已切换，但依赖安装失败。请尝试手动修复。"
+                }
+                Press-Any-Key
+                return
+            } else {
+                Write-Error "无效的输入！"; Start-Sleep 1
+            }
+        }
+    }
+}
+
+function Show-VersionManagementMenu {
+    while ($true) {
+        Clear-Host
+        Write-Header "酒馆版本管理"
+        Write-Host "      [1] " -NoNewline; Write-Host "更新酒馆" -ForegroundColor Green
+        Write-Host "      [2] " -NoNewline; Write-Host "回退版本" -ForegroundColor Yellow
+        Write-Host "`n      [0] " -NoNewline; Write-Host "返回主菜单" -ForegroundColor Cyan
+        $choice = Read-Host "`n    请输入选项"
+        switch ($choice) {
+            "1" { Update-SillyTavern }
+            "2" { Rollback-SillyTavern }
+            "0" { return }
+            default { Write-Warning "无效输入。"; Start-Sleep 1 }
+        }
+    }
 }
 
 function Run-BackupInteractive {
     Clear-Host
     if (-not (Test-Path $ST_Dir)) {
-        Write-Warning "SillyTavern 尚未安装，无法备份。"
+        Write-Warning "酒馆尚未安装，无法备份。"
         Press-Any-Key
         return
     }
@@ -1296,12 +1399,12 @@ while ($true) {
     Show-Header
     $updateNoticeText = if (Test-Path $UpdateFlagFile) { " [!] 有更新" } else { "" }
     Write-Host "`n    选择一个操作来开始：`n"
-    Write-Host "      [1] " -NoNewline -ForegroundColor Green; Write-Host "启动 SillyTavern"
+    Write-Host "      [1] " -NoNewline -ForegroundColor Green; Write-Host "启动酒馆"
     Write-Host "      [2] " -NoNewline -ForegroundColor Cyan; Write-Host "数据同步 (Git 云端)"
     Write-Host "      [3] " -NoNewline -ForegroundColor Cyan; Write-Host "本地备份管理"
     Write-Host "      [4] " -NoNewline -ForegroundColor Yellow; Write-Host "首次部署 (全新安装)`n"
-    Write-Host "      [5] 更新 ST 主程序    [6] 更新咕咕助手$($updateNoticeText)"
-    Write-Host "      [7] 打开 ST 文件夹    [8] 查看帮助文档"
+    Write-Host "      [5] 酒馆版本管理      [6] 更新咕咕助手$($updateNoticeText)"
+    Write-Host "      [7] 打开酒馆文件夹    [8] 查看帮助文档"
     Write-Host "      [9] 配置网络代理`n"
     Write-Host "      [0] " -NoNewline -ForegroundColor Red; Write-Host "退出咕咕助手`n"
     $choice = Read-Host "    请输入选项数字"
@@ -1310,7 +1413,7 @@ while ($true) {
         "2" { Show-GitSyncMenu }
         "3" { Show-BackupMenu }
         "4" { Install-SillyTavern }
-        "5" { Update-SillyTavern }
+        "5" { Show-VersionManagementMenu }
         "6" { Update-AssistantScript }
         "7" { if (Test-Path $ST_Dir) { Invoke-Item $ST_Dir } else { Write-Warning '目录不存在，请先部署！'; Start-Sleep 1.5 } }
         "8" { Open-HelpDocs }
