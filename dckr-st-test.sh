@@ -12,7 +12,7 @@ fi
 # --- -------------------------- ---
 
 fn_ssh_rollback() {
-    log_warn "检测到新SSH端口连接失败，正在执行回滚操作..."
+    fn_print_tip "检测到新SSH端口连接失败，正在执行回滚操作..."
     # 采用更安全的 drop-in 配置后，回滚只需删除自定义文件
     if [ -f "/etc/ssh/sshd_config.d/99-custom-port.conf" ]; then
         rm -f "/etc/ssh/sshd_config.d/99-custom-port.conf"
@@ -23,7 +23,7 @@ fn_ssh_rollback() {
         log_info "已通过备份文件恢复 sshd_config。"
     fi
     systemctl restart sshd
-    log_success "SSH配置已恢复到修改前状态。端口恢复正常。"
+    fn_print_ok "SSH配置已恢复到修改前状态。端口恢复正常。"
     log_info "脚本将退出。请检查云服务商的防火墙/NAT映射设置后重试。"
 }
 
@@ -54,7 +54,6 @@ log_warn() { echo -e "${YELLOW}$1${NC}"; }
 log_error() { echo -e "\n${RED}✗ $1${NC}\n"; exit 1; }
 log_action() { echo -e "${YELLOW}→ $1${NC}"; }
 log_step() { echo -e "\n${BLUE}--- $1: $2 ---${NC}"; } # 暂时保留，后续可能进一步简化
-log_success() { echo -e "${GREEN}✓ $1${NC}"; }
 
 # 新增简洁输出函数
 fn_print_ok() { echo -e "${GREEN}✓ $1${NC}"; }
@@ -100,12 +99,12 @@ fn_check_base_deps() {
             if ! $install_cmd "${missing_pkgs[@]}"; then
                 log_error "部分基础依赖自动安装失败，请手动执行 '$install_cmd ${missing_pkgs[*]}' 后重试。"
             fi
-            log_success "所有缺失的基础依赖已安装成功。"
+            fn_print_ok "所有缺失的基础依赖已安装成功。"
         else
             log_error "您的系统 (${DETECTED_OS}) 不支持自动安装。请手动安装缺失的工具: ${missing_pkgs[*]}"
         fi
     else
-        log_success "基础依赖完整。"
+        fn_print_ok "基础依赖完整。"
     fi
 }
 
@@ -183,7 +182,7 @@ fn_configure_docker_logging() {
     read -rp "推荐执行 [Y/n]: " confirm_log < /dev/tty
     if [[ "${confirm_log:-y}" =~ ^[Yy]$ ]]; then
         DAEMON_JSON_PARTS+=('"log-driver": "json-file", "log-opts": {"max-size": "10m", "max-file": "3"}')
-        log_success "已添加 Docker 日志限制配置 (10MB x 3个文件)。"
+        fn_print_ok "已添加 Docker 日志限制配置 (10MB x 3个文件)。"
     else
         log_info "已跳过 Docker 日志限制配置。"
     fi
@@ -210,15 +209,15 @@ fn_configure_docker_mirrors() {
         1)
             local test_results; test_results=$(fn_internal_test_mirrors)
             if [[ "$test_results" == "OFFICIAL_HUB_OK" ]]; then
-                log_success "官方 Docker Hub 可用，将直接使用官方源，不配置镜像加速。"
+                fn_print_ok "官方 Docker Hub 可用，将直接使用官方源，不配置镜像加速。"
             else
-                log_warn "官方 Docker Hub 连接失败，将自动从可用备用镜像中配置最快的源。"
+                fn_print_tip "官方 Docker Hub 连接失败，将自动从可用备用镜像中配置最快的源。"
                 if [ -n "$test_results" ]; then
                     local best_mirrors; best_mirrors=($(echo -e "$test_results" | head -n 3 | cut -d'|' -f2))
-                    log_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
+                    fn_print_ok "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
                     mirrors_json_array=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
                 else
-                    log_warn "所有备用镜像均测试失败！将不配置镜像加速。"
+                    fn_print_tip "所有备用镜像均测试失败！将不配置镜像加速。"
                 fi
             fi
             ;;
@@ -236,30 +235,30 @@ fn_configure_docker_mirrors() {
                 fi
             done
             if [ ${#selected_mirrors[@]} -gt 0 ]; then
-                log_success "已选择 ${#selected_mirrors[@]} 个镜像源。"
+                fn_print_ok "已选择 ${#selected_mirrors[@]} 个镜像源。"
                 mirrors_json_array=$(printf '"%s",' "${selected_mirrors[@]}" | sed 's/,$//')
             else
-                log_warn "未选择任何有效的镜像源。"
+                fn_print_tip "未选择任何有效的镜像源。"
             fi
             ;;
         3)
             log_action "输入自定义 Docker 镜像地址 (例如: https://docker.my-mirror.com):"
             read -rp "> " custom_mirror < /dev/tty
             if [ -n "$custom_mirror" ]; then
-                log_success "已设置自定义镜像源。"
+                fn_print_ok "已设置自定义镜像源。"
                 mirrors_json_array="\"$custom_mirror\""
             else
-                log_warn "输入为空，未配置自定义镜像源。"
+                fn_print_tip "输入为空，未配置自定义镜像源。"
             fi
             ;;
         *)
-            log_warn "无效输入，将不配置 Docker 镜像加速。"
+            fn_print_tip "无效输入，将不配置 Docker 镜像加速。"
             ;;
     esac
 
     if [ -n "$mirrors_json_array" ]; then
         DAEMON_JSON_PARTS+=("\"registry-mirrors\": [${mirrors_json_array}]")
-        log_success "已添加 Docker 镜像加速配置。"
+        fn_print_ok "已添加 Docker 镜像加速配置。"
     fi
 }
 
@@ -286,8 +285,8 @@ fn_apply_docker_optimization() {
     log_action "正在应用 Docker 优化配置..."
 
     if [ -f "$DAEMON_JSON" ]; then
-        log_warn "检测到现有的 Docker 配置文件 ${DAEMON_JSON}。"
-        log_warn "此操作将覆盖现有配置，请注意备份。"
+        fn_print_tip "检测到现有的 Docker 配置文件 ${DAEMON_JSON}。"
+        fn_print_tip "此操作将覆盖现有配置，请注意备份。"
         read -rp "确认覆盖并继续? [Y/n]: " confirm_overwrite < /dev/tty
         if [[ ! "${confirm_overwrite:-y}" =~ ^[Yy]$ ]]; then
             log_info "已取消 Docker 优化配置，未修改 ${DAEMON_JSON}。"
@@ -309,9 +308,9 @@ fn_apply_docker_optimization() {
         done
         echo "}"
     } | sudo tee "$DAEMON_JSON" > /dev/null
-
-    if sudo systemctl restart docker; then
-        log_success "Docker 服务已重启，优化配置已生效！"
+ 
+     if sudo systemctl restart docker; then
+        fn_print_ok "Docker 服务已重启，优化配置已生效！"
     else
         log_error "Docker 服务重启失败！请检查 ${DAEMON_JSON} 格式。"
     fi
@@ -333,21 +332,21 @@ run_system_cleanup() {
 
     log_info "正在清理 apt 缓存..."
     apt-get clean -y
-    log_success "apt 缓存清理完成。"
+    fn_print_ok "apt 缓存清理完成。"
 
     log_info "正在压缩 journald 日志..."
     journalctl --vacuum-size=100M
-    log_success "journald 日志压缩完成。"
+    fn_print_ok "journald 日志压缩完成。"
 
     if command -v docker &> /dev/null; then
         log_info "正在清理 Docker 系统..."
         docker system prune -f
-        log_success "Docker 系统清理完成。"
+        fn_print_ok "Docker 系统清理完成。"
     else
-        log_warn "未检测到 Docker，已跳过 Docker 系统清理步骤。"
+        fn_print_tip "未检测到 Docker，已跳过 Docker 系统清理步骤。"
     fi
-
-    log_info "系统安全清理已全部完成！"
+ 
+    fn_print_ok "系统安全清理已全部完成！"
 }
 
 
@@ -377,15 +376,15 @@ create_dynamic_swap() {
     mkswap /swapfile
     swapon /swapfile
     echo '/swapfile none swap sw 0 0' >> /etc/fstab
-    log_success "Swap 文件创建、启用并已设置为开机自启。"
+    fn_print_ok "Swap 文件创建、启用并已设置为开机自启。"
 }
 
 
 fn_init_prepare_firewall() {
     fn_print_tip "请在云服务商控制台放行以下端口："
-    fn_print_info "- ${YELLOW}22${NC}: 当前SSH端口"
-    fn_print_info "- ${YELLOW}新高位端口${NC}: 范围 ${GREEN}49152-65535${NC} (用于新SSH端口)"
-    log_warn "未放行新SSH端口将导致连接失败！"
+    echo -e "  - ${YELLOW}22${NC}: 当前SSH端口"
+    echo -e "  - ${YELLOW}新高位端口${NC}: 范围 ${GREEN}49152-65535${NC} (用于新SSH端口)"
+    fn_print_tip "未放行新SSH端口将导致连接失败！"
     read -rp "确认已放行? [Y/n]: " confirm < /dev/tty
 }
 
@@ -491,7 +490,7 @@ fn_init_validate_ssh() {
                 exit 1
                 ;;
             * )
-                log_warn "无效输入。请按 Y/n。"
+                fn_print_tip "无效输入。请按 Y/n。"
                 ;;
         esac
     done
@@ -624,13 +623,13 @@ install_1panel() {
     fi
 
     log_step "1" "运行 1Panel 官方安装脚本"
-    log_warn "即将进入 1Panel 交互式安装界面，请按提示操作。"
+    fn_print_tip "即将进入 1Panel 交互式安装界面，请按提示操作。"
     read -rp "按 Enter 开始安装 1Panel..." < /dev/tty
     bash -c "$(curl -sSL https://resource.fit2cloud.com/1panel/package/v2/quick_start.sh)"
     
     log_step "2" "检查 Docker 安装情况"
     if ! command -v docker &> /dev/null; then
-        log_warn "1Panel 安装后未检测到 Docker。"
+        fn_print_tip "1Panel 安装后未检测到 Docker。"
         log_action "尝试使用备用脚本安装 Docker..."
         bash <(curl -sSL https://linuxmirrors.cn/docker.sh)
         
@@ -652,205 +651,35 @@ install_1panel() {
             log_action "将用户 '${REAL_USER}' 添加到 docker 用户组..."
             usermod -aG docker "$REAL_USER"
             fn_print_ok "添加成功！"
-            log_warn "用户组更改需【重新登录SSH】才能生效！"
-            log_warn "否则下一步可能出现 Docker 权限错误。"
+            fn_print_tip "用户组更改需【重新登录SSH】才能生效！"
+            fn_print_tip "否则下一步可能出现 Docker 权限错误。"
         fi
     else
          fn_print_tip "以 root 用户运行，无需添加到 docker 用户组。"
     fi
 
     echo -e "\n${CYAN}--- 1Panel 安装完成 ---${NC}"
-    log_warn "重要：请牢记 1Panel 访问地址、端口、账号和密码。"
-    log_warn "确保云服务商防火墙/安全组中 ${GREEN}已放行 1Panel 端口${NC}。"
+    fn_print_tip "重要：请牢记 1Panel 访问地址、端口、账号和密码。"
+    fn_print_tip "确保云服务商防火墙/安全组中 ${GREEN}已放行 1Panel 端口${NC}。"
     fn_print_tip "可重新运行本脚本，选择【部署 SillyTavern】。"
-    log_warn "若有用户被添加到 docker 组，请务必先退出并重新登录SSH！"
-}
-
-# --- SillyTavern 安装流程的辅助函数 ---
-
-# 全局变量，用于在不同函数间传递状态
-DOCKER_COMPOSE_CMD=""
-SILLY_TAVERN_IMAGE=""
-INSTALL_TYPE="" # 'overseas', 'mainland', or 'custom'
-# 自定义模式下的变量
-SERVER_IP=""
-INSTALL_DIR=""
-CONFIG_FILE=""
-COMPOSE_FILE=""
-TARGET_USER=""
-USER_HOME=""
-run_mode=""
-single_user=""
-single_pass=""
-
-fn_print_step() { echo -e "\n${CYAN}═══ $1 ═══${NC}"; }
-fn_print_info() { echo -e "  $1"; }
-fn_print_error() { echo -e "\n${RED}✗ 错误: $1${NC}\n" >&2; exit 1; }
-
-fn_get_cleaned_version_num() { echo "$1" | grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1; }
-
-fn_ensure_docker_running() {
-    # Use `docker info` as a reliable check for daemon connectivity.
-    if docker info > /dev/null 2>&1; then
-        log_info "Docker daemon 状态正常，连接成功。"
-        return 0
-    fi
-
-    log_warn "无法连接到 Docker daemon。这可能是因为它没有运行或已经停止。"
-    
-    if ! command -v systemctl &> /dev/null; then
-        # This case is for non-systemd systems.
-        fn_print_error "Docker 服务未运行，且系统中未找到 systemctl 命令，无法自动启动。请在手动启动 Docker 后重试。"
-        return 1
-    fi
-
-    log_action "正在尝试使用 systemctl 启动 Docker 服务..."
-    # Use `|| true` to prevent `set -e` from exiting the script if systemctl fails.
-    systemctl start docker > /dev/null 2>&1 || true
-    
-    log_info "等待 5 秒以确保 Docker 服务完成初始化..."
-    sleep 5
-
-    if ! docker info > /dev/null 2>&1; then
-        # The daemon is still not running. Now we give the user the specific systemd commands.
-        fn_print_error "尝试启动 Docker 服务后，仍然无法连接到 Docker daemon。这通常意味着 Docker 服务本身存在配置问题或已损坏。请在终端中手动执行以下命令来诊断根本原因：\n\n  1. ${YELLOW}systemctl status docker.service${NC}\n  2. ${YELLOW}journalctl -xeu docker.service${NC}\n\n根据错误信息修复 Docker 后，再重新运行本脚本。"
-    else
-        log_success "Docker 服务已成功启动。"
-    fi
-}
- 
-fn_report_dependencies() {
-    local DOCKER_VER="$1" DOCKER_STATUS="$2" COMPOSE_VER="$3" COMPOSE_STATUS="$4"
-    local overall_status="${GREEN}OK ✓${NC}"
-    if [[ "$DOCKER_STATUS" == "Not Found" || "$COMPOSE_STATUS" == "Not Found" ]]; then
-        overall_status="${RED}异常 ✗${NC}"
-    fi
-    fn_print_info "→ Docker 环境: ${overall_status} (Docker: ${DOCKER_VER} ${DOCKER_STATUS}, Compose: ${COMPOSE_VER} ${COMPOSE_STATUS})"
-}
-
-fn_check_dependencies() {
-    fn_print_info "检查 Docker 环境..."
-    local DOCKER_VER="-" DOCKER_STATUS="-" COMPOSE_VER="-" COMPOSE_STATUS="-"
-    
-    local docker_check_needed=true
-    while $docker_check_needed; do
-        if ! command -v docker &> /dev/null; then
-            DOCKER_STATUS="未找到"
-        else
-            DOCKER_VER=$(fn_get_cleaned_version_num "$(docker --version)"); DOCKER_STATUS="正常"
-        fi
-        if command -v docker-compose &> /dev/null; then
-            DOCKER_COMPOSE_CMD="docker-compose"; COMPOSE_VER="v$(fn_get_cleaned_version_num "$($DOCKER_COMPOSE_CMD version)")"; COMPOSE_STATUS="正常 (v1)"
-        elif docker compose version &> /dev/null; then
-            DOCKER_COMPOSE_CMD="docker compose"; COMPOSE_VER=$(docker compose version | grep -oE 'v[0-9]+(\.[0-9]+)+' | head -n 1); COMPOSE_STATUS="正常 (v2)"
-        else
-            DOCKER_COMPOSE_CMD=""; COMPOSE_STATUS="未找到"
-        fi
-
-        if [[ "$DOCKER_STATUS" == "未找到" || "$COMPOSE_STATUS" == "未找到" ]]; then
-            if [ "$IS_DEBIAN_LIKE" = true ]; then
-                log_warn "Docker 或 Docker-Compose 未安装。"
-                read -rp "按 Enter 自动安装 Docker (Ctrl+C 退出)..." < /dev/tty
-                log_action "使用官方脚本安装 Docker..."
-                bash <(curl -sSL https://linuxmirrors.cn/docker.sh) > /dev/null 2>&1
-                continue
-            else
-                fn_print_error "Docker 或 Docker-Compose 未安装。请在您的系统 (${DETECTED_OS}) 上手动安装后重试。"
-            fi
-        else
-            docker_check_needed=false
-        fi
-    done
-
-    fn_report_dependencies "$DOCKER_VER" "$DOCKER_STATUS" "$COMPOSE_VER" "$COMPOSE_STATUS"
-
-    local current_user="${SUDO_USER:-$(whoami)}"
-    if ! groups "$current_user" | grep -q '\bdocker\b' && [ "$(id -u)" -ne 0 ]; then
-        fn_print_error "当前用户不在 docker 用户组。请执行【安装 1Panel】或手动添加后，【重新登录SSH】再试。"
-    fi
-    fn_print_ok "Docker 环境检查通过！"
-}
-
-fn_check_existing_container() {
-    local container_name="$1"
-    if docker ps -a -q -f "name=^${container_name}$" | grep -q .; then
-        log_warn "检测到服务器上已存在一个名为 '${container_name}' 的 Docker 容器。"
-        log_info "这可能来自之前的安装。若要继续，必须先处理现有容器。"
-        echo -e "请选择操作："
-        echo -e "  [1] ${YELLOW}停止并移除现有容器，然后继续全新安装 (此操作不删除数据文件)${NC}"
-        echo -e "  [2] ${RED}退出脚本，由我手动处理${NC}"
-        
-        local choice=""
-        while [[ "$choice" != "1" && "$choice" != "2" ]]; do
-            read -p "请输入选项 [1 或 2]: " choice < /dev/tty
-        done
-        
-        case "$choice" in
-            1)
-                log_action "正在停止并移除现有容器 '${container_name}'..."
-                docker stop "${container_name}" > /dev/null 2>&1 || true
-                docker rm "${container_name}" > /dev/null 2>&1 || true
-                log_success "现有容器已成功移除。"
-                ;;
-            2)
-                log_info "脚本已退出。请手动执行 'docker ps -a' 查看容器状态。"
-                exit 0
-                ;;
-        esac
-    fi
-}
-
-fn_pull_sillytavern_image() {
-    log_info "这是部署中最关键的一步。如果拉取失败，请尝试配置镜像加速或使用自定义镜像。"
-
-    echo "选择 SillyTavern 镜像源："
-    echo -e "  [1] ${CYAN}官方镜像${NC} (ghcr.io/sillytavern/sillytavern:latest)"
-    echo -e "  [2] ${YELLOW}自定义${NC} (输入完整镜像地址)"
-    read -rp "选项 [默认为 1]: " choice < /dev/tty
-    choice=${choice:-1}
-
-    case "$choice" in
-        1)
-            SILLY_TAVERN_IMAGE="ghcr.io/sillytavern/sillytavern:latest"
-            ;;
-        2)
-            read -rp "输入自定义镜像地址: " custom_image < /dev/tty
-            if [ -z "$custom_image" ]; then
-                fn_print_error "自定义镜像地址不能为空！"
-            fi
-            SILLY_TAVERN_IMAGE="$custom_image"
-            ;;
-        *)
-            fn_print_error "无效输入，脚本已终止。"
-            ;;
-    esac
-
-    fn_pull_image_with_progress "$SILLY_TAVERN_IMAGE"
-}
-
-fn_pull_image_with_progress() {
-    local image_to_pull="$1"
-    if [ -z "$image_to_pull" ]; then
-        fn_print_error "调用 fn_pull_image_with_progress 时未提供镜像名称。"
-    fi
-
-    log_action "正在拉取镜像: ${image_to_pull}"
-    echo -e "\n${CYAN}--- Docker 正在拉取，请关注以下原生进度条 ---${NC}"
-    if ! docker pull "$image_to_pull"; then
-        fn_print_error "Docker 镜像拉取失败！请检查网络或镜像地址后重试。"
-    fi
-    fn_print_ok "镜像 ${image_to_pull} 拉取成功！"
+    fn_print_tip "若有用户被添加到 docker 组，请务必先退出并重新登录SSH！"
 }
 
 fn_get_public_ip() {
     local ip_services=(
-        "https://ifconfig.me" "https://myip.ipip.net" "https://cip.cc" "https://api.ipify.org"
+        "https://ifconfig.me"
+        "https://myip.ipip.net"
+        "https://cip.cc"
+        "https://api.ipify.org"
     )
     local ip=""
+
     log_info "正在尝试自动获取公网IP地址..." >&2
+    
     for service in "${ip_services[@]}"; do
         echo -ne "  - 正在尝试: ${YELLOW}${service}${NC}..." >&2
         ip=$(curl -s -4 --max-time 5 "$service" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1)
+        
         if [[ -n "$ip" ]]; then
             echo -e " ${GREEN}成功!${NC}" >&2
             echo "$ip"
@@ -859,125 +688,352 @@ fn_get_public_ip() {
             echo -e " ${RED}失败${NC}" >&2
         fi
     done
-    echo >&2 
-    log_warn "未能自动获取到公网IP地址。" >&2
+
+    echo >&2
+    fn_print_tip "未能自动获取到公网IP地址。" >&2
+    log_info "这不影响部署结果，SillyTavern容器已成功在后台运行。" >&2
+    
     echo "【请手动替换为你的服务器IP】"
     return 1
 }
 
-fn_verify_container_health() {
-    local container_name="$1"
-    local retries=10
-    local interval=3
-    local spinner="/-\|"
-    fn_print_info "正在确认容器健康状态..."
-    echo -n "  "
-    for i in $(seq 1 $retries); do
-        local status
-        status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || echo "error")
-        if [[ "$status" == "running" ]]; then
-            echo -e "\r  ${GREEN}✓${NC} 容器已成功进入运行状态！"
-            return 0
+install_sillytavern() {
+    local DOCKER_VER="-" DOCKER_STATUS="-"
+    local COMPOSE_VER="-" COMPOSE_STATUS="-"
+    local CONTAINER_NAME="sillytavern"
+    local IMAGE_NAME="ghcr.io/sillytavern/sillytavern:latest"
+
+    # fn_print_step() { echo -e "\n${CYAN}═══ $1 ═══${NC}"; } # 已替换为 log_step
+
+    fn_check_existing_container() {
+        if docker ps -a -q -f "name=^${CONTAINER_NAME}$" | grep -q .; then
+            fn_print_tip "检测到服务器上已存在一个名为 '${CONTAINER_NAME}' 的 Docker 容器。"
+            log_info "这可能来自之前的安装。若要继续，必须先处理现有容器。"
+            echo -e "请选择操作："
+            echo -e "  [1] ${YELLOW}停止并移除现有容器，然后继续全新安装 (此操作不删除数据文件)${NC}"
+            echo -e "  [2] ${RED}退出脚本，由我手动处理${NC}"
+            
+            local choice=""
+            while [[ "$choice" != "1" && "$choice" != "2" ]]; do
+                read -p "请输入选项 [1 或 2]: " choice < /dev/tty
+            done
+            
+            case "$choice" in
+                1)
+                    log_action "正在停止并移除现有容器 '${CONTAINER_NAME}'..."
+                    docker stop "${CONTAINER_NAME}" > /dev/null 2>&1 || true
+                    docker rm "${CONTAINER_NAME}" > /dev/null 2>&1 || true
+                    fn_print_ok "现有容器已成功移除。"
+                    ;;
+                2)
+                    log_info "脚本已退出。请手动执行 'docker ps -a' 查看容器状态。"
+                    exit 0
+                    ;;
+            esac
         fi
-        echo -ne "${spinner:i%4:1}\r"
-        sleep $interval
-    done
-    echo -e "\r  ${RED}✗${NC} 容器未能进入健康运行状态！"
-    fn_print_info "以下是容器的最新日志，以帮助诊断问题："
-    docker logs "$container_name" --tail 50 || echo "无法获取容器日志。"
-    fn_print_error "部署失败。请检查以上日志以确定问题原因。"
-}
+    }
 
-fn_wait_for_service() {
-    local seconds="${1:-10}"
-    while [ $seconds -gt 0 ]; do
-        printf "  服务正在后台稳定，请稍候... ${YELLOW}%2d 秒${NC}  \r" "$seconds"
-        sleep 1
-        ((seconds--))
-    done
-    echo -e "                                           \r"
-}
+    fn_report_dependencies() {
+        log_info "--- Docker 环境诊断摘要 ---"
+        printf "${BOLD}%-18s %-20s %-20s${NC}\n" "工具" "检测到的版本" "状态"
+        printf "${CYAN}%-18s %-20s %-20s${NC}\n" "------------------" "--------------------" "--------------------"
+        print_status_line() {
+            local name="$1" version="$2" status="$3"
+            local color="$GREEN"
+            if [[ "$status" == "Not Found" ]]; then color="$RED"; fi
+            printf "%-18s %-20s ${color}%-20s${NC}\n" "$name" "$version" "$status"
+        }
+        print_status_line "Docker" "$DOCKER_VER" "$DOCKER_STATUS"
+        print_status_line "Docker Compose" "$COMPOSE_VER" "$COMPOSE_STATUS"
+        echo ""
+    }
 
-fn_display_final_info() {
-    fn_print_ok "部署成功！尽情享受吧！"
+    fn_get_cleaned_version_num() { echo "$1" | grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1; }
+
+    fn_check_dependencies() {
+        log_info "--- Docker 环境诊断开始 ---"
+        
+        local docker_check_needed=true
+        while $docker_check_needed; do
+            if ! command -v docker &> /dev/null; then
+                DOCKER_STATUS="Not Found"
+            else
+                DOCKER_VER=$(fn_get_cleaned_version_num "$(docker --version)"); DOCKER_STATUS="OK"
+            fi
+            if command -v docker-compose &> /dev/null; then
+                DOCKER_COMPOSE_CMD="docker-compose"; COMPOSE_VER="v$(fn_get_cleaned_version_num "$($DOCKER_COMPOSE_CMD version)")"; COMPOSE_STATUS="OK (v1)"
+            elif docker compose version &> /dev/null; then
+                DOCKER_COMPOSE_CMD="docker compose"; COMPOSE_VER=$(docker compose version | grep -oE 'v[0-9]+(\.[0-9]+)+' | head -n 1); COMPOSE_STATUS="OK (v2)"
+            else
+                DOCKER_COMPOSE_CMD=""; COMPOSE_STATUS="Not Found"
+            fi
+
+            if [[ "$DOCKER_STATUS" == "Not Found" || "$COMPOSE_STATUS" == "Not Found" ]]; then
+                if [ "$IS_DEBIAN_LIKE" = true ]; then
+                    fn_print_tip "未检测到 Docker 或 Docker-Compose。"
+                    read -rp "是否立即尝试自动安装 Docker? [Y/n]: " confirm_install_docker < /dev/tty
+                    if [[ "${confirm_install_docker:-y}" =~ ^[Yy]$ ]]; then
+                        log_action "正在使用官方推荐脚本安装 Docker..."
+                        bash <(curl -sSL https://linuxmirrors.cn/docker.sh)
+                        continue
+                    else
+                        log_error "用户选择不安装 Docker，脚本无法继续。"
+                    fi
+                else
+                    log_error "未检测到 Docker 或 Docker-Compose。请在您的系统 (${DETECTED_OS}) 上手动安装它们后重试。"
+                fi
+            else
+                docker_check_needed=false
+            fi
+        done
+
+        fn_report_dependencies
+
+        local current_user="${SUDO_USER:-$(whoami)}"
+        if ! groups "$current_user" | grep -q '\bdocker\b' && [ "$(id -u)" -ne 0 ]; then
+            log_error "当前用户不在 docker 用户组。请执行【步骤2】或手动添加后，【重新登录SSH】再试。"
+        fi
+        fn_print_ok "Docker 环境检查通过！"
+    }
+
+    fn_apply_config_changes() {
+        sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # 允许外部访问/" "$CONFIG_FILE"
+        sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false # 关闭IP白名单模式/" "$CONFIG_FILE"
+        sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400 # 24小时退出登录/" "$CONFIG_FILE"
+        sed -i -E "s/^([[:space:]]*)numberOfBackups: .*/\1numberOfBackups: 5 # 单文件保留的备份数量/" "$CONFIG_FILE"
+        sed -i -E "s/^([[:space:]]*)maxTotalBackups: .*/\1maxTotalBackups: 30 # 总聊天文件数量上限/" "$CONFIG_FILE"
+        sed -i -E "s/^([[:space:]]*)lazyLoadCharacters: .*/\1lazyLoadCharacters: true # 懒加载、点击角色卡才加载/" "$CONFIG_FILE"
+        sed -i -E "s/^([[:space:]]*)memoryCacheCapacity: .*/\1memoryCacheCapacity: '128mb' # 角色卡内存缓存/" "$CONFIG_FILE"
+        if [[ "$run_mode" == "1" ]]; then
+            sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 启用基础认证/" "$CONFIG_FILE"
+            sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$single_user\"/}" "$CONFIG_FILE"
+            sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$single_pass\"/}" "$CONFIG_FILE"
+        elif [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
+            sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 临时开启基础认证以设置管理员/" "$CONFIG_FILE"
+            sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # 启用多用户模式/" "$CONFIG_FILE"
+        fi
+    }
     
-    if [[ "$run_mode" == "1" ]]; then
-        # 单用户模式
-        fn_print_tip "访问地址: ${GREEN}http://${SERVER_IP}:8000${NC}"
-        fn_print_tip "登录账号: ${YELLOW}${single_user}${NC}"
-        fn_print_tip "登录密码: ${YELLOW}${single_pass}${NC}"
-    elif [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
-        # 多用户/维护者模式
-        fn_print_tip "访问地址 (平时用): ${GREEN}http://${SERVER_IP}:8000${NC}"
-        fn_print_tip "登录页地址 (验证账号密码): ${GREEN}http://${SERVER_IP}:8000/login${NC}"
+    fn_confirm_and_delete_dir() {
+        local dir_to_delete="$1"
+        local container_name="$2"
+        log_warn "目录 '$dir_to_delete' 已存在，可能包含之前的聊天记录和角色卡。"
+        read -r -p "确定要【彻底清理】并继续安装吗？此操作会停止并删除旧容器。[Y/n]: " c1 < /dev/tty
+        if [[ ! "${c1:-y}" =~ ^[Yy]$ ]]; then log_error "操作被用户取消。"; fi
+        read -r -p "$(echo -e "${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 [Y/n]: ${NC}")" c2 < /dev/tty
+        if [[ ! "${c2:-y}" =~ ^[Yy]$ ]]; then log_error "操作被用户取消。"; fi
+        read -r -p "$(echo -e "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}")" c3 < /dev/tty
+        if [[ "$c3" != "yes" ]]; then log_error "操作被用户取消。"; fi
+        log_info "正在停止并移除旧容器: $container_name..."
+        docker stop "$container_name" > /dev/null 2>&1 || true
+        docker rm "$container_name" > /dev/null 2>&1 || true
+        fn_print_ok "旧容器已停止并移除。"
+        log_info "正在删除旧目录: $dir_to_delete..."
+        sudo rm -rf "$dir_to_delete"
+        fn_print_ok "旧目录已彻底清理。"
+    }
+
+    fn_create_project_structure() {
+        log_info "正在创建项目目录结构..."
+        mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"
+        log_info "正在设置文件所有权..."
+        chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
+        fn_print_ok "项目目录创建并授权成功！"
+    }
+
+    fn_pull_with_progress_bar() {
+        local compose_file="$1"
+        local docker_compose_cmd="$2"
+        local time_estimate_table="$3"
+        local PULL_LOG
+        PULL_LOG=$(mktemp)
+        trap 'rm -f "$PULL_LOG"' EXIT
+        
+        $docker_compose_cmd -f "$compose_file" pull > "$PULL_LOG" 2>&1 &
+        local pid=$!
+        while kill -0 $pid 2>/dev/null; do
+            clear || true
+            echo -e "${time_estimate_table}"
+            echo -e "\n${CYAN}--- 实时拉取进度 (下方为最新日志) ---${NC}"
+            grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists' "$PULL_LOG" | tail -n 5 || true
+            sleep 1
+        done
+        
+        wait $pid
+        local exit_code=$?
+        trap - EXIT
+
+        clear || true
+
+        if [ $exit_code -ne 0 ]; then
+            echo -e "${RED}Docker 镜像拉取失败！${NC}" >&2
+            echo -e "${YELLOW}以下是来自 Docker 的原始错误日志：${NC}" >&2
+            echo "--------------------------------------------------" >&2
+            cat "$PULL_LOG" >&2
+            echo "--------------------------------------------------" >&2
+            rm -f "$PULL_LOG"
+            log_error "请根据以上日志排查问题，可能原因包括网络不通、镜像源失效或 Docker 服务异常。"
+        else
+            rm -f "$PULL_LOG"
+            fn_print_ok "镜像拉取成功！"
+        fi
+    }
+
+    fn_verify_container_health() {
+        local container_name="$1"
+        local retries=10
+        local interval=3
+        local spinner="/-\|"
+        log_info "正在确认容器健康状态..."
+        echo -n "  "
+        for i in $(seq 1 $retries); do
+            local status
+            status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || echo "error")
+            if [[ "$status" == "running" ]]; then
+                echo -e "\r  ${GREEN}✓${NC} 容器已成功进入运行状态！"
+                return 0
+            fi
+            echo -ne "${spinner:i%4:1}\r"
+            sleep $interval
+        done
+        echo -e "\r  ${RED}✗${NC} 容器未能进入健康运行状态！"
+        log_info "以下是容器的最新日志，以帮助诊断问题："
+        echo -e "${YELLOW}--- 容器日志开始 ---${NC}"
+        docker logs "$container_name" --tail 50 || echo "无法获取容器日志。"
+        echo -e "${YELLOW}--- 容器日志结束 ---${NC}"
+        log_error "部署失败。请检查以上日志以确定问题原因。"
+    }
+
+    fn_wait_for_service() {
+        local seconds="${1:-10}"
+        while [ $seconds -gt 0 ]; do
+            printf "  服务正在后台稳定，请稍候... ${YELLOW}%2d 秒${NC}  \r" "$seconds"
+            sleep 1
+            ((seconds--))
+        done
+        echo -e "                                           \r"
+    }
+
+    fn_check_and_explain_status() {
+        local container_name="$1"
+        echo -e "\n${YELLOW}--- 容器当前状态 ---${NC}"
+        docker ps -a --filter "name=${container_name}"
+        local status
+        status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || echo "notfound")
+        echo -e "\n${CYAN}--- 状态解读 ---${NC}"
+        case "$status" in
+            running) fn_print_ok "状态正常：容器正在健康运行。";;
+            restarting) fn_print_tip "状态异常：容器正在无限重启。"; fn_print_info "通常意味着程序内部崩溃。请使用 [2] 查看日志定位错误。";;
+            exited) echo -e "${RED}状态错误：容器已停止运行。${NC}"; log_info "通常是由于启动时发生致命错误。请使用 [2] 查看日志获取错误信息。";;
+            notfound) echo -e "${RED}未能找到名为 '${container_name}' 的容器。${NC}";;
+            *) fn_print_tip "状态未知：容器处于 '${status}' 状态。"; fn_print_info "建议使用 [2] 查看日志进行诊断。";;
+        esac
+    }
+
+    fn_display_final_info() {
+        echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "║                   ${BOLD}部署成功！尽情享受吧！${NC}                   ║"
+        echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
+        echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC}"
+        
+        if [[ "$run_mode" == "1" ]]; then
+            echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"
+            echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"
+        elif [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
+            echo -e "  ${YELLOW}登录页面:${NC} ${GREEN}http://${SERVER_IP}:8000/login${NC}"
+        fi
+        
+        echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
+    }
+
+
+    tput reset
+    echo -e "${CYAN}SillyTavern Docker 自动化安装流程${NC}"
+
+    log_step "1/5" "环境检查与准备"
+    fn_check_base_deps
+    
+    TARGET_USER="${SUDO_USER:-root}"
+    if [ "$TARGET_USER" = "root" ]; then
+        USER_HOME="/root"
+        fn_print_tip "检测到以 root 用户运行，将安装在 /root 目录。"
+    else
+        USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
+        if [ -z "$USER_HOME" ]; then fn_print_error "无法找到用户 '$TARGET_USER' 的家目录。"; fi
     fi
+    INSTALL_DIR="$USER_HOME/sillytavern"
+    CONFIG_FILE="$INSTALL_DIR/config.yaml"
+    COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
     
-    fn_print_tip "项目路径: $INSTALL_DIR"
-}
+    fn_check_dependencies
 
-fn_check_and_explain_status() {
-    local container_name="$1"
-    echo -e "\n${YELLOW}--- 容器当前状态 ---${NC}"
-    docker ps -a --filter "name=${container_name}"
-    local status
-    status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || echo "notfound")
-    echo -e "\n${CYAN}--- 状态解读 ---${NC}"
-    case "$status" in
-        running) log_success "状态正常：容器正在健康运行。";;
-        restarting) log_warn "状态异常：容器正在无限重启。"; fn_print_info "通常意味着程序内部崩溃。请使用 [2] 查看日志定位错误。";;
-        exited) echo -e "${RED}状态错误：容器已停止运行。${NC}"; fn_print_info "通常是由于启动时发生致命错误。请使用 [2] 查看日志获取错误信息。";;
-        notfound) echo -e "${RED}未能找到名为 '${container_name}' 的容器。${NC}";;
-        *) log_warn "状态未知：容器处于 '${status}' 状态。"; fn_print_info "建议使用 [2] 查看日志进行诊断。";;
+    fn_check_existing_container
+
+    fn_optimize_docker
+    
+    SERVER_IP=$(fn_get_public_ip)
+
+    log_step "2/5" "选择运行模式与路径"
+
+    echo "选择运行模式："
+    echo -e "  [1] ${CYAN}单用户模式${NC} (弹窗认证，适合个人使用)"
+    echo -e "  [2] ${CYAN}多用户模式${NC} (独立登录页，适合多人或单人使用)"
+    echo -e "  [3] ${RED}维护者模式${NC} (作者专用，普通用户请勿选择！)"
+    read -p "请输入选项数字 [默认为 1]: " run_mode < /dev/tty
+    run_mode=${run_mode:-1}
+
+    case "$run_mode" in
+        1)
+            read -p "请输入自定义用户名: " single_user < /dev/tty
+            read -p "请输入自定义密码: " single_pass < /dev/tty
+            if [ -z "$single_user" ] || [ -z "$single_pass" ]; then log_error "用户名和密码不能为空！"; fi
+            ;;
+        2)
+            ;;
+        3)
+            fn_print_tip "已进入维护者模式，此模式需要手动准备特殊文件。"
+            ;;
+        *)
+            log_error "无效输入，脚本已终止."
+            ;;
     esac
-}
 
-fn_create_project_structure() {
-    fn_print_info "正在创建项目目录结构..."
-    mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"
-    chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
-    log_success "项目目录创建并授权成功！"
-}
+    local default_parent_path="$USER_HOME"
+    read -rp "安装路径: SillyTavern 将被安装在 <上级目录>/sillytavern 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
+    local parent_path="${custom_parent_path:-$default_parent_path}"
+    INSTALL_DIR="${parent_path}/sillytavern"
+    log_info "安装路径最终设置为: ${INSTALL_DIR}"
 
-fn_confirm_and_delete_dir() {
-    local dir_to_delete="$1" container_name="$2"
-    log_warn "目录 '$dir_to_delete' 已存在，可能包含旧数据。"
-    log_warn "为了进行全新安装，必须清理该目录。此操作不可逆！"
-    read -r -p "按 Enter 键确认【彻底清理】并继续 (或按 Ctrl+C 退出脚本)..." < /dev/tty
-    read -r -p "$(echo -e "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}")" c3 < /dev/tty
-    if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。"; fi
-    docker stop "$container_name" > /dev/null 2>&1 || true
-    docker rm "$container_name" > /dev/null 2>&1 || true
-    sudo rm -rf "$dir_to_delete"
-    log_success "旧目录和容器已彻底清理。"
-}
+    CONFIG_FILE="$INSTALL_DIR/config.yaml"
+    COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 
-fn_apply_config_changes() {
-    sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true/" "$CONFIG_FILE"
-    sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false/" "$CONFIG_FILE"
-    sed -i -E "s/^([[:space:]]*)lazyLoadCharacters: .*/\1lazyLoadCharacters: true/" "$CONFIG_FILE"
-    if [[ "$run_mode" == "1" ]]; then
-        sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true/" "$CONFIG_FILE"
-        sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$single_user\"/}" "$CONFIG_FILE"
-        sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$single_pass\"/}" "$CONFIG_FILE"
-    elif [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
-        sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true/" "$CONFIG_FILE"
+    log_step "3/5" "创建项目文件"
+    if [ -d "$INSTALL_DIR" ]; then
+        fn_confirm_and_delete_dir "$INSTALL_DIR" "$CONTAINER_NAME"
     fi
-}
 
-fn_create_compose_file() {
-    local compose_file_path="$1"
-    local container_name="$2"
-    local image_name="$3"
-    local current_run_mode="$4"
+    if [[ "$run_mode" == "3" ]]; then
+        log_info "正在创建开发者模式项目目录结构..."
+        mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"
+        mkdir -p "$INSTALL_DIR/custom/images"
+        touch "$INSTALL_DIR/custom/login.html"
+        log_info "正在设置文件所有权..."
+        chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
+        fn_print_ok "开发者项目目录创建并授权成功！"
+    else
+        fn_create_project_structure
+    fi
 
-    if [[ "$current_run_mode" == "3" ]]; then
-        # 维护者模式
-        cat <<EOF > "$compose_file_path"
+    cd "$INSTALL_DIR"
+    log_info "工作目录已切换至: $(pwd)"
+
+    if [[ "$run_mode" == "3" ]]; then
+    cat <<EOF > "$COMPOSE_FILE"
 services:
   sillytavern:
-    container_name: ${container_name}
-    image: ${image_name}
-    hostname: ${container_name}
+    container_name: ${CONTAINER_NAME}
+    hostname: ${CONTAINER_NAME}
+    image: ${IMAGE_NAME}
     security_opt:
       - apparmor:unconfined
     environment:
@@ -995,13 +1051,12 @@ services:
     restart: unless-stopped
 EOF
     else
-        # 普通或专家模式
-        cat <<EOF > "$compose_file_path"
+    cat <<EOF > "$COMPOSE_FILE"
 services:
   sillytavern:
-    container_name: ${container_name}
-    image: ${image_name}
-    hostname: ${container_name}
+    container_name: ${CONTAINER_NAME}
+    hostname: ${CONTAINER_NAME}
+    image: ${IMAGE_NAME}
     security_opt:
       - apparmor:unconfined
     environment:
@@ -1017,322 +1072,105 @@ services:
     restart: unless-stopped
 EOF
     fi
-    log_success "docker-compose.yml 文件创建成功！"
-}
+    fn_print_ok "docker-compose.yml 文件创建成功！"
 
-fn_generate_initial_config() {
-    local compose_cmd="$1"
-    local compose_file="$2"
-    local config_file="$3"
-
-    fn_print_info "正在进行首次启动以生成官方配置文件..."
-    if ! $compose_cmd -f "$compose_file" up -d > /dev/null 2>&1; then
-        fn_print_error "首次启动容器失败！请检查日志。"
+    if [[ "$run_mode" == "3" ]]; then
+        fn_print_tip "维护者模式：请现在将您的自定义文件 (如 login.html) 放入 '$INSTALL_DIR/custom' 目录。"
+        read -rp "文件放置完毕后，按 Enter 键继续..." < /dev/tty
     fi
 
+    log_step "4/5" "初始化与配置"
+    log_info "即将拉取 SillyTavern 镜像，下载期间将持续显示预估时间。"
+    TIME_ESTIMATE_TABLE=$(cat <<EOF
+  下载速度取决于网络带宽，以下为预估时间参考：
+  ${YELLOW}┌──────────────────────────────────────────────────┐${NC}
+  ${YELLOW}│${NC} ${CYAN}带宽${NC}      ${BOLD}|${NC} ${CYAN}下载速度${NC}    ${BOLD}|${NC} ${CYAN}预估最快时间${NC}           ${YELLOW}│${NC}
+  ${YELLOW}├──────────────────────────────────────────────────┤${NC}
+  ${YELLOW}│${NC} 1M 带宽   ${BOLD}|${NC} ~0.125 MB/s ${BOLD}|${NC} 约 1 小时 14 分 31 秒 ${YELLOW}│${NC}
+  ${YELLOW}│${NC} 2M 带宽   ${BOLD}|${NC} ~0.25 MB/s  ${BOLD}|${NC} 约 37 分 15 秒        ${YELLOW}│${NC}
+  ${YELLOW}│${NC} 10M 带宽  ${BOLD}|${NC} ~1.25 MB/s  ${BOLD}|${NC} 约 7 分 27 秒         ${YELLOW}│${NC}
+  ${YELLOW}│${NC} 100M 带宽 ${BOLD}|${NC} ~12.5 MB/s  ${BOLD}|${NC} 约 45 秒              ${YELLOW}│${NC}
+  ${YELLOW}└──────────────────────────────────────────────────┘${NC}
+EOF
+)
+    fn_pull_with_progress_bar "$COMPOSE_FILE" "$DOCKER_COMPOSE_CMD" "$TIME_ESTIMATE_TABLE"
+    log_info "正在进行首次启动以生成官方配置文件..."
+    if ! $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null 2>&1; then
+        log_error "首次启动容器失败！请检查以下日志：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)"
+    fi
     local timeout=60
-    while [ ! -f "$config_file" ]; do
+    while [ ! -f "$CONFIG_FILE" ]; do
         if [ $timeout -eq 0 ]; then
-            fn_print_error "等待配置文件生成超时！请检查容器日志。"
+            log_error "等待配置文件生成超时！请检查日志输出：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)"
         fi
         sleep 1
         ((timeout--))
     done
-
-    if ! $compose_cmd -f "$compose_file" down > /dev/null 2>&1; then
-        log_warn "首次关闭容器时出错，但这通常不影响后续步骤。"
-    fi
-    log_success "config.yaml 文件已生成！"
-}
-
-fn_post_deployment_menu() {
-    local container_name="$1"
-    while true; do
-        echo -e "\n${CYAN}--- 部署后操作 ---${NC}"
-        echo -e "  [1] 容器状态\n  [2] 查看日志\n  [3] 访问信息\n  [q] 退出"
-        read -rp "选择操作: " choice < /dev/tty
-        case "$choice" in
-            1) fn_check_and_explain_status "$container_name";;
-            2) docker logs -f "$container_name" || true;;
-            3) fn_display_final_info;;
-            q|Q) break;;
-            *) log_warn "无效输入。";;
-        esac
-    done
-}
-
-# --- 安装流程的主函数 ---
-
-install_sillytavern() {
-    tput reset
-    echo -e "${CYAN}--- 部署 SillyTavern ---${NC}"
-    fn_print_tip "此流程将通过 Docker 部署 SillyTavern。"
-
-    fn_ensure_docker_running
- 
-    fn_select_server_type
- 
-    case "$INSTALL_TYPE" in
-        "overseas")
-            run_overseas_install
-            ;;
-        "mainland")
-            run_mainland_install
-            ;;
-        "custom")
-            run_custom_install
-            ;;
-    esac
-}
-
-fn_select_server_type() {
-    log_step "1" "选择安装模式"
-    fn_print_tip "请选择适合您服务器的安装模式："
-    echo -e "  [1] ${CYAN}海外服务器${NC} (自动安装，直连官方源)"
-    echo -e "  [2] ${YELLOW}大陆服务器${NC} (自动安装，自动配置镜像加速)"
-    echo -e "  [3] ${GREEN}完全自定义${NC} (手动配置所有步骤)"
-    read -rp "选择模式 [默认为 1]: " choice < /dev/tty
-    choice=${choice:-1}
-
-    case "$choice" in
-        1)
-            INSTALL_TYPE="overseas"
-            fn_print_ok "已选 [海外服务器] 模式。"
-            ;;
-        2)
-            INSTALL_TYPE="mainland"
-            fn_print_ok "已选 [大陆服务器] 模式。"
-            ;;
-        3)
-            INSTALL_TYPE="custom"
-            fn_print_ok "已选 [完全自定义] 模式。"
-            ;;
-        *)
-            log_warn "无效输入，默认使用 [海外服务器] 模式。"
-            INSTALL_TYPE="overseas"
-            ;;
-    esac
-}
-
-fn_select_run_mode() {
-    echo
-    log_action "请选择 SillyTavern 的运行模式："
-    echo -e "  [1] ${CYAN}单用户模式${NC} (弹窗认证，适合个人使用)"
-    echo -e "  [2] ${CYAN}多用户模式${NC} (独立登录页，适合多人或单人使用)"
+    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down > /dev/null 2>&1
+    fn_print_ok "config.yaml 文件已生成！"
     
-    local prompt_text="选择模式 [默认为 1]: "
-    if [[ "$INSTALL_TYPE" == "custom" ]]; then
-        echo -e "  [3] ${RED}维护者模式${NC} (作者专用，普通用户请勿选择！)"
-    fi
-    
-    read -rp "$prompt_text" choice < /dev/tty
-    run_mode=${choice:-1}
-
-    case "$run_mode" in
-        1)
-            read -rp "请输入自定义用户名: " single_user < /dev/tty
-            read -rp "请输入自定义密码: " single_pass < /dev/tty
-            if [ -z "$single_user" ] || [ -z "$single_pass" ]; then fn_print_error "用户名和密码不能为空！"; fi
-            ;;
-        2)
-            ;; # 多用户模式不需要在这里输入账密
-        3)
-            if [[ "$INSTALL_TYPE" != "custom" ]]; then
-                fn_print_error "无效输入，脚本已终止."
-            fi
-            ;;
-        *) fn_print_error "无效输入，脚本已终止." ;;
-    esac
-    export run_mode single_user single_pass
-}
-
-run_automated_install() {
-    local install_type="$1" # "overseas" or "mainland"
-    local mode_name=""
-    if [[ "$install_type" == "overseas" ]]; then mode_name="海外服务器"; else mode_name="大陆服务器"; fi
-
-    fn_print_step "[ ${mode_name} ] 环境检查与准备"
-    fn_check_base_deps
-    fn_check_dependencies
-
-    fn_print_step "[ ${mode_name} ] 自动配置 Docker"
-    DAEMON_JSON_PARTS=()
-    log_info "自动配置 Docker 日志 (10MB x 3个文件)..."
-    DAEMON_JSON_PARTS+=('"log-driver": "json-file", "log-opts": {"max-size": "10m", "max-file": "3"}')
-    
-    if [[ "$install_type" == "mainland" ]]; then
-        log_info "正在为大陆服务器自动配置最快镜像源..."
-        local test_results; test_results=$(fn_internal_test_mirrors)
-        if [[ "$test_results" != "OFFICIAL_HUB_OK" && -n "$test_results" ]]; then
-            # 使用 awk 更稳定地提取镜像地址，并限制最多3个
-            local best_mirrors_str; best_mirrors_str=$(echo -e "$test_results" | awk -F'|' '{print $2}' | head -n 3)
-            # 使用 mapfile 或 read -a 是更安全的做法，避免 word splitting 问题
-            read -r -d '' -a best_mirrors < <(printf '%s\n' "$best_mirrors_str")
-            
-            if [ ${#best_mirrors[@]} -gt 0 ]; then
-                log_success "将自动配置最快的 ${#best_mirrors[@]} 个镜像源。"
-                local mirrors_json_array; mirrors_json_array=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
-                DAEMON_JSON_PARTS+=("\"registry-mirrors\": [${mirrors_json_array}]")
-            else
-                log_warn "所有备用镜像均测试失败！将不配置镜像加速。"
-            fi
-        elif [[ "$test_results" == "OFFICIAL_HUB_OK" ]]; then
-            log_success "官方 Docker Hub 可用，无需配置镜像加速。"
-        else
-            log_warn "所有备用镜像均测试失败！将不配置镜像加速。"
+    fn_apply_config_changes
+    if [[ "$run_mode" == "1" ]]; then
+        fn_print_ok "单用户模式配置写入完成！"
+    else
+        log_info "正在临时启动服务以设置管理员..."
+        if ! $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null 2>&1; then
+            log_error "临时启动容器以设置管理员失败！请检查以下日志：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)"
         fi
-    else
-        log_info "海外服务器，跳过镜像加速配置。"
-    fi
-    fn_apply_docker_optimization
-
-    fn_print_step "[ ${mode_name} ] 自动拉取镜像"
-    SILLY_TAVERN_IMAGE="ghcr.io/sillytavern/sillytavern:latest"
-    fn_pull_image_with_progress "$SILLY_TAVERN_IMAGE"
-
-    fn_select_run_mode
-
-    TARGET_USER="${SUDO_USER:-root}"
-    if [ "$TARGET_USER" = "root" ]; then USER_HOME="/root"; else USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6); fi
-    INSTALL_DIR="$USER_HOME/sillytavern"
-    CONFIG_FILE="$INSTALL_DIR/config.yaml"
-    COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
-    log_info "将使用默认安装路径: ${INSTALL_DIR}"
-
-    local container_name="sillytavern"
-    if [ -d "$INSTALL_DIR" ]; then
-        fn_confirm_and_delete_dir "$INSTALL_DIR" "$container_name"
-    fi
-
-    fn_create_project_structure
-    cd "$INSTALL_DIR"
-
-    # 自动模式不进入维护者模式，所以 run_mode 传 "1" (代表普通用户)
-    fn_create_compose_file "$COMPOSE_FILE" "$container_name" "$SILLY_TAVERN_IMAGE" "1"
-
-    fn_print_step "[ ${mode_name} ] 初始化与配置"
-    fn_generate_initial_config "$DOCKER_COMPOSE_CMD" "$COMPOSE_FILE" "$CONFIG_FILE"
-
-    log_action "正在应用配置..."
-    fn_apply_config_changes
-    log_success "配置已应用。"
-
-    fn_print_step "[ ${mode_name} ] 启动并验证服务"
-    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate
-    fn_verify_container_health "$container_name"
-    fn_wait_for_service
-    SERVER_IP=$(fn_get_public_ip)
-    fn_display_final_info
-
-    fn_post_deployment_menu "$container_name"
-}
-
-run_overseas_install() {
-    run_automated_install "overseas"
-}
-
-run_mainland_install() {
-    run_automated_install "mainland"
-}
-
-run_custom_install() {
-    local CONTAINER_NAME="sillytavern"
-
-    # 步骤 1: 环境检查
-    fn_print_step "[ 完全自定义 ] 步骤 1/6: 环境检查与准备"
-    fn_check_base_deps
-    fn_check_dependencies
-    fn_check_existing_container "$CONTAINER_NAME"
-
-    # 步骤 2: Docker 优化
-    fn_print_step "[ 完全自定义 ] 步骤 2/6: Docker 优化配置"
-    DAEMON_JSON_PARTS=() # 重置配置数组
-    fn_configure_docker_logging
-    echo
-    fn_configure_docker_mirrors
-    fn_apply_docker_optimization
-
-    # 步骤 3: 拉取镜像
-    fn_print_step "[ 完全自定义 ] 步骤 3/6: 选择并拉取 SillyTavern 镜像"
-    fn_pull_sillytavern_image
-
-    # 步骤 4: 配置安装选项
-    fn_print_step "[ 完全自定义 ] 步骤 4/6: 选择运行模式与路径"
-    TARGET_USER="${SUDO_USER:-root}"
-    if [ "$TARGET_USER" = "root" ]; then
-        USER_HOME="/root"
-    else
-        USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
-        if [ -z "$USER_HOME" ]; then fn_print_error "无法找到用户 '$TARGET_USER' 的家目录。"; fi
-    fi
-
-    fn_select_run_mode
-
-    local default_parent_path="$USER_HOME"
-    read -rp "安装路径 (上级目录) [默认: $USER_HOME]: " custom_parent_path < /dev/tty
-    local parent_path="${custom_parent_path:-$default_parent_path}"
-    INSTALL_DIR="${parent_path}/sillytavern"
-    log_info "安装路径最终设置为: ${INSTALL_DIR}"
-    CONFIG_FILE="$INSTALL_DIR/config.yaml"
-    COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
-
-    # 步骤 5: 创建项目文件
-    fn_print_step "[ 完全自定义 ] 步骤 5/6: 创建项目文件"
-    if [ -z "$INSTALL_DIR" ]; then fn_print_error "安装路径未设置，无法创建项目文件。"; fi
-    if [ -d "$INSTALL_DIR" ]; then
-        fn_confirm_and_delete_dir "$INSTALL_DIR" "$CONTAINER_NAME"
-    fi
-
-    if [[ "$run_mode" == "3" ]]; then
-        fn_print_info "正在创建开发者模式项目目录结构..."
-        mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"
-        mkdir -p "$INSTALL_DIR/custom/images"
-        touch "$INSTALL_DIR/custom/login.html"
-        chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
-        log_success "开发者项目目录创建并授权成功！"
-    else
-        fn_create_project_structure
-    fi
-
-    cd "$INSTALL_DIR"
-    fn_print_info "工作目录已切换至: $(pwd)"
-
-    fn_create_compose_file "$COMPOSE_FILE" "$CONTAINER_NAME" "$SILLY_TAVERN_IMAGE" "$run_mode"
-
-    # 步骤 6: 初始化与启动
-    fn_print_step "[ 完全自定义 ] 步骤 6/6: 初始化与启动服务"
-    if [ -z "$DOCKER_COMPOSE_CMD" ]; then fn_print_error "Docker Compose 命令未找到。"; fi
-    if [ ! -f "$COMPOSE_FILE" ]; then fn_print_error "docker-compose.yml 文件不存在。"; fi
-
-    fn_generate_initial_config "$DOCKER_COMPOSE_CMD" "$COMPOSE_FILE" "$CONFIG_FILE"
-    
-    fn_apply_config_changes
-    log_success "自定义配置已应用。"
-
-    if [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
-        fn_print_info "正在临时启动服务以设置管理员..."
-        sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true/" "$CONFIG_FILE"
-        $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d
         fn_verify_container_health "$CONTAINER_NAME"
         fn_wait_for_service
-        SERVER_IP=$(fn_get_public_ip)
-        echo -e "${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}"
-        echo -e "访问: ${GREEN}http://${SERVER_IP}:8000${NC} 使用默认账号(user)密码(password)登录并设置管理员。"
-        read -rp "按 Enter 继续..." < /dev/tty
-        sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false/" "$CONFIG_FILE"
-        log_success "已切换到多用户登录页模式。"
+        MULTI_USER_GUIDE=$(cat <<EOF
+
+${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}
+1. ${CYAN}【开放端口】${NC}
+   需确保服务器后台（如阿里云/腾讯云安全组）已开放 ${GREEN}8000${NC} 端口。
+2. ${CYAN}【访问并登录】${NC}
+   打开浏览器，访问: ${GREEN}http://${SERVER_IP}:8000${NC}
+   使用以下默认凭据登录：
+     ▶ 账号: ${YELLOW}user${NC}
+     ▶ 密码: ${YELLOW}password${NC}
+3. ${CYAN}【设置管理员】${NC}
+   登录后，立即在【用户设置】标签页的【管理员面板】中操作：
+   A. ${GREEN}设置密码${NC}：为默认账户 \`default-user\` 设置一个强大的新密码。
+   B. ${GREEN}创建新账户 (推荐)${NC}：
+      ① 点击“新用户”。
+      ② 自定义日常使用的账号和密码（建议账号用纯英文或纯数字）。
+      ③ 创建后，点击新账户旁的【↑】箭头，将其身份提升为 Admin (管理员)。
+${YELLOW}>>> 完成以上所有步骤后，回到本窗口按【回车键】继续 <<<${NC}
+EOF
+)
+        echo -e "${MULTI_USER_GUIDE}"
+        read -p "" < /dev/tty
+        log_info "正在切换到多用户登录页模式..."
+        sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false # 关闭基础认证，启用登录页/" "$CONFIG_FILE"
+        sed -i -E "s/^([[:space:]]*)enableDiscreetLogin: .*/\1enableDiscreetLogin: true # 隐藏登录用户列表/" "$CONFIG_FILE"
+        fn_print_ok "多用户模式配置写入完成！"
     fi
 
-    fn_print_info "正在应用最终配置并重启服务..."
-    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate
+    log_step "5/5" "启动并验证服务"
+    log_info "正在应用最终配置并重启服务..."
+    if ! $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate > /dev/null 2>&1; then
+        log_error "应用最终配置并启动服务失败！请检查以下日志：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)"
+    fi
     fn_verify_container_health "$CONTAINER_NAME"
     fn_wait_for_service
-    SERVER_IP=$(fn_get_public_ip)
     fn_display_final_info
 
-    fn_post_deployment_menu "$CONTAINER_NAME"
-    
-    log_success "完全自定义安装流程已完成。"
+    while true; do
+        echo -e "\n${CYAN}--- 部署后操作 ---${NC}"
+        echo -e "  [1] 查看容器状态"
+        echo -e "  [2] 查看日志 ${YELLOW}(按 Ctrl+C 停止)${NC}"
+        echo -e "  [3] 重新显示访问信息"
+        echo -e "  [q] 退出此菜单"
+        read -p "请输入选项: " choice < /dev/tty
+        case "$choice" in
+            1) fn_check_and_explain_status "$CONTAINER_NAME";;
+            2) echo -e "\n${YELLOW}--- 实时日志 (按 Ctrl+C 停止) ---${NC}"; docker logs -f "$CONTAINER_NAME" || true;;
+            3) fn_display_final_info;;
+            q|Q) echo -e "\n已退出部署后菜单。"; break;;
+            *) fn_print_tip "无效输入，请输入 1, 2, 3 或 q。";;
+        esac
+    done
 }
 
 main_menu() {
@@ -1380,7 +1218,7 @@ main_menu() {
                     run_initialization
                     read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
                 else 
-                    log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"
+                    fn_print_tip "您的系统 (${DETECTED_OS}) 不支持此功能。"
                     sleep 2
                 fi
                 ;;
@@ -1391,7 +1229,7 @@ main_menu() {
                     while read -r -t 0.1; do :; done
                     read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
                 else 
-                    log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"
+                    fn_print_tip "您的系统 (${DETECTED_OS}) 不支持此功能。"
                     sleep 2
                 fi
                 ;;
@@ -1408,7 +1246,7 @@ main_menu() {
                     while read -r -t 0.1; do :; done
                     read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
                 else 
-                    log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"
+                    fn_print_tip "您的系统 (${DETECTED_OS}) 不支持此功能。"
                     sleep 2
                 fi
                 ;;
