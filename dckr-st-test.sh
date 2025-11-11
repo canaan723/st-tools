@@ -282,12 +282,6 @@ fn_apply_docker_optimization() {
         return
     fi
 
-    local final_json_content
-    # Join array elements with a comma and a newline for readability
-    final_json_content=$(printf ",\n  %s" "${DAEMON_JSON_PARTS[@]}")
-    # Remove the leading comma and newline
-    final_json_content="{\n  ${final_json_content:3}\n}"
-
     local DAEMON_JSON="/etc/docker/daemon.json"
     log_action "正在应用 Docker 优化配置..."
 
@@ -301,10 +295,20 @@ fn_apply_docker_optimization() {
         fi
     fi
     
-    # Use cat with EOF to write the formatted JSON
-    cat <<EOF | sudo tee "$DAEMON_JSON" > /dev/null
-$final_json_content
-EOF
+    # 逐行生成格式化的 JSON 文件，确保格式正确
+    {
+        echo "{"
+        local last_idx=$((${#DAEMON_JSON_PARTS[@]} - 1))
+        for i in "${!DAEMON_JSON_PARTS[@]}"; do
+            local part="${DAEMON_JSON_PARTS[$i]}"
+            if [ "$i" -eq "$last_idx" ]; then
+                echo "  $part"
+            else
+                echo "  $part,"
+            fi
+        done
+        echo "}"
+    } | sudo tee "$DAEMON_JSON" > /dev/null
 
     if sudo systemctl restart docker; then
         log_success "Docker 服务已重启，优化配置已生效！"
