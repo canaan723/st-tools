@@ -1151,8 +1151,6 @@ run_automated_install() {
     fn_check_base_deps
     fn_check_dependencies
 
-    fn_select_run_mode
-
     fn_print_step "[ ${mode_name} ] 自动配置 Docker"
     DAEMON_JSON_PARTS=()
     log_info "自动配置 Docker 日志 (10MB x 3个文件)..."
@@ -1187,6 +1185,8 @@ run_automated_install() {
     fn_print_step "[ ${mode_name} ] 自动拉取镜像"
     SILLY_TAVERN_IMAGE="ghcr.io/sillytavern/sillytavern:latest"
     fn_pull_image_with_progress "$SILLY_TAVERN_IMAGE"
+
+    fn_select_run_mode
 
     TARGET_USER="${SUDO_USER:-root}"
     if [ "$TARGET_USER" = "root" ]; then USER_HOME="/root"; else USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6); fi
