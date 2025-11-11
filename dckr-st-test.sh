@@ -49,15 +49,19 @@ if [ -f /etc/os-release ]; then
     fi
 fi
 
-log_info() { echo -e "${GREEN}[INFO] $1${NC}"; }
-log_warn() { echo -e "${YELLOW}[WARN] $1${NC}"; }
-log_error() { echo -e "\n${RED}[ERROR] $1${NC}\n"; exit 1; }
-log_action() { echo -e "${YELLOW}[ACTION] $1${NC}"; }
-log_step() { echo -e "\n${BLUE}--- $1: $2 ---${NC}"; }
+log_info() { echo -e "${GREEN}$1${NC}"; }
+log_warn() { echo -e "${YELLOW}$1${NC}"; }
+log_error() { echo -e "\n${RED}✗ $1${NC}\n"; exit 1; }
+log_action() { echo -e "${YELLOW}→ $1${NC}"; }
+log_step() { echo -e "\n${BLUE}--- $1: $2 ---${NC}"; } # 暂时保留，后续可能进一步简化
 log_success() { echo -e "${GREEN}✓ $1${NC}"; }
 
+# 新增简洁输出函数
+fn_print_ok() { echo -e "${GREEN}✓ $1${NC}"; }
+fn_print_tip() { echo -e "${CYAN}💡 $1${NC}"; }
+
 fn_show_main_header() {
-    echo -e "${YELLOW}>>${GREEN} 咕咕助手 v2.45test${NC}"
+    echo -e "${YELLOW}>> ${GREEN}咕咕助手 v2.45test${NC}"
     echo -e "   ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
 }
 
@@ -166,8 +170,8 @@ fn_internal_test_mirrors() {
 
 # Function to configure Docker logging settings
 fn_configure_docker_logging() {
-    log_action "是否需要限制 Docker 日志大小以防止磁盘占满？"
-    read -rp "推荐执行，是否继续？[Y/n]: " confirm_log < /dev/tty
+    log_action "限制 Docker 日志大小以防磁盘占满？"
+    read -rp "推荐执行 [Y/n]: " confirm_log < /dev/tty
     if [[ "${confirm_log:-y}" =~ ^[Yy]$ ]]; then
         DAEMON_JSON_PARTS+=('"log-driver": "json-file", "log-opts": {"max-size": "50m", "max-file": "3"}')
         log_success "已添加 Docker 日志限制配置。"
@@ -178,8 +182,8 @@ fn_configure_docker_logging() {
 
 # Function to configure Docker registry mirrors
 fn_configure_docker_mirrors() {
-    log_action "是否需要配置 Docker 镜像加速？"
-    read -rp "国内服务器推荐执行，是否继续？[Y/n]: " confirm_mirror < /dev/tty
+    log_action "配置 Docker 镜像加速？"
+    read -rp "国内服务器推荐 [Y/n]: " confirm_mirror < /dev/tty
     if [[ ! "${confirm_mirror:-y}" =~ ^[Yy]$ ]]; then
         log_info "已跳过 Docker 镜像加速配置。"
         return
@@ -188,7 +192,7 @@ fn_configure_docker_mirrors() {
     echo -e "  [1] ${CYAN}自动测速${NC} (推荐，自动选择最快的可用镜像)"
     echo -e "  [2] ${CYAN}手动选择${NC} (从预设列表中选择一个或多个)"
     echo -e "  [3] ${CYAN}自定义填写${NC} (输入你自己的镜像地址)"
-    read -rp "请选择镜像加速的配置方式 [默认为 1]: " choice < /dev/tty
+    read -rp "选择配置方式 [默认为 1]: " choice < /dev/tty
     choice=${choice:-1}
 
     local mirrors_json_array=""
@@ -214,7 +218,7 @@ fn_configure_docker_mirrors() {
             for i in "${!DOCKER_MIRRORS[@]}"; do
                 echo "  [$((i+1))] ${DOCKER_MIRRORS[$i]}"
             done
-            read -rp "请输入序号: " -a selected_indices < /dev/tty
+            read -rp "输入序号: " -a selected_indices < /dev/tty
             local selected_mirrors=()
             for index in "${selected_indices[@]}"; do
                 if [[ "$index" =~ ^[0-9]+$ ]] && [ "$index" -ge 1 ] && [ "$index" -le "${#DOCKER_MIRRORS[@]}" ]; then
@@ -230,7 +234,7 @@ fn_configure_docker_mirrors() {
             fi
             ;;
         3)
-            log_action "请输入你的自定义 Docker 镜像地址 (例如: https://docker.my-mirror.com):"
+            log_action "输入自定义 Docker 镜像地址 (例如: https://docker.my-mirror.com):"
             read -rp "> " custom_mirror < /dev/tty
             if [ -n "$custom_mirror" ]; then
                 log_success "已设置自定义镜像源。"
@@ -278,8 +282,8 @@ fn_apply_docker_optimization() {
 
     if [ -f "$DAEMON_JSON" ]; then
         log_warn "检测到现有的 Docker 配置文件 ${DAEMON_JSON}。"
-        log_warn "此操作将覆盖现有配置。请注意备份重要配置。"
-        read -rp "确认要覆盖并继续吗？[Y/n]: " confirm_overwrite < /dev/tty
+        log_warn "此操作将覆盖现有配置，请注意备份。"
+        read -rp "确认覆盖并继续? [Y/n]: " confirm_overwrite < /dev/tty
         if [[ ! "${confirm_overwrite:-y}" =~ ^[Yy]$ ]]; then
             log_info "已取消 Docker 优化配置，未修改 ${DAEMON_JSON}。"
             return
@@ -302,7 +306,7 @@ run_system_cleanup() {
     if command -v docker &> /dev/null; then
         echo -e "  - ${CYAN}docker system prune -f${NC} (清理无用的Docker镜像和容器)"
     fi
-    read -rp "确认要继续吗? [Y/n] " confirm < /dev/tty
+    read -rp "确认继续? [Y/n]: " confirm < /dev/tty
     if [[ ! "${confirm:-y}" =~ ^[Yy]$ ]]; then
         log_info "操作已取消。"
         return
@@ -359,67 +363,62 @@ create_dynamic_swap() {
 
 
 fn_init_prepare_firewall() {
-    log_info "执行前，必须在云服务商控制台完成安全组/防火墙配置。"
-    log_info "需放行以下两个TCP端口的入站流量："
-    echo -e "  - ${YELLOW}22${NC}: 当前SSH连接使用的端口。"
-    echo -e "  - ${YELLOW}一个新的高位端口${NC}: 范围 ${GREEN}49152-65535${NC}，将用作新SSH端口。"
-    log_warn "若新SSH端口未在安全组放行，脚本执行后将导致SSH无法连接。"
-    read -rp "确认已完成上述配置后，按 Enter 键继续。" < /dev/tty
+    fn_print_tip "请在云服务商控制台放行以下端口："
+    fn_print_info "- ${YELLOW}22${NC}: 当前SSH端口"
+    fn_print_info "- ${YELLOW}新高位端口${NC}: 范围 ${GREEN}49152-65535${NC} (用于新SSH端口)"
+    log_warn "未放行新SSH端口将导致连接失败！"
+    read -rp "确认已放行? [Y/n]: " confirm < /dev/tty
 }
 
 fn_init_set_timezone() {
-    log_action "正在设置时区为 Asia/Shanghai..."
+    log_action "设置时区为 Asia/Shanghai..."
     timedatectl set-timezone Asia/Shanghai
-    log_success "时区设置完成。当前系统时间: $(date +"%Y-%m-%d %H:%M:%S")"
+    fn_print_ok "时区已设为 Asia/Shanghai。当前时间: $(date +"%H:%M:%S")"
 }
 
 fn_init_change_ssh_port() {
-    log_info "目的: 更改默认22端口，降低被自动化攻击的风险。"
-    read -rp "请输入新的SSH端口号 (范围 49152 - 65535): " NEW_SSH_PORT < /dev/tty
+    fn_print_tip "更改默认22端口，降低被攻击风险。"
+    read -rp "新SSH端口 (49152-65535): " NEW_SSH_PORT < /dev/tty
     if ! [[ "$NEW_SSH_PORT" =~ ^[0-9]+$ ]] || [ "$NEW_SSH_PORT" -lt 49152 ] || [ "$NEW_SSH_PORT" -gt 65535 ]; then
-        log_error "输入无效。端口号必须是 49152-65535 之间的数字。"
+        log_error "端口无效。请输 49152-65535 之间的数字。"
     fi
     
     local ssh_config_dir="/etc/ssh/sshd_config.d"
     local custom_config_file="${ssh_config_dir}/99-custom-port.conf"
     
-    log_action "正在创建SSH端口配置文件 ${custom_config_file}..."
+    log_action "创建SSH端口配置文件 ${custom_config_file}..."
     mkdir -p "$ssh_config_dir"
     echo "Port $NEW_SSH_PORT" > "$custom_config_file"
     
-    log_success "SSH端口已在配置中更新为 ${NEW_SSH_PORT}。"
-    
-    # 将新端口号导出，以便其他函数可以访问
+    fn_print_ok "SSH端口已更新为 ${NEW_SSH_PORT}。"
     export NEW_SSH_PORT
 }
 
 fn_init_install_fail2ban() {
-    log_info "目的: 自动阻止有恶意登录企图的IP地址。"
+    fn_print_tip "安装 Fail2ban，自动阻止恶意登录IP。"
     if command -v fail2ban-client &> /dev/null; then
-        log_success "Fail2ban 已安装，跳过安装步骤。"
-        systemctl enable --now fail2ban # 确保服务已启用
+        fn_print_ok "Fail2ban 已安装并启用。"
+        systemctl enable --now fail2ban
         return 0
     fi
 
-    log_action "正在更新包列表并安装 Fail2ban..."
-    apt-get update
-    apt-get install -y fail2ban
+    log_action "安装 Fail2ban..."
+    apt-get update > /dev/null 2>&1
+    apt-get install -y fail2ban > /dev/null 2>&1
     systemctl enable --now fail2ban
-    log_success "Fail2ban 安装并配置为开机自启。"
+    fn_print_ok "Fail2ban 安装并设为开机自启。"
 }
 
-# 新增函数：配置 Fail2ban 监控新的 SSH 端口
 fn_init_configure_fail2ban() {
-    log_info "目的: 配置 Fail2ban 监控新的 SSH 端口，增强安全性。"
+    fn_print_tip "配置 Fail2ban 监控新 SSH 端口，增强安全。"
     if [ -z "$NEW_SSH_PORT" ]; then
-        log_warn "未设置新的 SSH 端口号，跳过 Fail2ban 端口配置。"
+        fn_print_tip "未设新 SSH 端口，跳过 Fail2ban 配置。"
         return 0
     fi
 
     local jail_local_path="/etc/fail2ban/jail.local"
-    log_action "正在创建或更新 Fail2ban 配置文件 ${jail_local_path}..."
+    log_action "更新 Fail2ban 配置 ${jail_local_path}..."
 
-    # 使用 cat EOF 写入配置，动态替换端口
     cat <<EOF | sudo tee "$jail_local_path" > /dev/null
 [DEFAULT]
 ignoreip = 127.0.0.1/8
@@ -437,36 +436,34 @@ banaction = iptables-multiport
 EOF
 
     if [ $? -eq 0 ]; then
-        log_success "Fail2ban 配置文件已更新，SSH 监控端口设置为 ${NEW_SSH_PORT}。"
-        log_action "正在重启 Fail2ban 服务以应用新配置..."
+        fn_print_ok "Fail2ban 已配置监控端口 ${NEW_SSH_PORT}。"
+        log_action "重启 Fail2ban 服务..."
         systemctl restart fail2ban
-        log_success "Fail2ban 服务已重启。"
+        fn_print_ok "Fail2ban 服务已重启。"
     else
-        log_error "创建或更新 Fail2ban 配置文件失败。"
+        log_error "更新 Fail2ban 配置失败。"
     fi
 }
  
 fn_init_validate_ssh() {
     if [ -z "$NEW_SSH_PORT" ]; then
-        log_error "未设置新的SSH端口号，无法验证。"
+        log_error "未设新 SSH 端口，无法验证。"
         return 1
     fi
     
-    # log_step 现由主初始化循环处理
-    log_action "正在重启SSH服务以应用新端口 ${NEW_SSH_PORT}..."
+    log_action "重启 SSH 服务以应用新端口 ${NEW_SSH_PORT}..."
     systemctl restart sshd
-    log_info "SSH服务已重启。现在必须验证新端口的连通性。"
+    fn_print_tip "SSH 服务已重启。请立即验证新端口连通性。"
 
-    echo -e "\033[0;34m----------------------------------------------------------------\033[0m"
-    echo -e "\033[1;33m[重要] 请立即打开一个新的终端窗口，使用新端口 ${NEW_SSH_PORT} 尝试连接服务器。\033[0m"
-    echo -e "\033[0;34m----------------------------------------------------------------\033[0m"
+    echo -e "\n${BOLD}${YELLOW}--- 重要提示 ---${NC}"
+    echo -e "请立即打开新终端，用新端口 ${GREEN}${NEW_SSH_PORT}${NC} 连接服务器。"
+    echo -e "${BOLD}${YELLOW}----------------${NC}\n"
 
     while true; do
-        read -p "新端口是否连接成功？ [直接回车]=成功并继续 / [输入N再回车]=失败并恢复: " choice < /dev/tty
+        read -rp "新端口连接成功? [Y/n]: " choice < /dev/tty
         case $choice in
             "" | [Yy]* )
-                echo -e "\033[0;32m[成功] 确认新端口可用。SSH端口已成功更换为 ${NEW_SSH_PORT}！\033[0m"
-                # 成功后，清理旧的备份文件（如果有的话）
+                fn_print_ok "新端口可用。SSH 端口已成功更换为 ${NEW_SSH_PORT}！"
                 rm -f /etc/ssh/sshd_config.bak
                 break
                 ;;
@@ -475,40 +472,40 @@ fn_init_validate_ssh() {
                 exit 1
                 ;;
             * )
-                echo -e "\033[0;31m无效输入。请直接按【回车键】确认成功，或输入【N】并回车进行恢复。\033[0m"
+                log_warn "无效输入。请按 Y/n。"
                 ;;
         esac
     done
 }
 
 fn_init_upgrade_system() {
-    log_info "目的: 应用最新的安全补丁和软件更新。"
-    log_action "正在执行系统升级，此过程可能需要一些时间，请耐心等待..."
-    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
-    log_success "所有软件包已升级至最新版本。"
+    fn_print_tip "应用最新安全补丁和软件更新。"
+    log_action "系统升级中 (可能较久)..."
+    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" > /dev/null 2>&1
+    fn_print_ok "所有软件包已升级。"
 }
 
 fn_init_optimize_kernel() {
-    log_info "目的: 启用BBR优化网络，并创建Swap防止内存溢出。"
-    log_action "正在向 /etc/sysctl.conf 添加配置..."
+    fn_print_tip "启用 BBR 优化网络，创建 Swap 防内存溢出。"
+    log_action "添加内核配置到 /etc/sysctl.conf..."
     sed -i -e '/net.core.default_qdisc=fq/d' \
            -e '/net.ipv4.tcp_congestion_control=bbr/d' \
            -e '/vm.swappiness=10/d' /etc/sysctl.conf
     cat <<EOF >> /etc/sysctl.conf
-
+ 
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 vm.swappiness=10
 EOF
-    log_success "内核参数配置完成。"
+    fn_print_ok "内核参数配置完成。"
 
     create_dynamic_swap
 }
 
 run_initialization() {
     tput reset
-    echo -e "${CYAN}即将执行【服务器初始化】流程...${NC}"
-    echo -e "您可以选择性地执行以下每一步操作。"
+    echo -e "${CYAN}--- 服务器初始化 ---${NC}"
+    fn_print_tip "此流程将对服务器进行安全加固和系统优化。"
 
     fn_check_base_deps
 
@@ -518,19 +515,19 @@ run_initialization() {
         "fn_init_change_ssh_port"
         "fn_init_validate_ssh"
         "fn_init_install_fail2ban"
-        "fn_init_configure_fail2ban" # 新增：配置 Fail2ban
+        "fn_init_configure_fail2ban" # 配置 Fail2ban
         "fn_init_set_timezone"
         "fn_init_optimize_kernel"
     )
     local init_step_descs=(
-        "升级所有系统软件包 (安全更新)"
-        "准备防火墙 (提醒放行端口)"
-        "修改 SSH 端口 (增强安全性)"
-        "验证新的 SSH 端口"
+        "系统升级 (安全补丁)"
+        "防火墙准备 (端口放行提醒)"
+        "修改 SSH 端口 (增强安全)"
+        "验证新 SSH 端口"
         "安装 Fail2ban (防暴力破解)"
-        "配置 Fail2ban (动态端口)" # 新增：配置 Fail2ban
-        "设置系统时区为 Asia/Shanghai"
-        "优化内核参数 (启用BBR)并创建Swap"
+        "配置 Fail2ban (监控新端口)"
+        "设置系统时区 (Asia/Shanghai)"
+        "优化内核 (BBR, Swap)"
     )
 
     local ssh_port_changed=false
@@ -542,19 +539,19 @@ run_initialization() {
         local step_desc="${init_step_descs[$i]}"
         
         if [[ "$step_func" == "fn_init_validate_ssh" && "$ssh_port_changed" == false ]]; then
-            log_info "因为未执行 [修改 SSH 端口]，已自动跳过 [验证新的 SSH 端口] 步骤。"
+            fn_print_tip "未修改 SSH 端口，跳过 [验证新 SSH 端口]。"
             continue
         fi
 
         echo
-        log_action "是否要执行步骤 $(($i + 1))/${#init_step_funcs[@]}: ${step_desc}?"
-        read -rp "请确认 [Y/n]: " confirm_step < /dev/tty
+        log_action "要执行 [${step_desc}] 吗?"
+        read -rp "确认? [Y/n]: " confirm_step < /dev/tty
         if [[ ! "${confirm_step:-y}" =~ ^[Yy]$ ]]; then
-            log_info "已跳过步骤: ${step_desc}"
+            fn_print_tip "跳过: ${step_desc}"
             continue
         fi
 
-        log_step "步骤 $(($i + 1))/${#init_step_funcs[@]}" "${step_desc}"
+        log_step "$((i + 1))/${#init_step_funcs[@]}" "${step_desc}"
         "$step_func"
 
         if [[ "$step_func" == "fn_init_change_ssh_port" ]]; then ssh_port_changed=true; fi
@@ -563,26 +560,26 @@ run_initialization() {
     done
 
     echo
-    log_step "收尾" "应用配置并准备重启"
+    log_step "收尾" "应用配置与重启"
 
     if [[ "$kernel_optimized" == true ]]; then
-        log_action "正在应用已配置的内核参数..."
+        log_action "应用内核参数..."
         sysctl -p
-        log_success "内核参数已应用。"
+        fn_print_ok "内核参数已应用。"
     fi
 
     if [[ "$reboot_needed" == false && "$ssh_port_changed" == false ]]; then
-        log_success "所有选定步骤已完成，无需特殊操作。"
+        fn_print_ok "所有步骤完成，无需特殊操作。"
         return 0
     fi
     
-    log_info "所有选定步骤已完成。为使部分更改完全生效，建议重启服务器。"
+    fn_print_tip "部分更改需重启生效。建议重启服务器。"
     local post_reboot_guide=""
-    if [[ "$ssh_port_changed" == true ]]; then post_reboot_guide+="\n  - ${YELLOW}安全(重要):${NC} 重启后请用新端口 ${GREEN}${NEW_SSH_PORT}${NC} 登录, 并在确认正常后从云平台安全组中${BOLD}移除旧的22端口规则${NC}。"; fi
-    if [[ "$kernel_optimized" == true ]]; then post_reboot_guide+="\n  - ${YELLOW}验证(可选):${NC} 重启后可执行 'sudo sysctl net.ipv4.tcp_congestion_control && free -h' 检查BBR和Swap。"; fi
-    if [[ -n "$post_reboot_guide" ]]; then echo -e "\n${BLUE}--- 重启后操作指南 ---${NC}${post_reboot_guide}"; fi
+    if [[ "$ssh_port_changed" == true ]]; then post_reboot_guide+="\n  - ${YELLOW}安全提示:${NC} 重启后请用新端口 ${GREEN}${NEW_SSH_PORT}${NC} 登录, 确认正常后${BOLD}移除旧的22端口规则${NC}。"; fi
+    if [[ "$kernel_optimized" == true ]]; then post_reboot_guide+="\n  - ${YELLOW}验证提示:${NC} 重启后可执行 'sudo sysctl net.ipv4.tcp_congestion_control && free -h' 检查BBR和Swap。"; fi
+    if [[ -n "$post_reboot_guide" ]]; then echo -e "\n${BLUE}--- 重启后指南 ---${NC}${post_reboot_guide}"; fi
 
-    read -n 1 -r -p $'\n是否立即重启服务器? [Y/n] ' REPLY < /dev/tty
+    read -rp $'\n立即重启服务器? [Y/n]: ' REPLY < /dev/tty
     echo
 
     if [[ -z "$REPLY" || "$REPLY" =~ ^[Yy]$ ]]; then
@@ -590,63 +587,64 @@ run_initialization() {
         reboot
         exit 0
     else
-        log_info "已选择稍后重启。请在方便时手动执行 'sudo reboot'。"
+        fn_print_tip "已选择稍后重启。请手动执行 'sudo reboot'。"
     fi
 }
 
 install_1panel() {
     tput reset
-    echo -e "${CYAN}即将执行【安装 1Panel】流程...${NC}"
+    echo -e "${CYAN}--- 安装 1Panel 面板 ---${NC}"
+    fn_print_tip "此流程将安装 1Panel 面板，并自动安装 Docker。"
     
     if ! command -v curl &> /dev/null; then
-        log_info "未检测到 curl，正在尝试安装..."
-        apt-get update && apt-get install -y curl
+        log_action "未检测到 curl，尝试安装..."
+        apt-get update > /dev/null 2>&1 && apt-get install -y curl > /dev/null 2>&1
         if ! command -v curl &> /dev/null; then
             log_error "curl 安装失败，请手动安装后再试。"
         fi
     fi
 
-    log_step "步骤 1/3" "运行 1Panel 官方安装脚本"
-    log_warn "即将进入 1Panel 交互式安装界面，需根据其提示操作。"
-    read -rp "按 Enter 键开始..." < /dev/tty
+    log_step "1" "运行 1Panel 官方安装脚本"
+    log_warn "即将进入 1Panel 交互式安装界面，请按提示操作。"
+    read -rp "按 Enter 开始安装 1Panel..." < /dev/tty
     bash -c "$(curl -sSL https://resource.fit2cloud.com/1panel/package/v2/quick_start.sh)"
     
-    log_step "步骤 2/3" "检查并确保 Docker 已安装"
+    log_step "2" "检查 Docker 安装情况"
     if ! command -v docker &> /dev/null; then
-        log_warn "1Panel 安装程序似乎已结束，但未检测到 Docker。"
-        log_action "正在尝试使用备用脚本安装 Docker..."
+        log_warn "1Panel 安装后未检测到 Docker。"
+        log_action "尝试使用备用脚本安装 Docker..."
         bash <(curl -sSL https://linuxmirrors.cn/docker.sh)
         
         if ! command -v docker &> /dev/null; then
-            log_error "备用脚本也未能成功安装 Docker。请检查网络或手动安装 Docker 后再继续。"
+            log_error "备用脚本也未能安装 Docker。请检查网络或手动安装。"
         else
-            log_success "备用脚本成功安装 Docker！"
+            fn_print_ok "备用脚本成功安装 Docker！"
         fi
     else
-        log_success "Docker 已成功安装。"
+        fn_print_ok "Docker 已成功安装。"
     fi
 
-    log_step "步骤 3/3" "自动化后续配置"
+    log_step "3" "配置用户 Docker 权限"
     local REAL_USER="${SUDO_USER:-$(whoami)}"
     if [ "$REAL_USER" != "root" ]; then
         if groups "$REAL_USER" | grep -q '\bdocker\b'; then
-            log_info "用户 '${REAL_USER}' 已在 docker 用户组中。"
+            fn_print_tip "用户 '${REAL_USER}' 已在 docker 用户组。"
         else
-            log_action "正在将用户 '${REAL_USER}' 添加到 docker 用户组..."
+            log_action "将用户 '${REAL_USER}' 添加到 docker 用户组..."
             usermod -aG docker "$REAL_USER"
-            log_success "添加成功！"
-            log_warn "用户组更改需【重新登录SSH】才能生效。"
-            log_warn "否则直接运行下一步骤可能出现Docker权限错误。"
+            fn_print_ok "添加成功！"
+            log_warn "用户组更改需【重新登录SSH】才能生效！"
+            log_warn "否则下一步可能出现 Docker 权限错误。"
         fi
     else
-         log_info "检测到以 root 用户运行，无需添加到 docker 用户组。"
+         fn_print_tip "以 root 用户运行，无需添加到 docker 用户组。"
     fi
 
-    echo -e "\n${CYAN}================ 1Panel 安装完成 ===================${NC}"
-    log_warn "重要：需牢记已设置的 1Panel 访问地址、端口、账号和密码。"
-    echo -e "并确保云服务商的防火墙/安全组中 ${GREEN}已放行 1Panel 的端口${NC}。"
-    echo -e "\n${BOLD}可重新运行本脚本，选择【步骤3】来部署 SillyTavern。${NC}"
-    log_warn "若刚才有用户被添加到 docker 组，务必先退出并重新登录SSH！"
+    echo -e "\n${CYAN}--- 1Panel 安装完成 ---${NC}"
+    log_warn "重要：请牢记 1Panel 访问地址、端口、账号和密码。"
+    log_warn "确保云服务商防火墙/安全组中 ${GREEN}已放行 1Panel 端口${NC}。"
+    fn_print_tip "可重新运行本脚本，选择【部署 SillyTavern】。"
+    log_warn "若有用户被添加到 docker 组，请务必先退出并重新登录SSH！"
 }
 
 # --- SillyTavern 安装流程的辅助函数 ---
@@ -704,48 +702,41 @@ fn_ensure_docker_running() {
  
 fn_report_dependencies() {
     local DOCKER_VER="$1" DOCKER_STATUS="$2" COMPOSE_VER="$3" COMPOSE_STATUS="$4"
-    fn_print_info "--- Docker 环境诊断摘要 ---"
-    printf "${BOLD}%-18s %-20s %-20s${NC}\n" "工具" "检测到的版本" "状态"
-    printf "${CYAN}%-18s %-20s %-20s${NC}\n" "------------------" "--------------------" "--------------------"
-    print_status_line() { 
-        local name="$1" version="$2" status="$3"
-        local color="$GREEN"
-        if [[ "$status" == "Not Found" ]]; then color="$RED"; fi
-        printf "%-18s %-20s ${color}%-20s${NC}\n" "$name" "$version" "$status"
-    }
-    print_status_line "Docker" "$DOCKER_VER" "$DOCKER_STATUS"
-    print_status_line "Docker Compose" "$COMPOSE_VER" "$COMPOSE_STATUS"
-    echo ""
+    local overall_status="${GREEN}OK ✓${NC}"
+    if [[ "$DOCKER_STATUS" == "Not Found" || "$COMPOSE_STATUS" == "Not Found" ]]; then
+        overall_status="${RED}异常 ✗${NC}"
+    fi
+    fn_print_info "→ Docker 环境: ${overall_status} (Docker: ${DOCKER_VER} ${DOCKER_STATUS}, Compose: ${COMPOSE_VER} ${COMPOSE_STATUS})"
 }
 
 fn_check_dependencies() {
-    fn_print_info "--- Docker 环境诊断开始 ---"
+    fn_print_info "检查 Docker 环境..."
     local DOCKER_VER="-" DOCKER_STATUS="-" COMPOSE_VER="-" COMPOSE_STATUS="-"
     
     local docker_check_needed=true
     while $docker_check_needed; do
         if ! command -v docker &> /dev/null; then
-            DOCKER_STATUS="Not Found"
+            DOCKER_STATUS="未找到"
         else
-            DOCKER_VER=$(fn_get_cleaned_version_num "$(docker --version)"); DOCKER_STATUS="OK"
+            DOCKER_VER=$(fn_get_cleaned_version_num "$(docker --version)"); DOCKER_STATUS="正常"
         fi
         if command -v docker-compose &> /dev/null; then
-            DOCKER_COMPOSE_CMD="docker-compose"; COMPOSE_VER="v$(fn_get_cleaned_version_num "$($DOCKER_COMPOSE_CMD version)")"; COMPOSE_STATUS="OK (v1)"
+            DOCKER_COMPOSE_CMD="docker-compose"; COMPOSE_VER="v$(fn_get_cleaned_version_num "$($DOCKER_COMPOSE_CMD version)")"; COMPOSE_STATUS="正常 (v1)"
         elif docker compose version &> /dev/null; then
-            DOCKER_COMPOSE_CMD="docker compose"; COMPOSE_VER=$(docker compose version | grep -oE 'v[0-9]+(\.[0-9]+)+' | head -n 1); COMPOSE_STATUS="OK (v2)"
+            DOCKER_COMPOSE_CMD="docker compose"; COMPOSE_VER=$(docker compose version | grep -oE 'v[0-9]+(\.[0-9]+)+' | head -n 1); COMPOSE_STATUS="正常 (v2)"
         else
-            DOCKER_COMPOSE_CMD=""; COMPOSE_STATUS="Not Found"
+            DOCKER_COMPOSE_CMD=""; COMPOSE_STATUS="未找到"
         fi
 
-        if [[ "$DOCKER_STATUS" == "Not Found" || "$COMPOSE_STATUS" == "Not Found" ]]; then
+        if [[ "$DOCKER_STATUS" == "未找到" || "$COMPOSE_STATUS" == "未找到" ]]; then
             if [ "$IS_DEBIAN_LIKE" = true ]; then
-                log_warn "未检测到 Docker 或 Docker-Compose。"
-                read -rp "按 Enter 键将继续自动安装 Docker (或按 Ctrl+C 退出脚本)..." < /dev/tty
-                log_action "正在使用官方推荐脚本安装 Docker..."
-                bash <(curl -sSL https://linuxmirrors.cn/docker.sh)
+                log_warn "Docker 或 Docker-Compose 未安装。"
+                read -rp "按 Enter 自动安装 Docker (Ctrl+C 退出)..." < /dev/tty
+                log_action "使用官方脚本安装 Docker..."
+                bash <(curl -sSL https://linuxmirrors.cn/docker.sh) > /dev/null 2>&1
                 continue
             else
-                fn_print_error "未检测到 Docker 或 Docker-Compose。请在您的系统 (${DETECTED_OS}) 上手动安装它们后重试。"
+                fn_print_error "Docker 或 Docker-Compose 未安装。请在您的系统 (${DETECTED_OS}) 上手动安装后重试。"
             fi
         else
             docker_check_needed=false
@@ -756,9 +747,9 @@ fn_check_dependencies() {
 
     local current_user="${SUDO_USER:-$(whoami)}"
     if ! groups "$current_user" | grep -q '\bdocker\b' && [ "$(id -u)" -ne 0 ]; then
-        fn_print_error "当前用户不在 docker 用户组。请执行【步骤2】或手动添加后，【重新登录SSH】再试。"
+        fn_print_error "当前用户不在 docker 用户组。请执行【安装 1Panel】或手动添加后，【重新登录SSH】再试。"
     fi
-    log_success "Docker 环境检查通过！"
+    fn_print_ok "Docker 环境检查通过！"
 }
 
 fn_check_existing_container() {
@@ -793,10 +784,10 @@ fn_check_existing_container() {
 fn_pull_sillytavern_image() {
     log_info "这是部署中最关键的一步。如果拉取失败，请尝试配置镜像加速或使用自定义镜像。"
 
-    echo "请选择要使用的 SillyTavern 镜像源："
+    echo "选择 SillyTavern 镜像源："
     echo -e "  [1] ${CYAN}官方镜像${NC} (ghcr.io/sillytavern/sillytavern:latest)"
-    echo -e "  [2] ${YELLOW}自定义镜像${NC} (输入一个完整的镜像地址，例如 a.com/b/c:latest)"
-    read -rp "请输入选项 [默认为 1]: " choice < /dev/tty
+    echo -e "  [2] ${YELLOW}自定义${NC} (输入完整镜像地址)"
+    read -rp "选项 [默认为 1]: " choice < /dev/tty
     choice=${choice:-1}
 
     case "$choice" in
@@ -804,7 +795,7 @@ fn_pull_sillytavern_image() {
             SILLY_TAVERN_IMAGE="ghcr.io/sillytavern/sillytavern:latest"
             ;;
         2)
-            read -rp "请输入完整的自定义镜像地址: " custom_image < /dev/tty
+            read -rp "输入自定义镜像地址: " custom_image < /dev/tty
             if [ -z "$custom_image" ]; then
                 fn_print_error "自定义镜像地址不能为空！"
             fi
@@ -825,93 +816,11 @@ fn_pull_image_with_progress() {
     fi
 
     log_action "正在拉取镜像: ${image_to_pull}"
-    
-    local time_estimate_table
-    time_estimate_table=$(cat <<EOF
-  下载速度取决于网络带宽，以下为预估时间参考：
-  ${YELLOW}┌──────────────────────────────────────────────────┐${NC}
-  ${YELLOW}│${NC} ${CYAN}带宽${NC}      ${BOLD}|${NC} ${CYAN}下载速度${NC}    ${BOLD}|${NC} ${CYAN}预估最快时间${NC}           ${YELLOW}│${NC}
-  ${YELLOW}├──────────────────────────────────────────────────┤${NC}
-  ${YELLOW}│${NC} 1M 带宽   ${BOLD}|${NC} ~0.125 MB/s ${BOLD}|${NC} 约 1 小时 14 分 31 秒 ${YELLOW}│${NC}
-  ${YELLOW}│${NC} 2M 带宽   ${BOLD}|${NC} ~0.25 MB/s  ${BOLD}|${NC} 约 37 分 15 秒        ${YELLOW}│${NC}
-  ${YELLOW}│${NC} 10M 带宽  ${BOLD}|${NC} ~1.25 MB/s  ${BOLD}|${NC} 约 7 分 27 秒         ${YELLOW}│${NC}
-  ${YELLOW}│${NC} 100M 带宽 ${BOLD}|${NC} ~12.5 MB/s  ${BOLD}|${NC} 约 45 秒              ${YELLOW}│${NC}
-  ${YELLOW}└──────────────────────────────────────────────────┘${NC}
-EOF
-)
-    echo -e "${time_estimate_table}"
     echo -e "\n${CYAN}--- Docker 正在拉取，请关注以下原生进度条 ---${NC}"
-
-    # --- 实时速度监控 (后台) ---
-    local interface
-    interface=$(ip route | awk '/default/ {print $5}' | head -n1)
-    local rx_bytes_path="/sys/class/net/${interface}/statistics/rx_bytes"
-    
-    if [[ -z "$interface" || ! -f "$rx_bytes_path" ]]; then
-        log_warn "无法找到默认网络接口或统计文件，将不显示实时网速。"
-        # Fallback to simple pull without speed monitoring
-        if ! docker pull "$image_to_pull"; then
-            fn_print_error "Docker 镜像拉取失败！请检查网络或镜像地址后重试。"
-        fi
-        echo # Add a newline for clarity
-        log_success "镜像 ${image_to_pull} 拉取成功！"
-        return
-    fi
-
-    # Start speed monitor in background
-    (
-        local old_rx_bytes; old_rx_bytes=$(cat "$rx_bytes_path")
-        local old_time; old_time=$(date +%s.%N)
-        while true; do
-            sleep 1
-            local new_rx_bytes; new_rx_bytes=$(cat "$rx_bytes_path")
-            local new_time; new_time=$(date +%s.%N)
-            local time_diff; time_diff=$(echo "$new_time - $old_time" | bc)
-            local byte_diff; byte_diff=$((new_rx_bytes - old_rx_bytes))
-
-            local speed_str="计算中..."
-            if (( $(echo "$time_diff > 0.1" | bc -l) )); then
-                local speed_bps; speed_bps=$(echo "scale=2; $byte_diff / $time_diff" | bc)
-                if (( $(echo "$speed_bps > 0" | bc -l) )); then
-                    local speed_kbps; speed_kbps=$(echo "scale=2; $speed_bps / 1024" | bc)
-                    local speed_mbps; speed_mbps=$(echo "scale=2; $speed_kbps / 1024" | bc)
-                    if (( $(echo "$speed_mbps >= 1" | bc -l) )); then
-                        speed_str=$(printf "%.2f MB/s" "$speed_mbps")
-                    else
-                        speed_str=$(printf "%.2f KB/s" "$speed_kbps")
-                    fi
-                else
-                    speed_str="0.00 KB/s"
-                fi
-            fi
-            # Print speed on the same line using carriage return
-            printf "  ${CYAN}实时下行速度:${NC} ${YELLOW}%-20s${NC}\r" "$speed_str"
-
-            old_rx_bytes=$new_rx_bytes
-            old_time=$new_time
-        done
-    ) &
-    local monitor_pid=$!
-
-    # Ensure monitor is killed on exit
-    trap 'kill $monitor_pid 2>/dev/null; printf "\n"; exit' INT TERM EXIT
-
-    # --- Docker 拉取 (前台) ---
-    if docker pull "$image_to_pull"; then
-        # Success
-        kill $monitor_pid 2>/dev/null
-        trap - INT TERM EXIT # remove trap
-        # Clear the speed line with spaces and add a newline
-        printf "%-40s\n" ""
-        log_success "镜像 ${image_to_pull} 拉取成功！"
-    else
-        # Failure
-        kill $monitor_pid 2>/dev/null
-        trap - INT TERM EXIT # remove trap
-        # Clear the speed line with spaces and add a newline
-        printf "%-40s\n" ""
+    if ! docker pull "$image_to_pull"; then
         fn_print_error "Docker 镜像拉取失败！请检查网络或镜像地址后重试。"
     fi
+    fn_print_ok "镜像 ${image_to_pull} 拉取成功！"
 }
 
 fn_get_public_ip() {
@@ -971,27 +880,25 @@ fn_wait_for_service() {
 }
 
 fn_display_final_info() {
-    echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "║                   ${BOLD}部署成功！尽情享受吧！${NC}                   ║"
-    echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
+    fn_print_ok "部署成功！尽情享受吧！"
     
     if [[ "$INSTALL_TYPE" == "custom" ]]; then
         if [[ "$run_mode" == "1" ]]; then
             # 自定义 - 单用户模式
-            echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC}"
-            echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"
-            echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"
+            fn_print_tip "访问地址: ${GREEN}http://${SERVER_IP}:8000${NC}"
+            fn_print_tip "登录账号: ${YELLOW}${single_user}${NC}"
+            fn_print_tip "登录密码: ${YELLOW}${single_pass}${NC}"
         elif [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
             # 自定义 - 多用户/维护者模式
-            echo -e "\n  ${CYAN}访问地址 (平时用这个):${NC} ${GREEN}http://${SERVER_IP}:8000${NC}"
-            echo -e "  ${CYAN}登录页地址 (验证账号密码):${NC} ${GREEN}http://${SERVER_IP}:8000/login${NC}"
+            fn_print_tip "访问地址 (平时用): ${GREEN}http://${SERVER_IP}:8000${NC}"
+            fn_print_tip "登录页地址 (验证账号密码): ${GREEN}http://${SERVER_IP}:8000/login${NC}"
         fi
     else
         # 自动化模式 (海外/大陆)
-        echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC}"
+        fn_print_tip "访问地址: ${GREEN}http://${SERVER_IP}:8000${NC}"
     fi
     
-    echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
+    fn_print_tip "项目路径: $INSTALL_DIR"
 }
 
 fn_check_and_explain_status() {
@@ -1128,8 +1035,8 @@ fn_post_deployment_menu() {
     local container_name="$1"
     while true; do
         echo -e "\n${CYAN}--- 部署后操作 ---${NC}"
-        echo -e "  [1] 查看容器状态\n  [2] 查看日志\n  [3] 重新显示访问信息\n  [q] 退出菜单"
-        read -p "请输入选项: " choice < /dev/tty
+        echo -e "  [1] 容器状态\n  [2] 查看日志\n  [3] 访问信息\n  [q] 退出"
+        read -rp "选择操作: " choice < /dev/tty
         case "$choice" in
             1) fn_check_and_explain_status "$container_name";;
             2) docker logs -f "$container_name" || true;;
@@ -1144,7 +1051,8 @@ fn_post_deployment_menu() {
 
 install_sillytavern() {
     tput reset
-    echo -e "${CYAN}SillyTavern Docker 自动化安装流程${NC}"
+    echo -e "${CYAN}--- 部署 SillyTavern ---${NC}"
+    fn_print_tip "此流程将通过 Docker 部署 SillyTavern。"
 
     fn_ensure_docker_running
  
@@ -1164,32 +1072,29 @@ install_sillytavern() {
 }
 
 fn_select_server_type() {
-    fn_print_step "步骤 1/X: 选择服务器类型"
-    echo -e "请根据您服务器所在的地理位置选择合适的安装模式："
-    echo -e "  [1] ${CYAN}海外服务器 (Overseas Server)${NC}"
-    echo -e "      一键全自动安装，直连官方镜像源，适合网络环境良好的非大陆服务器。"
-    echo -e "  [2] ${YELLOW}大陆服务器 (Mainland China Server)${NC}"
-    echo -e "      一键全自动安装，自动配置最快的镜像加速器，适合国内服务器。"
-    echo -e "  [3] ${GREEN}完全自定义 (Fully Custom)${NC}"
-    echo -e "      手动配置安装过程中的每一个步骤，适合需要高度定制的高级用户。"
-    read -rp "请输入选项 [默认为 1]: " choice < /dev/tty
+    log_step "1" "选择安装模式"
+    fn_print_tip "请选择适合您服务器的安装模式："
+    echo -e "  [1] ${CYAN}海外服务器${NC} (自动安装，直连官方源)"
+    echo -e "  [2] ${YELLOW}大陆服务器${NC} (自动安装，自动配置镜像加速)"
+    echo -e "  [3] ${GREEN}完全自定义${NC} (手动配置所有步骤)"
+    read -rp "选择模式 [默认为 1]: " choice < /dev/tty
     choice=${choice:-1}
 
     case "$choice" in
         1)
             INSTALL_TYPE="overseas"
-            log_info "已选择 [海外服务器] 模式。"
+            fn_print_ok "已选 [海外服务器] 模式。"
             ;;
         2)
             INSTALL_TYPE="mainland"
-            log_info "已选择 [大陆服务器] 模式。"
+            fn_print_ok "已选 [大陆服务器] 模式。"
             ;;
         3)
             INSTALL_TYPE="custom"
-            log_info "已选择 [完全自定义] 模式。"
+            fn_print_ok "已选 [完全自定义] 模式。"
             ;;
         *)
-            log_warn "无效输入，将使用默认的 [海外服务器] 模式。"
+            log_warn "无效输入，默认使用 [海外服务器] 模式。"
             INSTALL_TYPE="overseas"
             ;;
     esac
@@ -1317,13 +1222,13 @@ run_custom_install() {
     echo -e "  [1] ${CYAN}单用户模式${NC} (弹窗认证，适合个人使用)"
     echo -e "  [2] ${CYAN}多用户模式${NC} (独立登录页，适合多人或单人使用)"
     echo -e "  [3] ${RED}维护者模式${NC} (作者专用，普通用户请勿选择！)"
-    read -p "请输入选项数字 [默认为 1]: " run_mode < /dev/tty
+    read -rp "选择模式 [默认为 1]: " run_mode < /dev/tty
     run_mode=${run_mode:-1}
 
     case "$run_mode" in
         1)
-            read -p "请输入自定义用户名: " single_user < /dev/tty
-            read -p "请输入自定义密码: " single_pass < /dev/tty
+            read -rp "自定义用户名: " single_user < /dev/tty
+            read -rp "自定义密码: " single_pass < /dev/tty
             if [ -z "$single_user" ] || [ -z "$single_pass" ]; then fn_print_error "用户名和密码不能为空！"; fi
             ;;
         2|3) ;;
@@ -1331,7 +1236,7 @@ run_custom_install() {
     esac
 
     local default_parent_path="$USER_HOME"
-    read -rp "安装路径: SillyTavern 将被安装在 <上级目录>/sillytavern 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
+    read -rp "安装路径 (上级目录) [默认: $USER_HOME]: " custom_parent_path < /dev/tty
     local parent_path="${custom_parent_path:-$default_parent_path}"
     INSTALL_DIR="${parent_path}/sillytavern"
     log_info "安装路径最终设置为: ${INSTALL_DIR}"
@@ -1380,7 +1285,7 @@ run_custom_install() {
         SERVER_IP=$(fn_get_public_ip)
         echo -e "${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}"
         echo -e "访问: ${GREEN}http://${SERVER_IP}:8000${NC} 使用默认账号(user)密码(password)登录并设置管理员。"
-        read -p "完成后按回车键继续..." < /dev/tty
+        read -rp "按 Enter 继续..." < /dev/tty
         sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false/" "$CONFIG_FILE"
         log_success "已切换到多用户登录页模式。"
     fi
@@ -1403,41 +1308,30 @@ main_menu() {
         fn_show_main_header
         echo
 
+        # 简化系统兼容性提示和使用说明
         if [ "$IS_DEBIAN_LIKE" = false ]; then
-            echo -e "\n${YELLOW}╔═════════════════════════════════════════════════════════════════════════════╗${NC}"
-            echo -e "${YELLOW}║                        【 系统兼容性提示 】                            ║${NC}"
-            echo -e "${YELLOW}╠═════════════════════════════════════════════════════════════════════════════╣${NC}"
-            echo -e "${YELLOW}║${NC} 检测到您的系统为: ${CYAN}${DETECTED_OS}${NC}"
-            echo -e "${YELLOW}║${NC} 本脚本专为 Debian/Ubuntu 优化，因此部分功能在您的系统上不可用。         ${YELLOW}║${NC}"
-            echo -e "${YELLOW}║─────────────────────────────────────────────────────────────────────────────║${NC}"
-            echo -e "${YELLOW}║ ${RED}不可用功能:${NC} [1] 服务器初始化, [2] 安装1Panel, [4] 系统清理        ${YELLOW}║${NC}"
-            echo -e "${YELLOW}║ ${GREEN}可 用 功 能:${NC} [3] 部署 SillyTavern (内置Docker优化)               ${YELLOW}║${NC}"
-            echo -e "${YELLOW}║─────────────────────────────────────────────────────────────────────────────║${NC}"
-            echo -e "${YELLOW}║ ${BOLD}请注意：要使用可用功能，您必须先手动安装好 Docker 和 Docker-Compose。${NC}   ${YELLOW}║${NC}"
-            echo -e "${YELLOW}╚═════════════════════════════════════════════════════════════════════════════╝${NC}"
+            fn_print_tip "系统: ${DETECTED_OS}。部分功能仅支持 Debian/Ubuntu。"
+            fn_print_tip "可用: [3] 部署 SillyTavern (需手动安装 Docker/Compose)。"
         else
-            echo -e "\n${BOLD}使用说明 (Debian/Ubuntu):${NC}"
-            echo -e "  • ${YELLOW}全新服务器${NC}: 请按 ${GREEN}1 -> 2 -> 3${NC} 的顺序分步执行。"
-            echo -e "  • ${YELLOW}已有Docker环境${NC}: 可直接从【步骤3】开始。"
-            echo -e "  • ${YELLOW}部署SillyTavern时${NC}: 可根据服务器位置选择 ${GREEN}海外/大陆/自定义${NC} 模式。"
+            fn_print_tip "全新服务器: 建议 1 -> 2 -> 3 顺序执行。"
+            fn_print_tip "已有 Docker: 可直接从 [3] 开始。"
         fi
 
-        echo -e "\n${BLUE}================================== 菜 单 ==================================${NC}"
+        echo -e "\n${BLUE}--- 菜单 ---${NC}"
         
         if [ "$IS_DEBIAN_LIKE" = true ]; then
-            echo -e " ${GREEN}[1] 服务器初始化 (安全加固、系统优化)${NC}"
-            echo -e " ${GREEN}[2] 安装 1Panel 面板 (会自动安装Docker)${NC}"
+            echo -e " ${GREEN}[1] 服务器初始化 (安全、优化)${NC}"
+            echo -e " ${GREEN}[2] 安装 1Panel 面板 (含 Docker)${NC}"
         fi
         
-        echo -e " ${GREEN}[3] 部署 SillyTavern (基于Docker)${NC}"
-        echo -e "---------------------------------------------------------------------------"
-
+        echo -e " ${GREEN}[3] 部署 SillyTavern (Docker 版)${NC}"
+        
         if [ "$IS_DEBIAN_LIKE" = true ]; then
-            echo -e " ${CYAN}[4] 系统安全清理 (清理缓存和无用镜像)${NC}"
+            echo -e " ${CYAN}[4] 系统清理 (缓存、Docker 垃圾)${NC}"
         fi
 
-        echo -e "${BLUE}===========================================================================${NC}"
-        echo -e " ${YELLOW}[q] 退出脚本${NC}\n"
+        echo -e "${BLUE}------------${NC}"
+        echo -e " ${YELLOW}[q] 退出${NC}\n"
 
         local options_str="3"
         if [ "$IS_DEBIAN_LIKE" = true ]; then
