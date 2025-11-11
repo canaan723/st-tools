@@ -201,7 +201,7 @@ fn_configure_docker_mirrors() {
             else
                 log_warn "官方 Docker Hub 连接失败，将自动从可用备用镜像中配置最快的源。"
                 if [ -n "$test_results" ]; then
-                    local best_mirrors; best_mirrors=($(echo -e "$test_results" | head -n 1 | cut -d'|' -f2))
+                    local best_mirrors; best_mirrors=($(echo -e "$test_results" | head -n 3 | cut -d'|' -f2))
                     log_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
                     mirrors_json_array=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
                 else
@@ -275,8 +275,17 @@ fn_apply_docker_optimization() {
  
     local DAEMON_JSON="/etc/docker/daemon.json"
     log_action "正在应用 Docker 优化配置..."
-    # Note: This implementation overwrites existing daemon.json.
-    # A more advanced version could merge JSON objects.
+
+    if [ -f "$DAEMON_JSON" ]; then
+        log_warn "检测到现有的 Docker 配置文件 ${DAEMON_JSON}。"
+        log_warn "此操作将覆盖现有配置。请注意备份重要配置。"
+        read -rp "确认要覆盖并继续吗？[Y/n]: " confirm_overwrite < /dev/tty
+        if [[ ! "${confirm_overwrite:-y}" =~ ^[Yy]$ ]]; then
+            log_info "已取消 Docker 优化配置，未修改 ${DAEMON_JSON}。"
+            return
+        fi
+    fi
+    
     echo "$final_json_content" | sudo tee "$DAEMON_JSON" > /dev/null
     if sudo systemctl restart docker; then
         log_success "Docker 服务已重启，优化配置已生效！"
@@ -386,6 +395,12 @@ fn_init_change_ssh_port() {
 
 fn_init_install_fail2ban() {
     log_info "目的: 自动阻止有恶意登录企图的IP地址。"
+    if command -v fail2ban-client &> /dev/null; then
+        log_success "Fail2ban 已安装，跳过安装步骤。"
+        systemctl enable --now fail2ban # 确保服务已启用
+        return 0
+    fi
+
     log_action "正在更新包列表并安装 Fail2ban..."
     apt-get update
     apt-get install -y fail2ban
@@ -393,6 +408,44 @@ fn_init_install_fail2ban() {
     log_success "Fail2ban 安装并配置为开机自启。"
 }
 
+# 新增函数：配置 Fail2ban 监控新的 SSH 端口
+fn_init_configure_fail2ban() {
+    log_info "目的: 配置 Fail2ban 监控新的 SSH 端口，增强安全性。"
+    if [ -z "$NEW_SSH_PORT" ]; then
+        log_warn "未设置新的 SSH 端口号，跳过 Fail2ban 端口配置。"
+        return 0
+    fi
+
+    local jail_local_path="/etc/fail2ban/jail.local"
+    log_action "正在创建或更新 Fail2ban 配置文件 ${jail_local_path}..."
+
+    # 使用 cat EOF 写入配置，动态替换端口
+    cat <<EOF | sudo tee "$jail_local_path" > /dev/null
+[DEFAULT]
+ignoreip = 127.0.0.1/8
+bantime = 3600
+findtime = 300
+maxretry = 5
+
+[sshd]
+enabled = true
+filter = sshd
+port = $NEW_SSH_PORT
+logpath = /var/log/auth.log
+action = %(action_)s[port="%(port)s", protocol="%(protocol)s", logpath="%(logpath)s", chain="%(chain)s"]
+banaction = iptables-multiport
+EOF
+
+    if [ $? -eq 0 ]; then
+        log_success "Fail2ban 配置文件已更新，SSH 监控端口设置为 ${NEW_SSH_PORT}。"
+        log_action "正在重启 Fail2ban 服务以应用新配置..."
+        systemctl restart fail2ban
+        log_success "Fail2ban 服务已重启。"
+    else
+        log_error "创建或更新 Fail2ban 配置文件失败。"
+    fi
+}
+ 
 fn_init_validate_ssh() {
     if [ -z "$NEW_SSH_PORT" ]; then
         log_error "未设置新的SSH端口号，无法验证。"
@@ -460,21 +513,23 @@ run_initialization() {
     fn_check_base_deps
 
     local init_step_funcs=(
-        "fn_init_prepare_firewall"
-        "fn_init_set_timezone"
-        "fn_init_change_ssh_port"
-        "fn_init_install_fail2ban"
-        "fn_init_validate_ssh"
         "fn_init_upgrade_system"
+        "fn_init_prepare_firewall"
+        "fn_init_change_ssh_port"
+        "fn_init_validate_ssh"
+        "fn_init_install_fail2ban"
+        "fn_init_configure_fail2ban" # 新增：配置 Fail2ban
+        "fn_init_set_timezone"
         "fn_init_optimize_kernel"
     )
     local init_step_descs=(
-        "准备防火墙 (提醒放行端口)"
-        "设置系统时区为 Asia/Shanghai"
-        "修改 SSH 端口 (增强安全性)"
-        "安装 Fail2ban (防暴力破解)"
-        "验证新的 SSH 端口"
         "升级所有系统软件包 (安全更新)"
+        "准备防火墙 (提醒放行端口)"
+        "修改 SSH 端口 (增强安全性)"
+        "验证新的 SSH 端口"
+        "安装 Fail2ban (防暴力破解)"
+        "配置 Fail2ban (动态端口)" # 新增：配置 Fail2ban
+        "设置系统时区为 Asia/Shanghai"
         "优化内核参数 (启用BBR)并创建Swap"
     )
 
@@ -684,7 +739,6 @@ fn_check_dependencies() {
 
         if [[ "$DOCKER_STATUS" == "Not Found" || "$COMPOSE_STATUS" == "Not Found" ]]; then
             if [ "$IS_DEBIAN_LIKE" = true ]; then
-                log_warn "未检测到 Docker 或 Docker-Compose。"
                 log_warn "未检测到 Docker 或 Docker-Compose。"
                 read -rp "按 Enter 键将继续自动安装 Docker (或按 Ctrl+C 退出脚本)..." < /dev/tty
                 log_action "正在使用官方推荐脚本安装 Docker..."
@@ -1159,7 +1213,7 @@ run_automated_install() {
         local test_results; test_results=$(fn_internal_test_mirrors)
         if [[ "$test_results" != "OFFICIAL_HUB_OK" && -n "$test_results" ]]; then
             # 使用 awk 更稳定地提取镜像地址，并限制最多1个
-            local best_mirrors_str; best_mirrors_str=$(echo -e "$test_results" | awk -F'|' '{print $2}' | head -n 1)
+            local best_mirrors_str; best_mirrors_str=$(echo -e "$test_results" | awk -F'|' '{print $2}' | head -n 3)
             # 使用 mapfile 或 read -a 是更安全的做法，避免 word splitting 问题
             read -r -d '' -a best_mirrors < <(printf '%s\n' "$best_mirrors_str")
             
@@ -1193,11 +1247,7 @@ run_automated_install() {
 
     local container_name="sillytavern"
     if [ -d "$INSTALL_DIR" ]; then
-        log_warn "检测到已存在的安装目录，将自动清理..."
-        docker stop "$container_name" > /dev/null 2>&1 || true
-        docker rm "$container_name" > /dev/null 2>&1 || true
-        sudo rm -rf "$INSTALL_DIR"
-        log_success "旧目录和容器已清理。"
+        fn_confirm_and_delete_dir "$INSTALL_DIR" "$container_name"
     fi
 
     fn_create_project_structure
