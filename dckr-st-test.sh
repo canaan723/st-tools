@@ -86,10 +86,19 @@ fn_check_base_deps() {
 
     if [ ${#missing_pkgs[@]} -gt 0 ]; then
         log_action "检测到缺失的工具: ${missing_pkgs[*]}，正在尝试自动安装..."
+        local install_cmd=""
         if [ "$IS_DEBIAN_LIKE" = true ]; then
             apt-get update > /dev/null 2>&1
-            if ! apt-get install -y "${missing_pkgs[@]}"; then
-                log_error "部分基础依赖自动安装失败，请手动执行 'apt-get install -y ${missing_pkgs[*]}' 后重试。"
+            install_cmd="apt-get install -y"
+        elif command -v dnf &> /dev/null; then
+            install_cmd="dnf install -y"
+        elif command -v yum &> /dev/null; then
+            install_cmd="yum install -y"
+        fi
+
+        if [ -n "$install_cmd" ]; then
+            if ! $install_cmd "${missing_pkgs[@]}"; then
+                log_error "部分基础依赖自动安装失败，请手动执行 '$install_cmd ${missing_pkgs[*]}' 后重试。"
             fi
             log_success "所有缺失的基础依赖已安装成功。"
         else
@@ -173,8 +182,8 @@ fn_configure_docker_logging() {
     log_action "限制 Docker 日志大小以防磁盘占满？"
     read -rp "推荐执行 [Y/n]: " confirm_log < /dev/tty
     if [[ "${confirm_log:-y}" =~ ^[Yy]$ ]]; then
-        DAEMON_JSON_PARTS+=('"log-driver": "json-file", "log-opts": {"max-size": "50m", "max-file": "3"}')
-        log_success "已添加 Docker 日志限制配置。"
+        DAEMON_JSON_PARTS+=('"log-driver": "json-file", "log-opts": {"max-size": "10m", "max-file": "3"}')
+        log_success "已添加 Docker 日志限制配置 (10MB x 3个文件)。"
     else
         log_info "已跳过 Docker 日志限制配置。"
     fi
@@ -274,9 +283,11 @@ fn_apply_docker_optimization() {
     fi
 
     local final_json_content
-    final_json_content=$(printf ", %s" "${DAEMON_JSON_PARTS[@]}")
-    final_json_content="{ ${final_json_content:2} }" # Remove leading comma and space
- 
+    # Join array elements with a comma and a newline for readability
+    final_json_content=$(printf ",\n  %s" "${DAEMON_JSON_PARTS[@]}")
+    # Remove the leading comma and newline
+    final_json_content="{\n  ${final_json_content:3}\n}"
+
     local DAEMON_JSON="/etc/docker/daemon.json"
     log_action "正在应用 Docker 优化配置..."
 
@@ -290,7 +301,11 @@ fn_apply_docker_optimization() {
         fi
     fi
     
-    echo "$final_json_content" | sudo tee "$DAEMON_JSON" > /dev/null
+    # Use cat with EOF to write the formatted JSON
+    cat <<EOF | sudo tee "$DAEMON_JSON" > /dev/null
+$final_json_content
+EOF
+
     if sudo systemctl restart docker; then
         log_success "Docker 服务已重启，优化配置已生效！"
     else
@@ -882,20 +897,15 @@ fn_wait_for_service() {
 fn_display_final_info() {
     fn_print_ok "部署成功！尽情享受吧！"
     
-    if [[ "$INSTALL_TYPE" == "custom" ]]; then
-        if [[ "$run_mode" == "1" ]]; then
-            # 自定义 - 单用户模式
-            fn_print_tip "访问地址: ${GREEN}http://${SERVER_IP}:8000${NC}"
-            fn_print_tip "登录账号: ${YELLOW}${single_user}${NC}"
-            fn_print_tip "登录密码: ${YELLOW}${single_pass}${NC}"
-        elif [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
-            # 自定义 - 多用户/维护者模式
-            fn_print_tip "访问地址 (平时用): ${GREEN}http://${SERVER_IP}:8000${NC}"
-            fn_print_tip "登录页地址 (验证账号密码): ${GREEN}http://${SERVER_IP}:8000/login${NC}"
-        fi
-    else
-        # 自动化模式 (海外/大陆)
+    if [[ "$run_mode" == "1" ]]; then
+        # 单用户模式
         fn_print_tip "访问地址: ${GREEN}http://${SERVER_IP}:8000${NC}"
+        fn_print_tip "登录账号: ${YELLOW}${single_user}${NC}"
+        fn_print_tip "登录密码: ${YELLOW}${single_pass}${NC}"
+    elif [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
+        # 多用户/维护者模式
+        fn_print_tip "访问地址 (平时用): ${GREEN}http://${SERVER_IP}:8000${NC}"
+        fn_print_tip "登录页地址 (验证账号密码): ${GREEN}http://${SERVER_IP}:8000/login${NC}"
     fi
     
     fn_print_tip "项目路径: $INSTALL_DIR"
@@ -1100,6 +1110,38 @@ fn_select_server_type() {
     esac
 }
 
+fn_select_run_mode() {
+    echo
+    log_action "请选择 SillyTavern 的运行模式："
+    echo -e "  [1] ${CYAN}单用户模式${NC} (弹窗认证，适合个人使用)"
+    echo -e "  [2] ${CYAN}多用户模式${NC} (独立登录页，适合多人或单人使用)"
+    
+    local prompt_text="选择模式 [默认为 1]: "
+    if [[ "$INSTALL_TYPE" == "custom" ]]; then
+        echo -e "  [3] ${RED}维护者模式${NC} (作者专用，普通用户请勿选择！)"
+    fi
+    
+    read -rp "$prompt_text" choice < /dev/tty
+    run_mode=${choice:-1}
+
+    case "$run_mode" in
+        1)
+            read -rp "请输入自定义用户名: " single_user < /dev/tty
+            read -rp "请输入自定义密码: " single_pass < /dev/tty
+            if [ -z "$single_user" ] || [ -z "$single_pass" ]; then fn_print_error "用户名和密码不能为空！"; fi
+            ;;
+        2)
+            ;; # 多用户模式不需要在这里输入账密
+        3)
+            if [[ "$INSTALL_TYPE" != "custom" ]]; then
+                fn_print_error "无效输入，脚本已终止."
+            fi
+            ;;
+        *) fn_print_error "无效输入，脚本已终止." ;;
+    esac
+    export run_mode single_user single_pass
+}
+
 run_automated_install() {
     local install_type="$1" # "overseas" or "mainland"
     local mode_name=""
@@ -1109,15 +1151,18 @@ run_automated_install() {
     fn_check_base_deps
     fn_check_dependencies
 
+    fn_select_run_mode
+
     fn_print_step "[ ${mode_name} ] 自动配置 Docker"
     DAEMON_JSON_PARTS=()
-    DAEMON_JSON_PARTS+=('"log-driver": "json-file", "log-opts": {"max-size": "50m", "max-file": "3"}')
+    log_info "自动配置 Docker 日志 (10MB x 3个文件)..."
+    DAEMON_JSON_PARTS+=('"log-driver": "json-file", "log-opts": {"max-size": "10m", "max-file": "3"}')
     
     if [[ "$install_type" == "mainland" ]]; then
         log_info "正在为大陆服务器自动配置最快镜像源..."
         local test_results; test_results=$(fn_internal_test_mirrors)
         if [[ "$test_results" != "OFFICIAL_HUB_OK" && -n "$test_results" ]]; then
-            # 使用 awk 更稳定地提取镜像地址，并限制最多1个
+            # 使用 awk 更稳定地提取镜像地址，并限制最多3个
             local best_mirrors_str; best_mirrors_str=$(echo -e "$test_results" | awk -F'|' '{print $2}' | head -n 3)
             # 使用 mapfile 或 read -a 是更安全的做法，避免 word splitting 问题
             read -r -d '' -a best_mirrors < <(printf '%s\n' "$best_mirrors_str")
@@ -1164,10 +1209,9 @@ run_automated_install() {
     fn_print_step "[ ${mode_name} ] 初始化与配置"
     fn_generate_initial_config "$DOCKER_COMPOSE_CMD" "$COMPOSE_FILE" "$CONFIG_FILE"
 
-    sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true/" "$CONFIG_FILE"
-    sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false/" "$CONFIG_FILE"
-    sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false/" "$CONFIG_FILE"
-    log_success "默认配置已应用。"
+    log_action "正在应用配置..."
+    fn_apply_config_changes
+    log_success "配置已应用。"
 
     fn_print_step "[ ${mode_name} ] 启动并验证服务"
     $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate
@@ -1218,22 +1262,7 @@ run_custom_install() {
         if [ -z "$USER_HOME" ]; then fn_print_error "无法找到用户 '$TARGET_USER' 的家目录。"; fi
     fi
 
-    echo "选择运行模式："
-    echo -e "  [1] ${CYAN}单用户模式${NC} (弹窗认证，适合个人使用)"
-    echo -e "  [2] ${CYAN}多用户模式${NC} (独立登录页，适合多人或单人使用)"
-    echo -e "  [3] ${RED}维护者模式${NC} (作者专用，普通用户请勿选择！)"
-    read -rp "选择模式 [默认为 1]: " run_mode < /dev/tty
-    run_mode=${run_mode:-1}
-
-    case "$run_mode" in
-        1)
-            read -rp "自定义用户名: " single_user < /dev/tty
-            read -rp "自定义密码: " single_pass < /dev/tty
-            if [ -z "$single_user" ] || [ -z "$single_pass" ]; then fn_print_error "用户名和密码不能为空！"; fi
-            ;;
-        2|3) ;;
-        *) fn_print_error "无效输入，脚本已终止." ;;
-    esac
+    fn_select_run_mode
 
     local default_parent_path="$USER_HOME"
     read -rp "安装路径 (上级目录) [默认: $USER_HOME]: " custom_parent_path < /dev/tty
