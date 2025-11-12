@@ -17,4 +17,4 @@ chmod +x "${FILENAME}"
 echo "脚本准备好了！马上运行..."
 echo "------------------------------------"
 
-./"${FILENAME}" "$@"
+./"${FILENAME}" "$@" < /dev/tty
