@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # 作者: 清绝 | 网址: blog.qjyg.de
-# 清绝咕咕助手 v2.5
+# 清绝咕咕助手 v2.6
 
 BOLD=$'\e[1m'
 CYAN=$'\e[1;36m'
@@ -42,7 +42,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.5${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.6${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
 }
 
@@ -1644,16 +1644,17 @@ fn_manage_autostart() {
     fn_print_header "管理助手自启"
     if $is_set; then
         echo -e "当前状态: ${GREEN}已启用${NC}\n${CYAN}提示: 关闭自启后，输入 'gugu' 命令即可手动启动助手。${NC}"
-        read -p "是否取消自启？ (y/n): " confirm
-        if [[ "$confirm" =~ ^[yY]$ ]]; then
+        read -p "是否取消自启？ [Y/n]: " confirm
+        if [[ ! "$confirm" =~ ^[nN]$ ]]; then
+            fn_create_shortcut
             sed -i "/# 咕咕助手/d" "$BASHRC_FILE"
             sed -i "\|$AUTOSTART_CMD|d" "$BASHRC_FILE"
             fn_print_success "已取消自启。"
         fi
     else
         echo -e "当前状态: ${RED}未启用${NC}\n${CYAN}提示: 在 Termux 中输入 'gugu' 命令可以手动启动助手。${NC}"
-        read -p "是否设置自启？ (y/n): " confirm
-        if [[ "$confirm" =~ ^[yY]$ ]]; then
+        read -p "是否设置自启？ [Y/n]: " confirm
+        if [[ ! "$confirm" =~ ^[nN]$ ]]; then
             fn_create_shortcut
             echo -e "\n# 咕咕助手\n$AUTOSTART_CMD" >>"$BASHRC_FILE"
             fn_print_success "已成功设置自启。"
