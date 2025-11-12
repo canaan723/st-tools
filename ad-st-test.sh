@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # 作者: 清绝 | 网址: blog.qjyg.de
-# 清绝咕咕助手 v2.4
+# 清绝咕咕助手 v2.5
 
 BOLD=$'\e[1m'
 CYAN=$'\e[1;36m'
@@ -42,7 +42,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.4${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.5${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
 }
 
