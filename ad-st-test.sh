@@ -1646,6 +1646,7 @@ fn_manage_autostart() {
         echo -e "当前状态: ${GREEN}已启用${NC}\n${CYAN}提示: 关闭自启后，输入 'gugu' 命令即可手动启动助手。${NC}"
         read -p "是否取消自启？ (y/n): " confirm
         if [[ "$confirm" =~ ^[yY]$ ]]; then
+            fn_create_shortcut
             sed -i "/# 咕咕助手/d" "$BASHRC_FILE"
             sed -i "\|$AUTOSTART_CMD|d" "$BASHRC_FILE"
             fn_print_success "已取消自启。"
