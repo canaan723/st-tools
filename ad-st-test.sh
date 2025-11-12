@@ -1619,12 +1619,12 @@ fn_check_for_updates() {
 
 fn_create_shortcut() {
     local BASHRC_FILE="$HOME/.bashrc"
-    local ALIAS_CMD="alias st='\"$SCRIPT_SELF_PATH\"'"
+    local ALIAS_CMD="alias gugu='\"$SCRIPT_SELF_PATH\"'"
     local ALIAS_COMMENT="# 咕咕助手快捷命令"
     if ! grep -qF "$ALIAS_CMD" "$BASHRC_FILE"; then
         chmod +x "$SCRIPT_SELF_PATH"
         echo -e "\n$ALIAS_COMMENT\n$ALIAS_CMD" >>"$BASHRC_FILE"
-        fn_print_success "已创建快捷命令 'st'。请重启 Termux 或执行 'source ~/.bashrc' 生效。"
+        fn_print_success "已创建快捷命令 'gugu'。请重启 Termux 或执行 'source ~/.bashrc' 生效。"
     fi
 }
 
