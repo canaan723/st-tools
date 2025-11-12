@@ -1643,7 +1643,7 @@ fn_manage_autostart() {
     clear
     fn_print_header "管理助手自启"
     if $is_set; then
-        echo -e "当前状态: ${GREEN}已启用${NC}\n${CYAN}提示: 关闭自启后，输入 'st' 命令即可手动启动助手。${NC}"
+        echo -e "当前状态: ${GREEN}已启用${NC}\n${CYAN}提示: 关闭自启后，输入 'gugu' 命令即可手动启动助手。${NC}"
         read -p "是否取消自启？ (y/n): " confirm
         if [[ "$confirm" =~ ^[yY]$ ]]; then
             sed -i "/# 咕咕助手/d" "$BASHRC_FILE"
@@ -1651,7 +1651,7 @@ fn_manage_autostart() {
             fn_print_success "已取消自启。"
         fi
     else
-        echo -e "当前状态: ${RED}未启用${NC}\n${CYAN}提示: 在 Termux 中输入 'st' 命令可以手动启动助手。${NC}"
+        echo -e "当前状态: ${RED}未启用${NC}\n${CYAN}提示: 在 Termux 中输入 'gugu' 命令可以手动启动助手。${NC}"
         read -p "是否设置自启？ (y/n): " confirm
         if [[ "$confirm" =~ ^[yY]$ ]]; then
             echo -e "\n# 咕咕助手\n$AUTOSTART_CMD" >>"$BASHRC_FILE"
