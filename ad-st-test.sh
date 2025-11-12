@@ -1654,6 +1654,7 @@ fn_manage_autostart() {
         echo -e "当前状态: ${RED}未启用${NC}\n${CYAN}提示: 在 Termux 中输入 'gugu' 命令可以手动启动助手。${NC}"
         read -p "是否设置自启？ (y/n): " confirm
         if [[ "$confirm" =~ ^[yY]$ ]]; then
+            fn_create_shortcut
             echo -e "\n# 咕咕助手\n$AUTOSTART_CMD" >>"$BASHRC_FILE"
             fn_print_success "已成功设置自启。"
         fi
@@ -1742,7 +1743,7 @@ while true; do
     echo -e "      [2] ${CYAN}${BOLD}数据同步 (Git 云端)${NC}"
     echo -e "      [3] ${CYAN}${BOLD}本地备份管理${NC}"
     echo -e "      [4] ${YELLOW}${BOLD}首次部署 (全新安装)${NC}\n"
-    echo -e "      [5] 酒馆版本管理          [6] 更新咕咕助手${update_notice}"
+    echo -e "      [5] 酒馆版本管理      [6] 更新咕咕助手${update_notice}"
     echo -e "      [7] 管理助手自启      [8] 查看帮助文档"
     echo -e "      [9] 配置网络代理\n"
     echo -e "      ${RED}[0] 退出咕咕助手${NC}\n"
