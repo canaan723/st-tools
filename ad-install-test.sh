@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCRIPT_URL="https://gugu.qjyg.de/test"
+SCRIPT_URL="https://gugu.qjyg.de/adtest"
 FILENAME="ad-st-test.sh"
 
 echo "正在准备下载最新版的 ${FILENAME} 脚本..."
