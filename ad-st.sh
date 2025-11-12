@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # 作者: 清绝 | 网址: blog.qjyg.de
-# 清绝咕咕助手 v2.4
+# 清绝咕咕助手 v2.5
 
 BOLD=$'\e[1m'
 CYAN=$'\e[1;36m'
@@ -42,7 +42,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.4${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.5${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
 }
 
@@ -1619,12 +1619,12 @@ fn_check_for_updates() {
 
 fn_create_shortcut() {
     local BASHRC_FILE="$HOME/.bashrc"
-    local ALIAS_CMD="alias st='\"$SCRIPT_SELF_PATH\"'"
+    local ALIAS_CMD="alias gugu='\"$SCRIPT_SELF_PATH\"'"
     local ALIAS_COMMENT="# 咕咕助手快捷命令"
     if ! grep -qF "$ALIAS_CMD" "$BASHRC_FILE"; then
         chmod +x "$SCRIPT_SELF_PATH"
         echo -e "\n$ALIAS_COMMENT\n$ALIAS_CMD" >>"$BASHRC_FILE"
-        fn_print_success "已创建快捷命令 'st'。请重启 Termux 或执行 'source ~/.bashrc' 生效。"
+        fn_print_success "已创建快捷命令 'gugu'。请重启 Termux 或执行 'source ~/.bashrc' 生效。"
     fi
 }
 
@@ -1643,7 +1643,7 @@ fn_manage_autostart() {
     clear
     fn_print_header "管理助手自启"
     if $is_set; then
-        echo -e "当前状态: ${GREEN}已启用${NC}\n${CYAN}提示: 关闭自启后，输入 'st' 命令即可手动启动助手。${NC}"
+        echo -e "当前状态: ${GREEN}已启用${NC}\n${CYAN}提示: 关闭自启后，输入 'gugu' 命令即可手动启动助手。${NC}"
         read -p "是否取消自启？ (y/n): " confirm
         if [[ "$confirm" =~ ^[yY]$ ]]; then
             sed -i "/# 咕咕助手/d" "$BASHRC_FILE"
@@ -1651,9 +1651,10 @@ fn_manage_autostart() {
             fn_print_success "已取消自启。"
         fi
     else
-        echo -e "当前状态: ${RED}未启用${NC}\n${CYAN}提示: 在 Termux 中输入 'st' 命令可以手动启动助手。${NC}"
+        echo -e "当前状态: ${RED}未启用${NC}\n${CYAN}提示: 在 Termux 中输入 'gugu' 命令可以手动启动助手。${NC}"
         read -p "是否设置自启？ (y/n): " confirm
         if [[ "$confirm" =~ ^[yY]$ ]]; then
+            fn_create_shortcut
             echo -e "\n# 咕咕助手\n$AUTOSTART_CMD" >>"$BASHRC_FILE"
             fn_print_success "已成功设置自启。"
         fi
@@ -1742,7 +1743,7 @@ while true; do
     echo -e "      [2] ${CYAN}${BOLD}数据同步 (Git 云端)${NC}"
     echo -e "      [3] ${CYAN}${BOLD}本地备份管理${NC}"
     echo -e "      [4] ${YELLOW}${BOLD}首次部署 (全新安装)${NC}\n"
-    echo -e "      [5] 酒馆版本管理          [6] 更新咕咕助手${update_notice}"
+    echo -e "      [5] 酒馆版本管理      [6] 更新咕咕助手${update_notice}"
     echo -e "      [7] 管理助手自启      [8] 查看帮助文档"
     echo -e "      [9] 配置网络代理\n"
     echo -e "      ${RED}[0] 退出咕咕助手${NC}\n"
