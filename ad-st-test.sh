@@ -52,12 +52,13 @@ fn_show_agreement_if_first_run() {
     if [ ! -f "$AGREEMENT_FILE" ]; then
         clear
         fn_print_header "使用前必看"
-        echo -e "\n 1. ${CYAN}我是咕咕助手的作者清绝，咕咕助手是完全免费的，唯一发布地址 blog.qjyg.de${NC}"
-        echo -e " 2. ${YELLOW}如果你是花钱买的，那你绝对是被坑了，赶紧退款差评举报。${NC}"
-        echo -e " 3. ${RED}${BOLD}严禁拿去倒卖！拿免费开源的东西赚钱，是自己不会写吗？丢人现眼。${NC}"
+        local UNDERLINE=$'\e[4m'
+        echo -e "\n 1. 我是咕咕助手的作者清绝，咕咕助手是 ${GREEN}完全免费${NC} 的，唯一发布地址 ${CYAN}${UNDERLINE}https://blog.qjyg.de${NC}"
+        echo -e " 2. 如果你是 ${YELLOW}花钱买的${NC}，那你绝对是 ${RED}被坑了${NC}，赶紧退款差评举报。"
+        echo -e " 3. ${RED}${BOLD}严禁拿去倒卖！${NC}拿免费开源的东西赚钱，是自己不会写吗？丢人现眼。"
         echo -e "\n${RED}${BOLD}【盗卖名单】${NC}"
-        echo -e " ${RED}-> 淘宝：灿灿AI科技${NC}"
-        echo -e " ${RED}（名单持续更新，以后发现一个挂一个）${NC}"
+        echo -e " -> 淘宝：${RED}${BOLD}灿灿AI科技${NC}"
+        echo -e " （名单持续更新，以后发现一个挂一个）"
         echo -e "\n${GREEN}发现盗卖的欢迎告诉我，感谢支持。${NC}"
         echo -e "─────────────────────────────────────────────────────────────"
         read -p "请输入 'yes' 表示你已阅读并同意以上条款: " confirm
