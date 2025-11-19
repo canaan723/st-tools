@@ -55,7 +55,7 @@ fn_show_agreement_if_first_run() {
         local UNDERLINE=$'\e[4m'
         echo -e "\n 1. 我是咕咕助手的作者清绝，咕咕助手是 ${GREEN}完全免费${NC} 的，唯一发布地址 ${CYAN}${UNDERLINE}https://blog.qjyg.de${NC}"，内含宝宝级教程。
         echo -e " 2. 如果你是 ${YELLOW}花钱买的${NC}，那你绝对是 ${RED}被坑了${NC}，赶紧退款差评举报。"
-        echo -e " 3. ${RED}${BOLD}严禁拿去倒卖！${NC}拿免费开源的东西赚钱，丢人现眼。"
+        echo -e " 3. ${RED}${BOLD}严禁拿去倒卖！${NC}偷免费开源的东西赚钱，丢人现眼。"
         echo -e "\n${RED}${BOLD}【盗卖名单】${NC}"
         echo -e " -> 淘宝：${RED}${BOLD}灿灿AI科技${NC}"
         echo -e " （持续更新）"

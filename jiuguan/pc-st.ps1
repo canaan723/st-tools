@@ -18,6 +18,7 @@ $BackupPrefsConfigFile = Join-Path $ConfigDir "backup_prefs.conf"
 $GitSyncConfigFile = Join-Path $ConfigDir "git_sync.conf"
 $ProxyConfigFile = Join-Path $ConfigDir "proxy.conf"
 $SyncRulesConfigFile = Join-Path $ConfigDir "sync_rules.conf"
+$AgreementFile = Join-Path $ConfigDir ".agreement_shown"
 
 $Mirror_List = @(
     "https://github.com/SillyTavern/SillyTavern.git",
@@ -36,8 +37,9 @@ $Mirror_List = @(
 $CachedMirrors = @()
 
 function Show-Header {
-    Write-Host "    " -NoNewline; Write-Host ">>" -ForegroundColor Yellow -NoNewline; Write-Host " 清绝咕咕助手 v2.6" -ForegroundColor Green
+    Write-Host "    " -NoNewline; Write-Host ">>" -ForegroundColor Yellow -NoNewline; Write-Host " 清绝咕咕助手 v2.7" -ForegroundColor Green
     Write-Host "       " -NoNewline; Write-Host "作者: 清绝 | 网址: blog.qjyg.de" -ForegroundColor DarkGray
+    Write-Host "    " -NoNewline; Write-Host "本脚本为免费工具，严禁用于商业倒卖！" -ForegroundColor Red
 }
 
 function Write-Header($Title) { Write-Host "`n═══ $($Title) ═══" -ForegroundColor Cyan }
@@ -47,6 +49,31 @@ function Write-Error($Message) { Write-Host "✗ $Message" -ForegroundColor Red 
 function Write-ErrorExit($Message) { Write-Host "`n✗ $Message`n流程已终止。" -ForegroundColor Red; Press-Any-Key; exit }
 function Press-Any-Key { Write-Host "`n请按任意键返回..." -ForegroundColor Cyan; $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null }
 function Check-Command($Command) { return (Get-Command $Command -ErrorAction SilentlyContinue) }
+
+function Show-AgreementIfFirstRun {
+    if (-not (Test-Path $AgreementFile)) {
+        Clear-Host
+        Write-Header "使用前必看"
+        Write-Host "`n 1. 我是咕咕助手的作者清绝，咕咕助手是 " -NoNewline; Write-Host "完全免费" -ForegroundColor Green -NoNewline; Write-Host " 的，唯一发布地址 " -NoNewline; Write-Host "https://blog.qjyg.de" -ForegroundColor Cyan -NoNewline; Write-Host "，内含宝宝级教程。"
+        Write-Host " 2. 如果你是 " -NoNewline; Write-Host "花钱买的" -ForegroundColor Yellow -NoNewline; Write-Host "，那你绝对是 " -NoNewline; Write-Host "被坑了" -ForegroundColor Red -NoNewline; Write-Host "，赶紧退款差评举报。"
+        Write-Host " 3. " -NoNewline; Write-Host "严禁拿去倒卖！" -ForegroundColor Red -NoNewline; Write-Host "偷免费开源的东西赚钱，丢人现眼。"
+        Write-Host "`n【盗卖名单】" -ForegroundColor Red
+        Write-Host " -> 淘宝：" -NoNewline; Write-Host "灿灿AI科技" -ForegroundColor Red
+        Write-Host " （持续更新）"
+        Write-Host "`n发现盗卖的欢迎告诉我，感谢支持。" -ForegroundColor Green
+        Write-Host "─────────────────────────────────────────────────────────────"
+        $confirm = Read-Host "请输入 'yes' 表示你已阅读并同意以上条款"
+        if ($confirm -eq "yes") {
+            if (-not (Test-Path $ConfigDir)) { New-Item -Path $ConfigDir -ItemType Directory -Force | Out-Null }
+            New-Item -Path $AgreementFile -ItemType File -Force | Out-Null
+            Write-Host "`n感谢您的支持！正在进入助手..." -ForegroundColor Green
+            Start-Sleep -Seconds 2
+        } else {
+            Write-Host "`n您未同意使用条款，脚本将自动退出。" -ForegroundColor Red
+            exit
+        }
+    }
+}
 
 function Get-UserFolders {
     param([string]$baseDataPath)
@@ -1391,6 +1418,7 @@ function Check-ForUpdatesOnStart {
 }
 
 Apply-Proxy
+Show-AgreementIfFirstRun
 Check-ForUpdatesOnStart
 git config --global --add safe.directory '*' | Out-Null
 
