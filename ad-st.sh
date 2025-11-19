@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # 作者: 清绝 | 网址: blog.qjyg.de
-# 清绝咕咕助手 v2.6
+# 清绝咕咕助手 v2.7
 
 BOLD=$'\e[1m'
 CYAN=$'\e[1;36m'
@@ -23,6 +23,7 @@ CONFIG_FILE="$CONFIG_DIR/backup_prefs.conf"
 GIT_SYNC_CONFIG_FILE="$CONFIG_DIR/git_sync.conf"
 PROXY_CONFIG_FILE="$CONFIG_DIR/proxy.conf"
 SYNC_RULES_CONFIG_FILE="$CONFIG_DIR/sync_rules.conf"
+AGREEMENT_FILE="$CONFIG_DIR/.agreement_shown"
 
 readonly TOP_LEVEL_SYSTEM_FOLDERS=("data/_storage" "data/_cache" "data/_uploads" "data/_webpack")
 
@@ -42,8 +43,35 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.6${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.7${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
+    echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
+}
+
+fn_show_agreement_if_first_run() {
+    if [ ! -f "$AGREEMENT_FILE" ]; then
+        clear
+        fn_print_header "使用前必看"
+        local UNDERLINE=$'\e[4m'
+        echo -e "\n 1. 我是咕咕助手的作者清绝，咕咕助手是 ${GREEN}完全免费${NC} 的，唯一发布地址 ${CYAN}${UNDERLINE}https://blog.qjyg.de${NC}"，内含宝宝级教程。
+        echo -e " 2. 如果你是 ${YELLOW}花钱买的${NC}，那你绝对是 ${RED}被坑了${NC}，赶紧退款差评举报。"
+        echo -e " 3. ${RED}${BOLD}严禁拿去倒卖！${NC}拿免费开源的东西赚钱，丢人现眼。"
+        echo -e "\n${RED}${BOLD}【盗卖名单】${NC}"
+        echo -e " -> 淘宝：${RED}${BOLD}灿灿AI科技${NC}"
+        echo -e " （持续更新）"
+        echo -e "\n${GREEN}发现盗卖的欢迎告诉我，感谢支持。${NC}"
+        echo -e "─────────────────────────────────────────────────────────────"
+        read -p "请输入 'yes' 表示你已阅读并同意以上条款: " confirm
+        if [[ "$confirm" == "yes" ]]; then
+            mkdir -p "$CONFIG_DIR"
+            touch "$AGREEMENT_FILE"
+            echo -e "\n${GREEN}感谢您的支持！正在进入助手...${NC}"
+            sleep 2
+        else
+            echo -e "\n${RED}您未同意使用条款，脚本将自动退出。${NC}"
+            exit 1
+        fi
+    fi
 }
 
 fn_print_header() {
@@ -1700,6 +1728,7 @@ fn_migrate_configs() {
 
 fn_migrate_configs
 fn_apply_proxy
+fn_show_agreement_if_first_run
 
 if [[ "$1" != "--no-check" && "$1" != "--updated" ]]; then
     fn_check_for_updates
