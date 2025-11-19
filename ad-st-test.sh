@@ -23,6 +23,7 @@ CONFIG_FILE="$CONFIG_DIR/backup_prefs.conf"
 GIT_SYNC_CONFIG_FILE="$CONFIG_DIR/git_sync.conf"
 PROXY_CONFIG_FILE="$CONFIG_DIR/proxy.conf"
 SYNC_RULES_CONFIG_FILE="$CONFIG_DIR/sync_rules.conf"
+AGREEMENT_FILE="$CONFIG_DIR/.agreement_shown"
 
 readonly TOP_LEVEL_SYSTEM_FOLDERS=("data/_storage" "data/_cache" "data/_uploads" "data/_webpack")
 
@@ -44,6 +45,35 @@ MIRROR_LIST=(
 fn_show_main_header() {
     echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.6${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
+    echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
+}
+
+fn_show_agreement_if_first_run() {
+    if [ ! -f "$AGREEMENT_FILE" ]; then
+        clear
+        echo -e "${YELLOW}=============================================================${NC}"
+        echo -e "${YELLOW}==                                                         ==${NC}"
+        echo -e "${YELLOW}==                  ${BOLD}欢迎使用 清绝咕咕助手${NC}                  ==${NC}"
+        echo -e "${YELLOW}==                                                         ==${NC}"
+        echo -e "${YELLOW}=============================================================${NC}"
+        echo -e "\n${BOLD}在使用前，请您仔细阅读并同意以下条款：${NC}\n"
+        echo -e " 1. ${CYAN}本脚本由【清绝】原创开发，是一个完全免费的开源工具，旨在为用户提供便利。${NC}"
+        echo -e " 2. ${CYAN}官方发布渠道仅限于作者的博客 (blog.qjyg.de) 及相关代码托管平台。${NC}"
+        echo -e " 3. ${RED}${BOLD}严禁任何个人或组织将此脚本用于商业目的，包括但不限于转售、捆绑销售、作为付费服务的一部分等。${NC}"
+        echo -e " 4. ${RED}${BOLD}任何通过非官方渠道获取的脚本，其安全性、稳定性均无法得到保证，作者对此不承担任何责任。${NC}"
+        echo -e "\n${YELLOW}发现盗卖行为，请通过官方渠道向作者举报。感谢您的支持！${NC}\n"
+        echo -e "─────────────────────────────────────────────────────────────"
+        read -p "请输入 'yes' 表示您已阅读并同意以上条款: " confirm
+        if [[ "$confirm" == "yes" ]]; then
+            mkdir -p "$CONFIG_DIR"
+            touch "$AGREEMENT_FILE"
+            echo -e "\n${GREEN}感谢您的支持！正在进入助手...${NC}"
+            sleep 2
+        else
+            echo -e "\n${RED}您未同意使用条款，脚本将自动退出。${NC}"
+            exit 1
+        fi
+    fi
 }
 
 fn_print_header() {
@@ -1700,6 +1730,7 @@ fn_migrate_configs() {
 
 fn_migrate_configs
 fn_apply_proxy
+fn_show_agreement_if_first_run
 
 if [[ "$1" != "--no-check" && "$1" != "--updated" ]]; then
     fn_check_for_updates
