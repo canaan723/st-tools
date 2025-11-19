@@ -51,19 +51,16 @@ fn_show_main_header() {
 fn_show_agreement_if_first_run() {
     if [ ! -f "$AGREEMENT_FILE" ]; then
         clear
-        echo -e "${YELLOW}=============================================================${NC}"
-        echo -e "${YELLOW}==                                                         ==${NC}"
-        echo -e "${YELLOW}==                  ${BOLD}欢迎使用 清绝咕咕助手${NC}                  ==${NC}"
-        echo -e "${YELLOW}==                                                         ==${NC}"
-        echo -e "${YELLOW}=============================================================${NC}"
-        echo -e "\n${BOLD}在使用前，请您仔细阅读并同意以下条款：${NC}\n"
-        echo -e " 1. ${CYAN}本脚本由【清绝】原创开发，是一个完全免费的开源工具，旨在为用户提供便利。${NC}"
-        echo -e " 2. ${CYAN}官方发布渠道仅限于作者的博客 (blog.qjyg.de) 及相关代码托管平台。${NC}"
-        echo -e " 3. ${RED}${BOLD}严禁任何个人或组织将此脚本用于商业目的，包括但不限于转售、捆绑销售、作为付费服务的一部分等。${NC}"
-        echo -e " 4. ${RED}${BOLD}任何通过非官方渠道获取的脚本，其安全性、稳定性均无法得到保证，作者对此不承担任何责任。${NC}"
-        echo -e "\n${YELLOW}发现盗卖行为，请通过官方渠道向作者举报。感谢您的支持！${NC}\n"
+        fn_print_header "使用前必看"
+        echo -e "\n 1. ${CYAN}我是咕咕助手的作者清绝，咕咕助手是完全免费的，唯一发布地址 blog.qjyg.de${NC}"
+        echo -e " 2. ${YELLOW}如果你是花钱买的，那你绝对是被坑了，赶紧退款差评举报。${NC}"
+        echo -e " 3. ${RED}${BOLD}严禁拿去倒卖！拿免费开源的东西赚钱，是自己不会写吗？丢人现眼。${NC}"
+        echo -e "\n${RED}${BOLD}【盗卖名单】${NC}"
+        echo -e " ${RED}-> 淘宝：灿灿AI科技${NC}"
+        echo -e " ${RED}（名单持续更新，以后发现一个挂一个）${NC}"
+        echo -e "\n${GREEN}发现盗卖的欢迎告诉我，感谢支持。${NC}"
         echo -e "─────────────────────────────────────────────────────────────"
-        read -p "请输入 'yes' 表示您已阅读并同意以上条款: " confirm
+        read -p "请输入 'yes' 表示你已阅读并同意以上条款: " confirm
         if [[ "$confirm" == "yes" ]]; then
             mkdir -p "$CONFIG_DIR"
             touch "$AGREEMENT_FILE"
