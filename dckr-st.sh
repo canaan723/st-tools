@@ -2,6 +2,15 @@
 
 # 咕咕助手 v2.2
 # 作者: 清绝 | 网址: blog.qjyg.de
+#
+# Copyright (c) 2025 清绝 (QingJue) <blog.qjyg.de>
+# This script is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License.
+# To view a copy of this license, visit http://creativecommons.org/licenses/by-nc-sa/4.0/
+#
+# 郑重声明：
+# 本脚本为免费开源项目，仅供个人学习和非商业用途使用。
+# 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
+# 任何违反本协议的行为都将受到法律追究。
 
 # --- [核心] 确保脚本由 Bash 执行 ---
 if [ -z "$BASH_VERSION" ]; then
