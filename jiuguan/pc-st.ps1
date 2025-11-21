@@ -46,7 +46,7 @@ $Mirror_List = @(
 $CachedMirrors = @()
 
 function Show-Header {
-    Write-Host "    " -NoNewline; Write-Host ">>" -ForegroundColor Yellow -NoNewline; Write-Host " 清绝咕咕助手 v2.7" -ForegroundColor Green
+    Write-Host "    " -NoNewline; Write-Host ">>" -ForegroundColor Yellow -NoNewline; Write-Host " 清绝咕咕助手 v3.0" -ForegroundColor Green
     Write-Host "       " -NoNewline; Write-Host "作者: 清绝 | 网址: blog.qjyg.de" -ForegroundColor DarkGray
     Write-Host "    " -NoNewline; Write-Host "本脚本为免费工具，严禁用于商业倒卖！" -ForegroundColor Red
 }
@@ -1408,6 +1408,147 @@ function Update-AssistantScript {
     }
 }
 
+function Get-AiStudioToken {
+    Clear-Host
+    Write-Header "获取 AI Studio 凭证"
+
+    if (-not (Check-Command "git") -or -not (Check-Command "node")) {
+        Write-Error "未检测到 Git 或 Node.js，无法继续。"
+        Write-Warning "请先在主菜单选择 [首次部署] 或手动安装这些依赖。"
+        Press-Any-Key
+        return
+    }
+    Write-Success "环境检查通过 (Git, Node.js 已安装)。"
+
+    $ais2apiDir = Join-Path $ScriptBaseDir "ais2api"
+    
+    if (-not (Test-Path $ais2apiDir)) {
+        Write-Warning "正在克隆 ais2api 项目..."
+        git clone https://github.com/Ellinav/ais2api $ais2apiDir
+        if ($LASTEXITCODE -ne 0) { Write-Error "克隆失败！"; Press-Any-Key; return }
+    } else {
+        Write-Warning "ais2api 目录已存在，跳过克隆。"
+    }
+
+    $camoufoxDir = Join-Path $ais2apiDir "camoufox"
+    if (-not (Test-Path $camoufoxDir)) { New-Item -Path $camoufoxDir -ItemType Directory | Out-Null }
+    
+    $camoufoxExe = Join-Path $camoufoxDir "camoufox.exe"
+    if (-not (Test-Path $camoufoxExe)) {
+        Write-Warning "正在下载 Camoufox 浏览器内核..."
+        $camoufoxUrl = "https://github.com/daijro/camoufox/releases/download/v135.0.1-beta.24/camoufox-135.0.1-beta.24-win.x86_64.zip"
+        $zipPath = Join-Path $ais2apiDir "camoufox.zip"
+        
+        try {
+            $webClient = New-Object System.Net.WebClient
+            $downloadError = $null
+            $script:downloadCompleted = $false
+
+            $progressAction = {
+                param($sender, $e)
+                $receivedMB = $e.BytesReceived / 1MB
+                $totalMB = $e.TotalBytesToReceive / 1MB
+                $statusText = "下载中: {0:N2} MB / {1:N2} MB ({2}%)" -f $receivedMB, $totalMB, $e.ProgressPercentage
+                Write-Progress -Activity "正在下载 Camoufox 内核" -Status $statusText -PercentComplete $e.ProgressPercentage
+            }
+            $completedAction = {
+                param($sender, $e)
+                if ($e.Error) { $script:downloadError = $e.Error }
+                $script:downloadCompleted = $true
+            }
+
+            $progressRegistration = Register-ObjectEvent -InputObject $webClient -EventName DownloadProgressChanged -Action $progressAction
+            $completedRegistration = Register-ObjectEvent -InputObject $webClient -EventName DownloadFileCompleted -Action $completedAction
+            
+            try {
+                $webClient.DownloadFileAsync([System.Uri]$camoufoxUrl, $zipPath)
+                while (-not $script:downloadCompleted) {
+                    Start-Sleep -Milliseconds 200
+                }
+            } finally {
+                Unregister-Event -SubscriptionId $progressRegistration.Id
+                Unregister-Event -SubscriptionId $completedRegistration.Id
+                $webClient.Dispose()
+            }
+
+            if ($script:downloadError) {
+                throw $script:downloadError
+            }
+            
+            Write-Progress -Activity "正在下载 Camoufox 内核" -Completed
+            Write-Success "下载完成，正在解压..."
+            Expand-Archive -Path $zipPath -DestinationPath $camoufoxDir -Force
+            Remove-Item $zipPath -Force
+            
+            if (-not (Test-Path $camoufoxExe)) {
+                $nestedExe = Get-ChildItem -Path $camoufoxDir -Filter "camoufox.exe" -Recurse | Select-Object -First 1
+                if ($nestedExe) {
+                    Write-Warning "检测到嵌套目录，正在调整结构..."
+                    $parentDir = $nestedExe.Directory.FullName
+                    Get-ChildItem -Path $parentDir | Move-Item -Destination $camoufoxDir -Force
+                    if ((Get-ChildItem $parentDir).Count -eq 0) { Remove-Item $parentDir -Force }
+                } else {
+                    Write-Error "解压后未找到 camoufox.exe！"
+                    Press-Any-Key; return
+                }
+            }
+            Write-Success "Camoufox 配置完成。"
+        } catch {
+            Write-Error "下载或解压失败: $($_.Exception.Message)"
+            Press-Any-Key; return
+        }
+    } else {
+        Write-Success "Camoufox 已存在。"
+    }
+
+    Set-Location $ais2apiDir
+    if (-not (Test-Path "node_modules")) {
+        Write-Warning "正在安装依赖 (npm install)..."
+        npm install
+        if ($LASTEXITCODE -ne 0) { Write-Error "依赖安装失败！"; Set-Location $ScriptBaseDir; Press-Any-Key; return }
+    }
+
+    while ($true) {
+        Clear-Host
+        Write-Header "准备获取凭证"
+        Write-Host "即将启动浏览器..." -ForegroundColor Cyan
+        Write-Host "1. 请在弹出的浏览器中登录您的谷歌账号 (建议使用小号)。" -ForegroundColor Yellow
+        Write-Host "2. 登录成功看到 AI Studio 页面后，请保持浏览器开启。" -ForegroundColor Yellow
+        Write-Host "3. 回到本窗口按回车，即可自动获取凭证并关闭浏览器。" -ForegroundColor Yellow
+        Write-Host "4. 凭证将保存在 ais2api\single-line-auth 文件中。" -ForegroundColor Green
+        
+        node save-auth.js
+        Write-Success "操作结束。"
+
+        while ($true) {
+            Write-Host "`n后续操作：" -ForegroundColor Cyan
+            Write-Host " [1] 继续获取 (切换账号)" -ForegroundColor Green
+            Write-Host " [2] 打开凭证文件夹" -ForegroundColor Yellow
+            Write-Host " [0] 返回上一级" -ForegroundColor Red
+            $next = Read-Host " 请输入"
+            if ($next -eq '1') { break }
+            if ($next -eq '2') { Invoke-Item $ais2apiDir; continue }
+            if ($next -eq '0') { Set-Location $ScriptBaseDir; return }
+        }
+    }
+    Set-Location $ScriptBaseDir
+}
+
+function Show-ExtraFeaturesMenu {
+    while ($true) {
+        Clear-Host
+        Write-Header "额外功能 (实验室)"
+        Write-Host "      [1] " -NoNewline; Write-Host "获取 AI Studio 凭证 (ais2api)" -ForegroundColor Cyan
+        Write-Host "`n      [0] " -NoNewline; Write-Host "返回主菜单" -ForegroundColor Cyan
+        $choice = Read-Host "`n    请输入选项"
+        switch ($choice) {
+            "1" { Get-AiStudioToken }
+            "0" { return }
+            default { Write-Warning "无效输入。"; Start-Sleep 1 }
+        }
+    }
+}
+
 function Check-ForUpdatesOnStart {
     $jobScriptBlock = {
         param($url, $flag, $path)
@@ -1442,7 +1583,8 @@ while ($true) {
     Write-Host "      [4] " -NoNewline -ForegroundColor Yellow; Write-Host "首次部署 (全新安装)`n"
     Write-Host "      [5] 酒馆版本管理      [6] 更新咕咕助手$($updateNoticeText)"
     Write-Host "      [7] 打开酒馆文件夹    [8] 查看帮助文档"
-    Write-Host "      [9] 配置网络代理`n"
+    Write-Host "      [9] 配置网络代理"
+    Write-Host "      [10] " -NoNewline -ForegroundColor Magenta; Write-Host "额外功能 (实验室)`n"
     Write-Host "      [0] " -NoNewline -ForegroundColor Red; Write-Host "退出咕咕助手`n"
     $choice = Read-Host "    请输入选项数字"
     switch ($choice) {
@@ -1455,6 +1597,7 @@ while ($true) {
         "7" { if (Test-Path $ST_Dir) { Invoke-Item $ST_Dir } else { Write-Warning '目录不存在，请先部署！'; Start-Sleep 1.5 } }
         "8" { Open-HelpDocs }
         "9" { Show-ManageProxyMenu }
+        "10" { Show-ExtraFeaturesMenu }
         "0" { if (Test-Path $UpdateFlagFile) { Remove-Item $UpdateFlagFile -Force }; Write-Host "感谢使用，咕咕助手已退出。"; exit }
         default { Write-Warning "无效输入，请重新选择。"; Start-Sleep -Seconds 1.5 }
     }
