@@ -10,7 +10,7 @@
 # 任何违反本协议的行为都将受到法律追究。
 
 SCRIPT_URL="https://gugu.qjyg.de/ad"
-FILENAME="ad-st-test.sh"
+FILENAME="ad-st.sh"
 
 echo "正在准备下载最新版的 ${FILENAME} 脚本..."
 
