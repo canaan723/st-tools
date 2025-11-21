@@ -7,8 +7,11 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
+$ScriptVersion = "v3.1"
+
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
+try { Add-Type -AssemblyName System.Net.Http } catch {}
 
 $ScriptSelfUpdateUrl = "https://gitee.com/canaan723/st-tools/raw/main/jiuguan/pc-st.ps1"
 $HelpDocsUrl = "https://blog.qjyg.de"
@@ -46,7 +49,7 @@ $Mirror_List = @(
 $CachedMirrors = @()
 
 function Show-Header {
-    Write-Host "    " -NoNewline; Write-Host ">>" -ForegroundColor Yellow -NoNewline; Write-Host " 清绝咕咕助手 v3.0" -ForegroundColor Green
+    Write-Host "    " -NoNewline; Write-Host ">>" -ForegroundColor Yellow -NoNewline; Write-Host " 清绝咕咕助手 $($ScriptVersion)" -ForegroundColor Green
     Write-Host "       " -NoNewline; Write-Host "作者: 清绝 | 网址: blog.qjyg.de" -ForegroundColor DarkGray
     Write-Host "    " -NoNewline; Write-Host "本脚本为免费工具，严禁用于商业倒卖！" -ForegroundColor Red
 }
@@ -58,6 +61,36 @@ function Write-Error($Message) { Write-Host "✗ $Message" -ForegroundColor Red 
 function Write-ErrorExit($Message) { Write-Host "`n✗ $Message`n流程已终止。" -ForegroundColor Red; Press-Any-Key; exit }
 function Press-Any-Key { Write-Host "`n请按任意键返回..." -ForegroundColor Cyan; $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null }
 function Check-Command($Command) { return (Get-Command $Command -ErrorAction SilentlyContinue) }
+
+function Check-PortAndShowError {
+    param([string]$SillyTavernPath)
+    $configPath = Join-Path $SillyTavernPath "config.yaml"
+    $port = 8000
+
+    if (Test-Path $configPath) {
+        try {
+            $configContent = Get-Content $configPath -Raw
+            $portLine = $configContent | Select-String -Pattern "^\s*port:\s*(\d+)"
+            if ($portLine) {
+                $port = [int]$portLine.Matches[0].Groups[1].Value
+            }
+        } catch {
+            Write-Warning "无法解析 config.yaml 中的端口号，将使用默认端口 8000 进行检查。"
+        }
+    }
+
+    $connection = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+    if ($null -ne $connection) {
+        $owningProcess = Get-Process -Id $connection.OwningProcess | Select-Object -First 1
+        Write-Error "启动失败：端口 $port 已被占用！"
+        Write-Host "  - 占用程序: $($owningProcess.ProcessName) (PID: $($owningProcess.Id))" -ForegroundColor Yellow
+        Write-Host "`n请尝试以下解决方案：" -ForegroundColor Cyan
+        Write-Host "  1. 如果是之前启动的酒馆未完全关闭，请先【重启电脑】。" -ForegroundColor Cyan
+        Write-Host "  2. 如果重启无效，请打开文件 '$configPath'，" -ForegroundColor Cyan
+        Write-Host "     将 'port: $port' 修改为其他未被占用的端口号 (如 8001)。" -ForegroundColor Cyan
+        Write-ErrorExit "无法继续启动。"
+    }
+}
 
 function Show-AgreementIfFirstRun {
     if (-not (Test-Path $AgreementFile)) {
@@ -259,15 +292,12 @@ function Set-GitSyncConfig {
     $repoUrl = ""
     $repoToken = ""
     while ([string]::IsNullOrWhiteSpace($repoUrl)) { $repoUrl = Read-Host "请输入您的私有仓库HTTPS地址" }
-    # --- 修复点：修改下面的提示信息 ---
     while ([string]::IsNullOrWhiteSpace($repoToken)) { $repoToken = Read-Host "请输入您的 Personal Access Token (个人访问令牌)" }
-    # --- 提示信息修改结束 ---
     Set-Content -Path $GitSyncConfigFile -Value "REPO_URL=`"$repoUrl`"`nREPO_TOKEN=`"$repoToken`""
     Write-Success "Git同步服务配置已保存！"
     Press-Any-Key
 }
 
-# 替换旧的 Test-OneMirrorPush 函数
 function Test-OneMirrorPush($authedUrl) {
     $tempRepoDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
     New-Item -Path $tempRepoDir -ItemType Directory -Force | Out-Null
@@ -287,7 +317,6 @@ function Test-OneMirrorPush($authedUrl) {
         $pushJob = Start-Job -ScriptBlock {
             param($path, $tag)
             Set-Location $path
-            # 关键修复：添加 -c credential.helper='' 来禁用凭据弹窗
             git -c credential.helper='' push origin "HEAD:refs/tags/$tag" 2>$null
             return ($LASTEXITCODE -eq 0)
         } -ArgumentList $tempRepoDir, $testTag
@@ -323,7 +352,6 @@ function Find-AvailableMirrors {
         [string]$Mode
     )
 
-    # --- 本地化文本映射 ---
     $testTypeDescription = @{
         'Download' = '下载'
         'Upload'   = '上传'
@@ -333,7 +361,6 @@ function Find-AvailableMirrors {
         'MirrorsOnly'  = '备用镜像线路'
         'All'          = '所有线路'
     }
-    # --- 映射结束 ---
 
     $githubUrl = "https://github.com/SillyTavern/SillyTavern.git"
     $mirrorsToTest = @()
@@ -357,13 +384,17 @@ function Find-AvailableMirrors {
         $isSuccess = $false
         
         if ($TestType -eq 'Download') {
+            $gitOutput = ""
             $job = Start-Job -ScriptBlock {
                 param($url)
-                git -c credential.helper='' ls-remote $url HEAD | Out-Null
-                return ($LASTEXITCODE -eq 0)
+                $output = git -c credential.helper='' ls-remote $url HEAD 2>&1
+                return @{ Success = ($LASTEXITCODE -eq 0); Output = $output }
             } -ArgumentList $mirrorUrl
+
             if (Wait-Job $job -Timeout 10) {
-                if (Receive-Job $job) { $isSuccess = $true }
+                $result = Receive-Job $job
+                if ($result.Success) { $isSuccess = $true }
+                $gitOutput = $result.Output
             }
             Remove-Job $job -Force
             
@@ -372,6 +403,9 @@ function Find-AvailableMirrors {
                 $successfulUrls.Add($mirrorUrl)
             } else {
                 Write-Host "`r  ✗ 测试: $($mirrorHost) [失败]                                  " -ForegroundColor Red
+                if ($gitOutput -match "Failed to connect to .* port .*|Could not connect to server") {
+                    Write-Error "  └—> 网络连接失败。若您配置了Git全局代理，请确保代理软件已开启，或执行 git config --global --unset http.proxy 清除代理后重试。"
+                }
             }
 
         } elseif ($TestType -eq 'Upload') {
@@ -422,9 +456,7 @@ function Find-AvailableMirrors {
 
 function Backup-ToCloud {
     Clear-Host
-    # --- 修复点：修改下面的标题 ---
     Write-Header "备份数据到云端"
-    # --- 标题修改结束 ---
     if (-not (Test-Path $GitSyncConfigFile)) {
         Write-Warning "请先在菜单 [1] 中配置Git同步服务。"; Press-Any-Key; return
     }
@@ -522,9 +554,7 @@ function Backup-ToCloud {
 
 function Restore-FromCloud {
     Clear-Host
-    # --- 修复点：修改下面的标题 ---
     Write-Header "从云端恢复数据"
-    # --- 标题修改结束 ---
     if (-not (Test-Path $GitSyncConfigFile)) {
         Write-Warning "请先在菜单 [1] 中配置Git同步服务。"; Press-Any-Key; return
     }
@@ -746,10 +776,8 @@ function Show-GitSyncMenu {
             Write-Host ""
         }
         Write-Host "`n      [1] " -NoNewline; Write-Host "管理同步配置 (仓库地址/令牌)" -F Cyan
-        # --- 修复点：修改下面的菜单项 ---
         Write-Host "      [2] " -NoNewline; Write-Host "备份数据 (上传至云端)" -F Green
         Write-Host "      [3] " -NoNewline; Write-Host "恢复数据 (从云端下载)" -F Yellow
-        # --- 菜单项修改结束 ---
         Write-Host "      [4] " -NoNewline; Write-Host "高级同步设置 (用户映射等)" -F Cyan
         Write-Host "      [5] " -NoNewline; Write-Host "导出扩展链接" -F Cyan
         Write-Host "`n      [0] " -NoNewline; Write-Host "返回主菜单" -F Cyan
@@ -766,17 +794,14 @@ function Show-GitSyncMenu {
     }
 }
 
-# 替换旧的 Export-ExtensionLinks 函数
 function Export-ExtensionLinks {
     Clear-Host
     Write-Header "导出扩展链接"
     $allLinks = [System.Collections.Generic.List[string]]::new()
     $outputContent = [System.Text.StringBuilder]::new()
 
-    # 定义一个内部函数来获取仓库URL
     function Get-RepoUrlFromPath($path) {
         if (Test-Path (Join-Path $path ".git")) {
-            # 关键修复：在子进程中执行git命令，避免主脚本目录切换混乱
             $url = (Invoke-Command -ScriptBlock {
                 param($p)
                 Set-Location -Path $p
@@ -787,7 +812,6 @@ function Export-ExtensionLinks {
         return $null
     }
 
-    # 检查全局扩展
     $globalExtPath = Join-Path $ST_Dir "public/scripts/extensions/third-party"
     if (Test-Path $globalExtPath) {
         $globalDirs = Get-ChildItem -Path $globalExtPath -Directory -ErrorAction SilentlyContinue
@@ -803,7 +827,6 @@ function Export-ExtensionLinks {
         }
     }
 
-    # 检查所有用户的扩展
     $dataPath = Join-Path $ST_Dir "data"
     if (Test-Path $dataPath) {
         $userDirs = Get-ChildItem -Path $dataPath -Directory -ErrorAction SilentlyContinue
@@ -853,6 +876,7 @@ function Export-ExtensionLinks {
 function Start-SillyTavern {
     Clear-Host
     Write-Header "启动酒馆"
+    Check-PortAndShowError -SillyTavernPath $ST_Dir
     if (-not (Test-Path (Join-Path $ST_Dir "start.bat"))) {
         Write-Warning "酒馆尚未安装，请先部署。"
         Press-Any-Key
@@ -872,7 +896,6 @@ function Start-SillyTavern {
     Press-Any-Key
 }
 
-# 替换旧的 Install-SillyTavern 函数
 function Install-SillyTavern {
     param([bool]$autoStart = $true)
     Clear-Host
@@ -911,9 +934,21 @@ function Install-SillyTavern {
             foreach ($mirrorUrl in $mirrorsToTry) {
                 $mirrorHost = ($mirrorUrl -split '/')[2]
                 Write-Warning "正在尝试从线路 [$($mirrorHost)] 下载 ($Repo_Branch 分支)..."
-                # 关键修复：添加 -c credential.helper='' 来禁用凭据弹窗
                 $gitOutput = git -c credential.helper='' clone --depth 1 -b $Repo_Branch $mirrorUrl $ST_Dir 2>&1
                 if ($LASTEXITCODE -eq 0) { $downloadSuccess = $true; break }
+                if ($gitOutput -match "Permission denied") {
+                    Write-Error "权限不足，无法创建目录。请尝试以【管理员身份】运行本脚本。"
+                    Press-Any-Key
+                    exit
+                }
+                if ($gitOutput -match "Failed to connect to .* port .*|Could not connect to server") {
+                    Write-Error "网络连接失败，可能是代理配置问题。"
+                    Write-Host "  请检查：" -ForegroundColor Cyan
+                    Write-Host "  1. 如果您【需要】使用代理：请确保代理软件已正常运行，开启 TUN 模式或在助手内正确配置代理端口（主菜单 -> 9）。" -ForegroundColor Cyan
+                    Write-Host "  2. 如果您【不】使用代理：请检查并清除之前可能设置过的Git全局代理。" -ForegroundColor Cyan
+                    Write-Host "     (可在任意终端执行命令： git config --global --unset http.proxy 后重试)" -ForegroundColor DarkGray
+                    Press-Any-Key
+                }
                 Write-Error "使用线路 [$($mirrorHost)] 下载失败！Git输出: $($gitOutput | Out-String)"
                 if (Test-Path $ST_Dir) { Remove-Item -Recurse -Force $ST_Dir }
             }
@@ -1003,7 +1038,6 @@ function New-LocalZipBackup {
     }
 }
 
-# 替换旧的 Update-SillyTavern 函数
 function Update-SillyTavern {
     Clear-Host
     Write-Header "更新酒馆"
@@ -1036,7 +1070,6 @@ function Update-SillyTavern {
             $mirrorHost = ($mirrorUrl -split '/')[2]
             Write-Warning "正在尝试使用线路 [$($mirrorHost)] 更新..."
             git remote set-url origin $mirrorUrl
-            # 关键修复：添加 -c credential.helper='' 来禁用凭据弹窗
             $gitOutput = git -c credential.helper='' pull origin $Repo_Branch --allow-unrelated-histories 2>&1
             if ($LASTEXITCODE -eq 0) {
                 if ($gitOutput -match "Already up to date") { Write-Success "代码已是最新，无需更新。" } else { Write-Success "代码更新成功。" }
@@ -1062,7 +1095,22 @@ function Update-SillyTavern {
                     Write-Error "强制更新失败！"
                 }
                 break
-            } else { Write-Error "使用线路 [$($mirrorHost)] 更新失败！Git输出: $($gitOutput | Out-String)" }
+            } else {
+                if ($gitOutput -match "Permission denied") {
+                    Write-Error "权限不足，无法写入文件。请尝试以【管理员身份】运行本脚本。"
+                    Press-Any-Key
+                    return
+                }
+                if ($gitOutput -match "Failed to connect to .* port .*|Could not connect to server") {
+                    Write-Error "网络连接失败，可能是代理配置问题。"
+                    Write-Host "  请检查：" -ForegroundColor Cyan
+                    Write-Host "  1. 如果您【需要】使用代理：请确保代理软件已正常运行，且助手内的代理已正确配置（主菜单 -> 9）。" -ForegroundColor Cyan
+                    Write-Host "  2. 如果您【不】使用代理：请检查并清除之前可能设置过的Git全局代理。" -ForegroundColor Cyan
+                    Write-Host "     (可在任意终端执行命令： git config --global --unset http.proxy 后重试)" -ForegroundColor DarkGray
+                    Press-Any-Key
+                }
+                Write-Error "使用线路 [$($mirrorHost)] 更新失败！Git输出: $($gitOutput | Out-String)"
+            }
         }
 
         if ($pullSucceeded) {
@@ -1082,7 +1130,6 @@ function Update-SillyTavern {
     Press-Any-Key
 }
 
-# 新增：版本回退功能
 function Rollback-SillyTavern {
     Clear-Host
     Write-Header "回退酒馆版本"
@@ -1132,7 +1179,6 @@ function Rollback-SillyTavern {
     }
 
     Write-Success "版本信息获取成功。"
-    # 优化：使用 -v:refname 实现版本号倒序排列
     $allTags = git tag --sort=-v:refname | Where-Object { $_ -match '^\d' }
     if ($allTags.Count -eq 0) {
         Write-Error "未能获取到任何有效的版本标签。"; Press-Any-Key; return
@@ -1163,7 +1209,6 @@ function Rollback-SillyTavern {
         $userInput = Read-Host "请输入"
 
         if ($userInput -eq 'q') { Write-Warning "操作已取消。"; Press-Any-Key; return }
-        # 优化：翻页按键修改为 A/D
         elseif ($userInput -eq 'a') { if ($currentPage -gt 0) { $currentPage-- } }
         elseif ($userInput -eq 'd') { if (($currentPage + 1) * $pageSize -lt $filteredTags.Count) { $currentPage++ } }
         elseif ($userInput.StartsWith("f ")) { $filter = $userInput.Substring(2); $currentPage = 0 }
@@ -1182,7 +1227,6 @@ function Rollback-SillyTavern {
                 if ($confirm -eq 'n' -or $confirm -eq 'N') { Write-Warning "操作已取消。"; continue }
 
                 Write-Warning "正在切换到版本 $selectedTag ..."
-                # 关键修复：强制切换，不再需要二次确认
                 git checkout -f "tags/$selectedTag"
                 if ($LASTEXITCODE -ne 0) {
                     Write-Error "切换版本时发生未知错误: $checkoutOutput"; Press-Any-Key; return
@@ -1408,6 +1452,153 @@ function Update-AssistantScript {
     }
 }
 
+function Get-UnifiedMirrorCandidates {
+    param($GitUrl, $FileUrl)
+    $candidates = @()
+    $candidates += [PSCustomObject]@{ Name = "官方线路 (github.com)"; GitUrl = $GitUrl; FileUrl = $FileUrl }
+    
+    $seenHosts = @("github.com")
+    
+    foreach ($m in $Mirror_List) {
+        $hostName = ($m -split '/')[2]
+        if ($seenHosts -contains $hostName) { continue }
+        
+        $g = $null; $f = $null
+        
+        if ($m -match "/gh/") {
+            # 模式: https://domain/gh/User/Repo.git
+            $base = $m.Substring(0, $m.IndexOf("/gh/"))
+            $repoPath = $GitUrl -replace '^https://github.com/', ''
+            $filePath = $FileUrl -replace '^https://github.com/', ''
+            $g = "$base/gh/$repoPath"
+            $f = "$base/gh/$filePath"
+        } elseif ($m -match "/https://github.com/") {
+            # 模式: https://domain/https://github.com/...
+            $base = $m.Substring(0, $m.IndexOf("/https://github.com/"))
+            $g = "$base/$GitUrl"
+            $f = "$base/$FileUrl"
+        } elseif ($m -match "/github.com/") {
+            # 模式: https://domain/github.com/... (如 gh-proxy.com)
+            $base = $m.Substring(0, $m.IndexOf("/github.com/"))
+            $g = "$base/$GitUrl"
+            $f = "$base/$FileUrl"
+        }
+        
+        if ($g -and $f) {
+            $candidates += [PSCustomObject]@{ Name = "镜像线路 ($hostName)"; GitUrl = $g; FileUrl = $f }
+            $seenHosts += $hostName
+        }
+    }
+    return $candidates
+}
+
+function Select-UnifiedMirror {
+    param($GitUrl, $FileUrl)
+    
+    $candidates = Get-UnifiedMirrorCandidates -GitUrl $GitUrl -FileUrl $FileUrl
+    $successfulCandidates = New-Object System.Collections.Generic.List[object]
+
+    Write-Warning "正在测试可用下载线路，请稍候..."
+    
+    foreach ($c in $candidates) {
+        Write-Host "  - 正在测试: $($c.Name)..." -NoNewline
+        $isSuccess = $false
+        try {
+            $req = [System.Net.WebRequest]::Create($c.FileUrl)
+            $req.Method = "HEAD"
+            $req.Timeout = 7000
+            $resp = $req.GetResponse()
+            $statusCode = [int]$resp.StatusCode
+            if ($statusCode -ge 200 -and $statusCode -lt 400) {
+                $isSuccess = $true
+                $successfulCandidates.Add($c)
+            }
+            $resp.Close()
+        } catch {
+        }
+
+        if ($isSuccess) {
+            Write-Host "`r  ✓ 测试: $($c.Name) [成功]                                  " -ForegroundColor Green
+        } else {
+            Write-Host "`r  ✗ 测试: $($c.Name) [失败]                                  " -ForegroundColor Red
+        }
+    }
+
+    if ($successfulCandidates.Count -eq 0) {
+        Write-Error "`n所有下载线路均测试失败！`n可能是网络问题、代理配置错误或镜像服务器暂时不可用。"
+        Press-Any-Key
+        return $null
+    }
+    
+    Write-Success "`n测试完成，共找到 $($successfulCandidates.Count) 条可用线路。"
+
+    $successful = @{}
+    for ($i = 0; $i -lt $successfulCandidates.Count; $i++) {
+        $successful[($i + 1)] = $successfulCandidates[$i]
+    }
+
+    while ($true) {
+        Clear-Host
+        Write-Header "选择下载线路"
+        Write-Success "请选择一条可用线路进行下载："
+        foreach ($k in ($successful.Keys | Sort-Object)) {
+            Write-Host ("  [{0,2}] {1}" -f $k, $successful[$k].Name) -ForegroundColor Cyan
+        }
+        Write-Host "`n  [0] 取消操作" -ForegroundColor Red
+        $choice = Read-Host "`n请输入序号"
+        if ($choice -eq '0') { return $null }
+        if ($choice -match '^\d+$' -and $successful.ContainsKey([int]$choice)) {
+            return $successful[[int]$choice]
+        }
+    }
+}
+
+function Download-FileWithHttpClient {
+    param(
+        [Parameter(Mandatory=$true)] [string]$Url,
+        [Parameter(Mandatory=$true)] [string]$DestPath
+    )
+    $client = New-Object System.Net.Http.HttpClient
+    $client.Timeout = [TimeSpan]::FromMinutes(10)
+    
+    try {
+        $response = $client.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+        $response.EnsureSuccessStatusCode() | Out-Null
+
+        $totalBytes = $response.Content.Headers.ContentLength
+        $readChunkSize = 8192
+        $buffer = New-Object byte[] $readChunkSize
+        $totalRead = 0
+
+        $stream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+        $fileStream = [System.IO.File]::Create($DestPath)
+
+        do {
+            $bytesRead = $stream.Read($buffer, 0, $readChunkSize)
+            $fileStream.Write($buffer, 0, $bytesRead)
+            $totalRead += $bytesRead
+            
+            if ($totalBytes -gt 0) {
+                $percent = ($totalRead / $totalBytes) * 100
+                $receivedMB = $totalRead / 1MB
+                $totalMB = $totalBytes / 1MB
+                $statusText = "下载中: {0:N2} MB / {1:N2} MB ({2:N0}%)" -f $receivedMB, $totalMB, $percent
+                Write-Progress -Activity "正在下载文件" -Status $statusText -PercentComplete $percent
+            } else {
+                $receivedMB = $totalRead / 1MB
+                $statusText = "下载中: {0:N2} MB" -f $receivedMB
+                Write-Progress -Activity "正在下载文件" -Status $statusText
+            }
+        } while ($bytesRead -gt 0)
+        
+        Write-Progress -Activity "正在下载文件" -Completed
+    } finally {
+        if ($stream) { $stream.Dispose() }
+        if ($fileStream) { $fileStream.Dispose() }
+        if ($client) { $client.Dispose() }
+    }
+}
+
 function Get-AiStudioToken {
     Clear-Host
     Write-Header "获取 AI Studio 凭证"
@@ -1421,84 +1612,78 @@ function Get-AiStudioToken {
     Write-Success "环境检查通过 (Git, Node.js 已安装)。"
 
     $ais2apiDir = Join-Path $ScriptBaseDir "ais2api"
-    
-    if (-not (Test-Path $ais2apiDir)) {
-        Write-Warning "正在克隆 ais2api 项目..."
-        git clone https://github.com/Ellinav/ais2api $ais2apiDir
-        if ($LASTEXITCODE -ne 0) { Write-Error "克隆失败！"; Press-Any-Key; return }
-    } else {
-        Write-Warning "ais2api 目录已存在，跳过克隆。"
-    }
-
     $camoufoxDir = Join-Path $ais2apiDir "camoufox"
-    if (-not (Test-Path $camoufoxDir)) { New-Item -Path $camoufoxDir -ItemType Directory | Out-Null }
-    
     $camoufoxExe = Join-Path $camoufoxDir "camoufox.exe"
-    if (-not (Test-Path $camoufoxExe)) {
-        Write-Warning "正在下载 Camoufox 浏览器内核..."
-        $camoufoxUrl = "https://github.com/daijro/camoufox/releases/download/v135.0.1-beta.24/camoufox-135.0.1-beta.24-win.x86_64.zip"
-        $zipPath = Join-Path $ais2apiDir "camoufox.zip"
-        
-        try {
-            $webClient = New-Object System.Net.WebClient
-            $downloadError = $null
-            $script:downloadCompleted = $false
-
-            $progressAction = {
-                param($sender, $e)
-                $receivedMB = $e.BytesReceived / 1MB
-                $totalMB = $e.TotalBytesToReceive / 1MB
-                $statusText = "下载中: {0:N2} MB / {1:N2} MB ({2}%)" -f $receivedMB, $totalMB, $e.ProgressPercentage
-                Write-Progress -Activity "正在下载 Camoufox 内核" -Status $statusText -PercentComplete $e.ProgressPercentage
-            }
-            $completedAction = {
-                param($sender, $e)
-                if ($e.Error) { $script:downloadError = $e.Error }
-                $script:downloadCompleted = $true
-            }
-
-            $progressRegistration = Register-ObjectEvent -InputObject $webClient -EventName DownloadProgressChanged -Action $progressAction
-            $completedRegistration = Register-ObjectEvent -InputObject $webClient -EventName DownloadFileCompleted -Action $completedAction
-            
-            try {
-                $webClient.DownloadFileAsync([System.Uri]$camoufoxUrl, $zipPath)
-                while (-not $script:downloadCompleted) {
-                    Start-Sleep -Milliseconds 200
-                }
-            } finally {
-                Unregister-Event -SubscriptionId $progressRegistration.Id
-                Unregister-Event -SubscriptionId $completedRegistration.Id
-                $webClient.Dispose()
-            }
-
-            if ($script:downloadError) {
-                throw $script:downloadError
-            }
-            
-            Write-Progress -Activity "正在下载 Camoufox 内核" -Completed
-            Write-Success "下载完成，正在解压..."
-            Expand-Archive -Path $zipPath -DestinationPath $camoufoxDir -Force
-            Remove-Item $zipPath -Force
-            
-            if (-not (Test-Path $camoufoxExe)) {
-                $nestedExe = Get-ChildItem -Path $camoufoxDir -Filter "camoufox.exe" -Recurse | Select-Object -First 1
-                if ($nestedExe) {
-                    Write-Warning "检测到嵌套目录，正在调整结构..."
-                    $parentDir = $nestedExe.Directory.FullName
-                    Get-ChildItem -Path $parentDir | Move-Item -Destination $camoufoxDir -Force
-                    if ((Get-ChildItem $parentDir).Count -eq 0) { Remove-Item $parentDir -Force }
-                } else {
-                    Write-Error "解压后未找到 camoufox.exe！"
-                    Press-Any-Key; return
-                }
-            }
-            Write-Success "Camoufox 配置完成。"
-        } catch {
-            Write-Error "下载或解压失败: $($_.Exception.Message)"
-            Press-Any-Key; return
+    
+    $targetGitUrl = "https://github.com/Ellinav/ais2api.git"
+    $targetFileUrl = "https://github.com/daijro/camoufox/releases/download/v135.0.1-beta.24/camoufox-135.0.1-beta.24-win.x86_64.zip"
+    
+    $needClone = -not (Test-Path $ais2apiDir)
+    $needDownload = -not (Test-Path $camoufoxExe)
+    
+    if ($needClone -or $needDownload) {
+        $selectedMirror = Select-UnifiedMirror -GitUrl $targetGitUrl -FileUrl $targetFileUrl
+        if (-not $selectedMirror) {
+            Write-Error "未选择线路或操作取消。"
+            Press-Any-Key
+            return
         }
-    } else {
-        Write-Success "Camoufox 已存在。"
+        
+        if ($needClone) {
+            Write-Warning "正在克隆 ais2api 项目..."
+            $gitOutput = git clone $selectedMirror.GitUrl $ais2apiDir 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                if ($gitOutput -match "Permission denied") {
+                    Write-Error "权限不足，无法创建目录。请尝试以【管理员身份】运行本脚本。"
+                } elseif ($gitOutput -match "Failed to connect to .* port .*|Could not connect to server") {
+                    Write-Error "网络连接失败，可能是代理配置问题。"
+                    Write-Host "  请检查：" -ForegroundColor Cyan
+                    Write-Host "  1. 如果您【需要】使用代理：请确保代理软件已正常运行，且助手内的代理已正确配置（主菜单 -> 9）。" -ForegroundColor Cyan
+                    Write-Host "  2. 如果您【不】使用代理：请检查并清除之前可能设置过的Git全局代理。" -ForegroundColor Cyan
+                    Write-Host "     (可在任意终端执行命令： git config --global --unset http.proxy 后重试)" -ForegroundColor DarkGray
+                } else {
+                    Write-Error "克隆失败！Git输出: $($gitOutput | Out-String)"
+                }
+                Press-Any-Key
+                return
+            }
+        } else {
+            Write-Warning "ais2api 目录已存在，跳过克隆。"
+        }
+        
+        if ($needDownload) {
+            if (-not (Test-Path $camoufoxDir)) { New-Item -Path $camoufoxDir -ItemType Directory | Out-Null }
+            $zipPath = Join-Path $ais2apiDir "camoufox.zip"
+            
+            Write-Warning "正在下载 Camoufox 内核..."
+            try {
+                Download-FileWithHttpClient -Url $selectedMirror.FileUrl -DestPath $zipPath
+                
+                Write-Success "下载完成，正在解压..."
+                Expand-Archive -Path $zipPath -DestinationPath $camoufoxDir -Force
+                Remove-Item $zipPath -Force
+                
+                if (-not (Test-Path $camoufoxExe)) {
+                    $nestedExe = Get-ChildItem -Path $camoufoxDir -Filter "camoufox.exe" -Recurse | Select-Object -First 1
+                    if ($nestedExe) {
+                        Write-Warning "检测到嵌套目录，正在调整结构..."
+                        $parentDir = $nestedExe.Directory.FullName
+                        Get-ChildItem -Path $parentDir | Move-Item -Destination $camoufoxDir -Force
+                        if ((Get-ChildItem $parentDir).Count -eq 0) { Remove-Item $parentDir -Force }
+                    } else {
+                        Write-Error "解压后未找到 camoufox.exe！"
+                        Press-Any-Key; return
+                    }
+                }
+                Write-Success "Camoufox 配置完成。"
+            } catch {
+                Write-Error "下载或解压失败: $($_.Exception.Message)"
+                if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+                Press-Any-Key; return
+            }
+        } else {
+            Write-Success "Camoufox 已存在。"
+        }
     }
 
     Set-Location $ais2apiDir
@@ -1512,22 +1697,33 @@ function Get-AiStudioToken {
         Clear-Host
         Write-Header "准备获取凭证"
         Write-Host "即将启动浏览器..." -ForegroundColor Cyan
-        Write-Host "1. 请在弹出的浏览器中登录您的谷歌账号 (建议使用小号)。" -ForegroundColor Yellow
+        Write-Host "1. 请在弹出的浏览器中登录您的谷歌账号。" -ForegroundColor Yellow
         Write-Host "2. 登录成功看到 AI Studio 页面后，请保持浏览器开启。" -ForegroundColor Yellow
         Write-Host "3. 回到本窗口按回车，即可自动获取凭证并关闭浏览器。" -ForegroundColor Yellow
         Write-Host "4. 凭证将保存在 ais2api\single-line-auth 文件中。" -ForegroundColor Green
         
         node save-auth.js
         Write-Success "操作结束。"
+        
+        Get-Process -Name "camoufox" -ErrorAction SilentlyContinue | Stop-Process -Force
 
         while ($true) {
             Write-Host "`n后续操作：" -ForegroundColor Cyan
             Write-Host " [1] 继续获取 (切换账号)" -ForegroundColor Green
-            Write-Host " [2] 打开凭证文件夹" -ForegroundColor Yellow
+            Write-Host " [2] 打开凭证文件" -ForegroundColor Yellow
             Write-Host " [0] 返回上一级" -ForegroundColor Red
             $next = Read-Host " 请输入"
             if ($next -eq '1') { break }
-            if ($next -eq '2') { Invoke-Item $ais2apiDir; continue }
+            if ($next -eq '2') {
+                $authFile = Join-Path $ais2apiDir "single-line-auth"
+                if (Test-Path $authFile) {
+                    Invoke-Item $authFile
+                } else {
+                    Write-Warning "凭证文件 'single-line-auth' 不存在。"
+                    Start-Sleep -Seconds 2
+                }
+                continue
+            }
             if ($next -eq '0') { Set-Location $ScriptBaseDir; return }
         }
     }
