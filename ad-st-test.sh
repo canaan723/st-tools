@@ -1121,12 +1121,7 @@ fn_install_st() {
         fn_print_header "2/5: 安装核心依赖"
         echo -e "${YELLOW}正在安装核心依赖...${NC}"
         yes | pkg upgrade -y
-        fn_print_warning "正在安装基础依赖 (git, rsync等)..."
-        yes | pkg install git rsync zip unzip termux-api coreutils gawk bc || fn_print_error_exit "基础依赖安装失败！"
-        fn_print_warning "正在为 Node.js 安装兼容的 libicu 库 (版本 77.1)..."
-        pkg install -y libicu=77.1-2
-        fn_print_warning "正在安装 Node.js (nodejs-lts)..."
-        yes | pkg install nodejs-lts || fn_print_error_exit "Node.js (nodejs-lts) 安装失败！请检查您的网络或软件源。"
+        yes | pkg install git nodejs-lts rsync zip unzip termux-api coreutils gawk bc || fn_print_error_exit "核心依赖安装失败！"
         fn_print_success "核心依赖安装完毕。"
     fi
     fn_print_header "3/5: 下载酒馆主程序"
@@ -1756,6 +1751,151 @@ fi
 
 git config --global --add safe.directory '*' 2>/dev/null || true
 
+fn_install_gcli2api() {
+    clear
+    fn_print_header "安装/管理 gcli2api"
+    
+    local GCLI2API_DIR="$HOME/gcli2api"
+
+    # 1. 检查核心依赖
+    fn_print_warning "1/6: 检查核心依赖..."
+    local missing_deps=()
+    fn_check_command "git" || missing_deps+=("git")
+    fn_check_command "python" || missing_deps+=("python")
+    fn_check_command "node" || missing_deps+=("nodejs-lts")
+    
+    if [ ${#missing_deps[@]} -gt 0 ]; then
+        fn_print_error "核心依赖缺失: ${missing_deps[*]}"
+        fn_print_warning "请先运行 [首次部署] 来安装基础环境。"
+        fn_press_any_key
+        return 1
+    fi
+    fn_print_success "核心依赖检查通过。"
+
+    # 2. 检查并安装 uv
+    fn_print_warning "2/6: 检查并安装 uv (Python包管理器)..."
+    if ! fn_check_command "uv"; then
+        if pip install uv; then
+            fn_print_success "uv 安装成功。"
+        else
+            fn_print_error_exit "uv 安装失败！"
+        fi
+    else
+        fn_print_success "uv 已安装。"
+    fi
+
+    # 3. 检查并安装 pm2
+    fn_print_warning "3/6: 检查并安装 pm2 (Node.js进程管理器)..."
+    if ! fn_check_command "pm2"; then
+        if npm install -g pm2; then
+            fn_print_success "pm2 安装成功。"
+        else
+            fn_print_error_exit "pm2 安装失败！"
+        fi
+    else
+        fn_print_success "pm2 已安装。"
+    fi
+
+    # 4. 克隆或更新 gcli2api 仓库
+    fn_print_warning "4/6: 同步 gcli2api 项目文件..."
+    if [ -d "$GCLI2API_DIR/.git" ]; then
+        cd "$GCLI2API_DIR" || fn_print_error_exit "无法进入目录 $GCLI2API_DIR"
+        fn_print_warning "目录已存在，正在拉取更新..."
+        if git pull; then
+            fn_print_success "代码更新成功。"
+        else
+            fn_print_error "代码更新失败，请检查网络或手动处理。"
+        fi
+    else
+        fn_print_warning "正在从 GitHub 克隆项目..."
+        if git clone https://github.com/su-kaka/gcli2api.git "$GCLI2API_DIR"; then
+            fn_print_success "项目克隆成功。"
+            cd "$GCLI2API_DIR" || fn_print_error_exit "无法进入目录 $GCLI2API_DIR"
+        else
+            fn_print_error_exit "项目克隆失败！"
+        fi
+    fi
+
+    # 5. 安装 Python 依赖
+    fn_print_warning "5/6: 配置虚拟环境并安装依赖..."
+    if [ ! -d ".venv" ]; then
+        uv venv || fn_print_error_exit "创建 uv 虚拟环境失败！"
+    fi
+    
+    if uv pip install -r requirements-termux.txt; then
+        fn_print_success "Python 依赖安装成功。"
+    else
+        fn_print_error_exit "Python 依赖安装失败！"
+    fi
+
+    # 6. 使用 pm2 管理服务
+    fn_print_warning "6/6: 配置后台服务..."
+    while true; do
+        clear
+        fn_print_header "gcli2api 服务管理"
+        pm2 list | grep -q "web" && local status="${GREEN}运行中${NC}" || local status="${RED}已停止${NC}"
+        echo -e "      当前状态: ${status}\n"
+        echo -e "      [1] ${GREEN}启动/重启服务${NC}"
+        echo -e "      [2] ${YELLOW}停止服务${NC}"
+        echo -e "      [3] ${RED}删除服务${NC}"
+        echo -e "      [4] ${CYAN}查看日志${NC}\n"
+        echo -e "      [0] ${CYAN}完成并返回${NC}\n"
+        read -p "    请输入选项: " choice
+        case $choice in
+            1)
+                fn_print_warning "正在启动服务..."
+                pm2 start .venv/bin/python --name web -- web.py
+                pm2 save
+                fn_print_success "服务已启动/重启。"
+                sleep 1.5
+                ;;
+            2)
+                fn_print_warning "正在停止服务..."
+                pm2 stop web
+                pm2 save
+                fn_print_success "服务已停止。"
+                sleep 1.5
+                ;;
+            3)
+                fn_print_warning "正在删除服务..."
+                pm2 delete web
+                pm2 save
+                fn_print_success "服务已删除。"
+                sleep 1.5
+                ;;
+            4)
+                pm2 logs web
+                fn_press_any_key
+                ;;
+            0)
+                break
+                ;;
+            *)
+                fn_print_error "无效输入。"
+                sleep 1
+                ;;
+        esac
+    done
+    cd "$HOME"
+    fn_print_success "gcli2api 安装与配置完成！"
+    fn_press_any_key
+}
+
+fn_menu_extra_features() {
+    while true; do
+        clear
+        fn_print_header "额外功能 (实验室)"
+        echo -e "      [1] ${CYAN}安装/管理 gcli2api${NC}\n"
+        echo -e "      [0] ${CYAN}返回主菜单${NC}\n"
+        read -p "    请输入选项: " choice
+        case $choice in
+            1) fn_install_gcli2api; break ;;
+            0) break ;;
+            *) fn_print_error "无效输入。"; sleep 1 ;;
+        esac
+    done
+}
+
 fn_menu_version_management() {
     while true; do
         clear
@@ -1789,7 +1929,7 @@ while true; do
     echo -e "      [4] ${YELLOW}${BOLD}首次部署 (全新安装)${NC}\n"
     echo -e "      [5] 酒馆版本管理      [6] 更新咕咕助手${update_notice}"
     echo -e "      [7] 管理助手自启      [8] 查看帮助文档"
-    echo -e "      [9] 配置网络代理\n"
+    echo -e "      [9] 配置网络代理      [10] 额外功能 (实验室)\n"
     echo -e "      ${RED}[0] 退出咕咕助手${NC}\n"
     read -p "    请输入选项数字: " choice
 
@@ -1803,6 +1943,7 @@ while true; do
         7) fn_manage_autostart ;;
         8) fn_open_docs ;;
         9) fn_menu_proxy ;;
+        10) fn_menu_extra_features ;;
         0) echo -e "\n感谢使用，咕咕助手已退出。"; rm -f "$UPDATE_FLAG_FILE"; exit 0 ;;
         *) fn_print_warning "无效输入，请重新选择。"; sleep 1.5 ;;
     esac
