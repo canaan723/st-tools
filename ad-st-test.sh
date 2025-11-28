@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # 作者: 清绝 | 网址: blog.qjyg.de
-# 清绝咕咕助手 v2.7
+# 清绝咕咕助手 v3.0
 #
 # Copyright (c) 2025 清绝 (QingJue) <blog.qjyg.de>
 # This script is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -55,7 +55,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.7${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.0${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
     echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
 }
@@ -1843,11 +1843,16 @@ fn_install_gcli() {
     fi
 
     fn_print_success "gcli2api 安装/更新完成！"
-    
-    # 尝试打开 Web 面板
-    if fn_check_command "termux-open-url"; then
-        fn_print_warning "正在尝试打开 Web 面板 (http://127.0.0.1:7861)..."
-        termux-open-url "http://127.0.0.1:7861"
+
+    # 自动启动服务
+    if fn_gcli_start_service; then
+        # 尝试打开 Web 面板
+        if fn_check_command "termux-open-url"; then
+            fn_print_warning "正在尝试打开 Web 面板 (http://127.0.0.1:7861)..."
+            termux-open-url "http://127.0.0.1:7861"
+        fi
+    else
+        fn_print_error "服务启动失败，未能自动打开面板。"
     fi
     
     fn_press_any_key
@@ -1923,28 +1928,43 @@ fn_menu_gcli_manage() {
     while true; do
         clear
         fn_print_header "gcli2api 管理"
-        echo -e "      当前状态: $(fn_get_gcli_status)\n"
+        local status_text=$(fn_get_gcli_status)
+        echo -e "      当前状态: ${status_text}\n"
         
         local auto_start_status="${RED}关闭${NC}"
         if [ -f "$LAB_CONFIG_FILE" ] && grep -q "AUTO_START_GCLI=\"true\"" "$LAB_CONFIG_FILE"; then
             auto_start_status="${GREEN}开启${NC}"
         fi
 
+        local is_running=false
+        if echo "$status_text" | grep -q "运行中"; then
+            is_running=true
+        fi
+
         echo -e "      [1] ${CYAN}安装/更新${NC}"
-        echo -e "      [2] ${GREEN}启动服务${NC}"
-        echo -e "      [3] ${YELLOW}停止服务${NC}"
-        echo -e "      [4] 跟随酒馆启动: [${auto_start_status}]"
-        echo -e "      [5] ${RED}卸载 gcli2api${NC}"
-        echo -e "      [6] 查看运行日志"
-        echo -e "      [7] 打开 Web 面板"
+        if $is_running; then
+            echo -e "      [2] ${YELLOW}停止服务${NC}"
+        else
+            echo -e "      [2] ${GREEN}启动服务${NC}"
+        fi
+        echo -e "      [3] 跟随酒馆启动: [${auto_start_status}]"
+        echo -e "      [4] ${RED}卸载 gcli2api${NC}"
+        echo -e "      [5] 查看运行日志"
+        echo -e "      [6] 打开 Web 面板"
         echo -e "      [0] ${CYAN}返回上一级${NC}\n"
         
         read -p "    请输入选项: " choice
         case $choice in
             1) fn_install_gcli ;;
-            2) fn_gcli_start_service; fn_press_any_key ;;
-            3) fn_gcli_stop_service; fn_press_any_key ;;
-            4)
+            2)
+                if $is_running; then
+                    fn_gcli_stop_service
+                else
+                    fn_gcli_start_service
+                fi
+                fn_press_any_key
+                ;;
+            3)
                 mkdir -p "$CONFIG_DIR"
                 touch "$LAB_CONFIG_FILE"
                 if grep -q "AUTO_START_GCLI=\"true\"" "$LAB_CONFIG_FILE"; then
@@ -1958,9 +1978,9 @@ fn_menu_gcli_manage() {
                 fi
                 sleep 1
                 ;;
-            5) fn_gcli_uninstall ;;
-            6) fn_gcli_show_logs ;;
-            7)
+            4) fn_gcli_uninstall ;;
+            5) fn_gcli_show_logs ;;
+            6)
                 if fn_check_command "termux-open-url"; then
                     termux-open-url "http://127.0.0.1:7861"
                     fn_print_success "已尝试打开浏览器。"
