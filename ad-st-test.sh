@@ -32,7 +32,10 @@ CONFIG_FILE="$CONFIG_DIR/backup_prefs.conf"
 GIT_SYNC_CONFIG_FILE="$CONFIG_DIR/git_sync.conf"
 PROXY_CONFIG_FILE="$CONFIG_DIR/proxy.conf"
 SYNC_RULES_CONFIG_FILE="$CONFIG_DIR/sync_rules.conf"
+LAB_CONFIG_FILE="$CONFIG_DIR/lab.conf"
 AGREEMENT_FILE="$CONFIG_DIR/.agreement_shown"
+
+GCLI_DIR="$HOME/gcli2api"
 
 readonly TOP_LEVEL_SYSTEM_FOLDERS=("data/_storage" "data/_cache" "data/_uploads" "data/_webpack")
 
@@ -1021,6 +1024,20 @@ fn_start_st() {
         fn_press_any_key
         return
     fi
+
+    # 尝试静默启动 gcli2api
+    if [ -f "$LAB_CONFIG_FILE" ] && grep -q "AUTO_START_GCLI=\"true\"" "$LAB_CONFIG_FILE"; then
+        if [ -d "$GCLI_DIR" ]; then
+            if ! pm2 list 2>/dev/null | grep -q "web.*online"; then
+                if fn_gcli_start_service >/dev/null 2>&1; then
+                    echo -e "[gcli2api] 服务已在后台启动..."
+                else
+                    echo -e "${YELLOW}[警告] gcli2api 启动失败，跳过...${NC}"
+                fi
+            fi
+        fi
+    fi
+
     cd "$ST_DIR" || fn_print_error_exit "无法进入酒馆目录。"
     echo -e "正在配置NPM镜像并准备启动环境..."
     npm config set registry https://registry.npmmirror.com
@@ -1751,151 +1768,6 @@ fi
 
 git config --global --add safe.directory '*' 2>/dev/null || true
 
-fn_install_gcli2api() {
-    clear
-    fn_print_header "安装/管理 gcli2api"
-    
-    local GCLI2API_DIR="$HOME/gcli2api"
-
-    # 1. 检查核心依赖
-    fn_print_warning "1/6: 检查核心依赖..."
-    local missing_deps=()
-    fn_check_command "git" || missing_deps+=("git")
-    fn_check_command "python" || missing_deps+=("python")
-    fn_check_command "node" || missing_deps+=("nodejs-lts")
-    
-    if [ ${#missing_deps[@]} -gt 0 ]; then
-        fn_print_error "核心依赖缺失: ${missing_deps[*]}"
-        fn_print_warning "请先运行 [首次部署] 来安装基础环境。"
-        fn_press_any_key
-        return 1
-    fi
-    fn_print_success "核心依赖检查通过。"
-
-    # 2. 检查并安装 uv
-    fn_print_warning "2/6: 检查并安装 uv (Python包管理器)..."
-    if ! fn_check_command "uv"; then
-        if pip install uv; then
-            fn_print_success "uv 安装成功。"
-        else
-            fn_print_error_exit "uv 安装失败！"
-        fi
-    else
-        fn_print_success "uv 已安装。"
-    fi
-
-    # 3. 检查并安装 pm2
-    fn_print_warning "3/6: 检查并安装 pm2 (Node.js进程管理器)..."
-    if ! fn_check_command "pm2"; then
-        if npm install -g pm2; then
-            fn_print_success "pm2 安装成功。"
-        else
-            fn_print_error_exit "pm2 安装失败！"
-        fi
-    else
-        fn_print_success "pm2 已安装。"
-    fi
-
-    # 4. 克隆或更新 gcli2api 仓库
-    fn_print_warning "4/6: 同步 gcli2api 项目文件..."
-    if [ -d "$GCLI2API_DIR/.git" ]; then
-        cd "$GCLI2API_DIR" || fn_print_error_exit "无法进入目录 $GCLI2API_DIR"
-        fn_print_warning "目录已存在，正在拉取更新..."
-        if git pull; then
-            fn_print_success "代码更新成功。"
-        else
-            fn_print_error "代码更新失败，请检查网络或手动处理。"
-        fi
-    else
-        fn_print_warning "正在从 GitHub 克隆项目..."
-        if git clone https://github.com/su-kaka/gcli2api.git "$GCLI2API_DIR"; then
-            fn_print_success "项目克隆成功。"
-            cd "$GCLI2API_DIR" || fn_print_error_exit "无法进入目录 $GCLI2API_DIR"
-        else
-            fn_print_error_exit "项目克隆失败！"
-        fi
-    fi
-
-    # 5. 安装 Python 依赖
-    fn_print_warning "5/6: 配置虚拟环境并安装依赖..."
-    if [ ! -d ".venv" ]; then
-        uv venv || fn_print_error_exit "创建 uv 虚拟环境失败！"
-    fi
-    
-    if uv pip install -r requirements-termux.txt; then
-        fn_print_success "Python 依赖安装成功。"
-    else
-        fn_print_error_exit "Python 依赖安装失败！"
-    fi
-
-    # 6. 使用 pm2 管理服务
-    fn_print_warning "6/6: 配置后台服务..."
-    while true; do
-        clear
-        fn_print_header "gcli2api 服务管理"
-        pm2 list | grep -q "web" && local status="${GREEN}运行中${NC}" || local status="${RED}已停止${NC}"
-        echo -e "      当前状态: ${status}\n"
-        echo -e "      [1] ${GREEN}启动/重启服务${NC}"
-        echo -e "      [2] ${YELLOW}停止服务${NC}"
-        echo -e "      [3] ${RED}删除服务${NC}"
-        echo -e "      [4] ${CYAN}查看日志${NC}\n"
-        echo -e "      [0] ${CYAN}完成并返回${NC}\n"
-        read -p "    请输入选项: " choice
-        case $choice in
-            1)
-                fn_print_warning "正在启动服务..."
-                pm2 start .venv/bin/python --name web -- web.py
-                pm2 save
-                fn_print_success "服务已启动/重启。"
-                sleep 1.5
-                ;;
-            2)
-                fn_print_warning "正在停止服务..."
-                pm2 stop web
-                pm2 save
-                fn_print_success "服务已停止。"
-                sleep 1.5
-                ;;
-            3)
-                fn_print_warning "正在删除服务..."
-                pm2 delete web
-                pm2 save
-                fn_print_success "服务已删除。"
-                sleep 1.5
-                ;;
-            4)
-                pm2 logs web
-                fn_press_any_key
-                ;;
-            0)
-                break
-                ;;
-            *)
-                fn_print_error "无效输入。"
-                sleep 1
-                ;;
-        esac
-    done
-    cd "$HOME"
-    fn_print_success "gcli2api 安装与配置完成！"
-    fn_press_any_key
-}
-
-fn_menu_extra_features() {
-    while true; do
-        clear
-        fn_print_header "额外功能 (实验室)"
-        echo -e "      [1] ${CYAN}安装/管理 gcli2api${NC}\n"
-        echo -e "      [0] ${CYAN}返回主菜单${NC}\n"
-        read -p "    请输入选项: " choice
-        case $choice in
-            1) fn_install_gcli2api; break ;;
-            0) break ;;
-            *) fn_print_error "无效输入。"; sleep 1 ;;
-        esac
-    done
-}
-
 fn_menu_version_management() {
     while true; do
         clear
@@ -1907,6 +1779,186 @@ fn_menu_version_management() {
         case $choice in
             1) fn_update_st; break ;;
             2) fn_rollback_st; break ;;
+            0) break ;;
+            *) fn_print_error "无效输入。"; sleep 1 ;;
+        esac
+    done
+}
+
+fn_install_gcli() {
+    clear
+    fn_print_header "安装 gcli2api"
+    
+    # 协议警告
+    echo -e "${RED}${BOLD}【重要提示】${NC}"
+    echo -e "此组件 (gcli2api) 遵循 ${YELLOW}CNC-1.0${NC} 协议。"
+    echo -e "严禁将此组件用于任何形式的商业用途。"
+    echo -e "继续安装即代表您同意遵守该协议。"
+    echo -e "────────────────────────────────────────"
+    read -p "请输入 'yes' 确认并继续安装: " confirm
+    if [[ "$confirm" != "yes" ]]; then
+        fn_print_warning "用户取消安装。"
+        fn_press_any_key
+        return
+    fi
+
+    fn_print_warning "正在检查环境依赖..."
+    local packages_to_install=""
+    if ! command -v uv &> /dev/null; then packages_to_install+=" uv"; fi
+    if ! command -v python &> /dev/null; then packages_to_install+=" python"; fi
+    if ! command -v node &> /dev/null; then packages_to_install+=" nodejs"; fi
+    if ! command -v git &> /dev/null; then packages_to_install+=" git"; fi
+
+    if [ -n "$packages_to_install" ]; then
+        fn_print_warning "正在安装缺失的系统依赖: $packages_to_install"
+        pkg install $packages_to_install -y || { fn_print_error "依赖安装失败！"; fn_press_any_key; return; }
+    fi
+
+    if ! command -v pm2 &> /dev/null; then
+        fn_print_warning "正在安装 pm2..."
+        npm install pm2 -g || { fn_print_error "pm2 安装失败！"; fn_press_any_key; return; }
+    fi
+
+    fn_print_warning "正在部署 gcli2api..."
+    if [ -d "$GCLI_DIR" ]; then
+        fn_print_warning "检测到旧目录，正在更新..."
+        cd "$GCLI_DIR" || return
+        git fetch --all
+        git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
+    else
+        git clone https://github.com/su-kaka/gcli2api.git "$GCLI_DIR" || { fn_print_error "克隆仓库失败！"; fn_press_any_key; return; }
+        cd "$GCLI_DIR" || return
+    fi
+
+    fn_print_warning "正在初始化 Python 环境 (uv)..."
+    uv init
+    uv add -r requirements-termux.txt || { fn_print_error "Python 依赖安装失败！"; fn_press_any_key; return; }
+
+    fn_print_success "gcli2api 安装/更新完成！"
+    fn_press_any_key
+}
+
+fn_gcli_start_service() {
+    if [ ! -d "$GCLI_DIR" ]; then
+        fn_print_error "gcli2api 尚未安装。"
+        return 1
+    fi
+    cd "$GCLI_DIR" || return 1
+    
+    # 检查是否已经在运行
+    if pm2 list | grep -q "web"; then
+        fn_print_warning "服务已经在运行中。"
+        return 0
+    fi
+
+    fn_print_warning "正在启动 gcli2api 服务..."
+    source .venv/bin/activate
+    if pm2 start .venv/bin/python --name web -- web.py; then
+        fn_print_success "服务启动成功！"
+        return 0
+    else
+        fn_print_error "服务启动失败。"
+        return 1
+    fi
+}
+
+fn_gcli_stop_service() {
+    fn_print_warning "正在停止 gcli2api 服务..."
+    pm2 stop web >/dev/null 2>&1
+    pm2 delete web >/dev/null 2>&1
+    fn_print_success "服务已停止。"
+}
+
+fn_gcli_uninstall() {
+    clear
+    fn_print_header "卸载 gcli2api"
+    read -p "确认要卸载 gcli2api 吗？(这将删除程序目录和配置文件) [y/N]: " confirm
+    if [[ "$confirm" =~ ^[yY]$ ]]; then
+        fn_gcli_stop_service
+        rm -rf "$GCLI_DIR"
+        # 清除自启配置
+        if [ -f "$LAB_CONFIG_FILE" ]; then
+             sed -i "/^AUTO_START_GCLI=/d" "$LAB_CONFIG_FILE"
+        fi
+        fn_print_success "gcli2api 已卸载。"
+    else
+        fn_print_warning "操作已取消。"
+    fi
+    fn_press_any_key
+}
+
+fn_gcli_show_logs() {
+    clear
+    fn_print_header "查看运行日志"
+    echo -e "${YELLOW}正在打开日志... ${RED}${BOLD}按 Ctrl+C 可退出日志视图并返回菜单${NC}"
+    echo -e "────────────────────────────────────────"
+    sleep 2
+    pm2 logs web
+}
+
+fn_get_gcli_status() {
+    if pm2 list 2>/dev/null | grep -q "web.*online"; then
+        echo -e "${GREEN}运行中${NC}"
+    else
+        echo -e "${RED}未运行${NC}"
+    fi
+}
+
+fn_menu_gcli_manage() {
+    while true; do
+        clear
+        fn_print_header "gcli2api 管理"
+        echo -e "      当前状态: $(fn_get_gcli_status)\n"
+        
+        local auto_start_status="${RED}关闭${NC}"
+        if [ -f "$LAB_CONFIG_FILE" ] && grep -q "AUTO_START_GCLI=\"true\"" "$LAB_CONFIG_FILE"; then
+            auto_start_status="${GREEN}开启${NC}"
+        fi
+
+        echo -e "      [1] ${CYAN}安装/更新${NC}"
+        echo -e "      [2] ${GREEN}启动服务${NC}"
+        echo -e "      [3] ${YELLOW}停止服务${NC}"
+        echo -e "      [4] 跟随酒馆启动: [${auto_start_status}]"
+        echo -e "      [5] ${RED}卸载 gcli2api${NC}"
+        echo -e "      [6] 查看运行日志"
+        echo -e "      [0] ${CYAN}返回上一级${NC}\n"
+        
+        read -p "    请输入选项: " choice
+        case $choice in
+            1) fn_install_gcli ;;
+            2) fn_gcli_start_service; fn_press_any_key ;;
+            3) fn_gcli_stop_service; fn_press_any_key ;;
+            4) 
+                mkdir -p "$CONFIG_DIR"
+                touch "$LAB_CONFIG_FILE"
+                if grep -q "AUTO_START_GCLI=\"true\"" "$LAB_CONFIG_FILE"; then
+                    sed -i "/^AUTO_START_GCLI=/d" "$LAB_CONFIG_FILE"
+                    echo "AUTO_START_GCLI=\"false\"" >> "$LAB_CONFIG_FILE"
+                    fn_print_warning "已关闭跟随启动。"
+                else
+                    sed -i "/^AUTO_START_GCLI=/d" "$LAB_CONFIG_FILE"
+                    echo "AUTO_START_GCLI=\"true\"" >> "$LAB_CONFIG_FILE"
+                    fn_print_success "已开启跟随启动。"
+                fi
+                sleep 1
+                ;;
+            5) fn_gcli_uninstall ;;
+            6) fn_gcli_show_logs ;;
+            0) break ;;
+            *) fn_print_error "无效输入。"; sleep 1 ;;
+        esac
+    done
+}
+
+fn_menu_lab() {
+    while true; do
+        clear
+        fn_print_header "额外功能 (实验室)"
+        echo -e "      [1] ${CYAN}gcli2api (酒馆扩展工具)${NC}"
+        echo -e "      [0] ${CYAN}返回主菜单${NC}\n"
+        read -p "    请输入选项: " choice
+        case $choice in
+            1) fn_menu_gcli_manage ;;
             0) break ;;
             *) fn_print_error "无效输入。"; sleep 1 ;;
         esac
@@ -1943,7 +1995,7 @@ while true; do
         7) fn_manage_autostart ;;
         8) fn_open_docs ;;
         9) fn_menu_proxy ;;
-        10) fn_menu_extra_features ;;
+        10) fn_menu_lab ;;
         0) echo -e "\n感谢使用，咕咕助手已退出。"; rm -f "$UPDATE_FLAG_FILE"; exit 0 ;;
         *) fn_print_warning "无效输入，请重新选择。"; sleep 1.5 ;;
     esac
