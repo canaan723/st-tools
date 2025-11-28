@@ -1789,11 +1789,13 @@ fn_install_gcli() {
     clear
     fn_print_header "安装 gcli2api"
     
-    # 协议警告
+    # 协议警告与版权声明
     echo -e "${RED}${BOLD}【重要提示】${NC}"
-    echo -e "此组件 (gcli2api) 遵循 ${YELLOW}CNC-1.0${NC} 协议。"
-    echo -e "严禁将此组件用于任何形式的商业用途。"
-    echo -e "继续安装即代表您同意遵守该协议。"
+    echo -e "此组件 (gcli2api) 由 ${CYAN}su-kaka${NC} 开发。"
+    echo -e "项目地址: https://github.com/su-kaka/gcli2api"
+    echo -e "本脚本仅作为聚合工具提供安装引导，不修改其原始代码。"
+    echo -e "该组件遵循 ${YELLOW}CNC-1.0${NC} 协议，${RED}${BOLD}严禁商业用途${NC}。"
+    echo -e "继续安装即代表您知晓并同意遵守该协议。"
     echo -e "────────────────────────────────────────"
     read -p "请输入 'yes' 确认并继续安装: " confirm
     if [[ "$confirm" != "yes" ]]; then
@@ -1834,7 +1836,20 @@ fn_install_gcli() {
     uv init
     uv add -r requirements-termux.txt || { fn_print_error "Python 依赖安装失败！"; fn_press_any_key; return; }
 
+    # 默认开启跟随启动
+    mkdir -p "$CONFIG_DIR"
+    if ! grep -q "AUTO_START_GCLI" "$LAB_CONFIG_FILE" 2>/dev/null; then
+        echo "AUTO_START_GCLI=\"true\"" >> "$LAB_CONFIG_FILE"
+    fi
+
     fn_print_success "gcli2api 安装/更新完成！"
+    
+    # 尝试打开 Web 面板
+    if fn_check_command "termux-open-url"; then
+        fn_print_warning "正在尝试打开 Web 面板 (http://127.0.0.1:7861)..."
+        termux-open-url "http://127.0.0.1:7861"
+    fi
+    
     fn_press_any_key
 }
 
@@ -1889,11 +1904,11 @@ fn_gcli_uninstall() {
 
 fn_gcli_show_logs() {
     clear
-    fn_print_header "查看运行日志"
-    echo -e "${YELLOW}正在打开日志... ${RED}${BOLD}按 Ctrl+C 可退出日志视图并返回菜单${NC}"
+    fn_print_header "查看运行日志 (最后 50 行)"
     echo -e "────────────────────────────────────────"
-    sleep 2
-    pm2 logs web
+    pm2 logs web --lines 50 --nostream
+    echo -e "────────────────────────────────────────"
+    fn_press_any_key
 }
 
 fn_get_gcli_status() {
@@ -1921,6 +1936,7 @@ fn_menu_gcli_manage() {
         echo -e "      [4] 跟随酒馆启动: [${auto_start_status}]"
         echo -e "      [5] ${RED}卸载 gcli2api${NC}"
         echo -e "      [6] 查看运行日志"
+        echo -e "      [7] 打开 Web 面板"
         echo -e "      [0] ${CYAN}返回上一级${NC}\n"
         
         read -p "    请输入选项: " choice
@@ -1928,7 +1944,7 @@ fn_menu_gcli_manage() {
             1) fn_install_gcli ;;
             2) fn_gcli_start_service; fn_press_any_key ;;
             3) fn_gcli_stop_service; fn_press_any_key ;;
-            4) 
+            4)
                 mkdir -p "$CONFIG_DIR"
                 touch "$LAB_CONFIG_FILE"
                 if grep -q "AUTO_START_GCLI=\"true\"" "$LAB_CONFIG_FILE"; then
@@ -1944,6 +1960,15 @@ fn_menu_gcli_manage() {
                 ;;
             5) fn_gcli_uninstall ;;
             6) fn_gcli_show_logs ;;
+            7)
+                if fn_check_command "termux-open-url"; then
+                    termux-open-url "http://127.0.0.1:7861"
+                    fn_print_success "已尝试打开浏览器。"
+                else
+                    fn_print_error "未找到 termux-open-url 命令。"
+                fi
+                sleep 1
+                ;;
             0) break ;;
             *) fn_print_error "无效输入。"; sleep 1 ;;
         esac
@@ -1954,7 +1979,7 @@ fn_menu_lab() {
     while true; do
         clear
         fn_print_header "额外功能 (实验室)"
-        echo -e "      [1] ${CYAN}gcli2api (酒馆扩展工具)${NC}"
+        echo -e "      [1] ${CYAN}gcli2api${NC}"
         echo -e "      [0] ${CYAN}返回主菜单${NC}\n"
         read -p "    请输入选项: " choice
         case $choice in
