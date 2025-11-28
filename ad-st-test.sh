@@ -1025,7 +1025,6 @@ fn_start_st() {
         return
     fi
 
-    # 尝试静默启动 gcli2api
     if [ -f "$LAB_CONFIG_FILE" ] && grep -q "AUTO_START_GCLI=\"true\"" "$LAB_CONFIG_FILE"; then
         if [ -d "$GCLI_DIR" ]; then
             if ! pm2 list 2>/dev/null | grep -q "web.*online"; then
@@ -1789,7 +1788,6 @@ fn_install_gcli() {
     clear
     fn_print_header "安装 gcli2api"
     
-    # 协议警告与版权声明
     echo -e "${RED}${BOLD}【重要提示】${NC}"
     echo -e "此组件 (gcli2api) 由 ${CYAN}su-kaka${NC} 开发。"
     echo -e "项目地址: https://github.com/su-kaka/gcli2api"
@@ -1836,7 +1834,6 @@ fn_install_gcli() {
     uv init
     uv add -r requirements-termux.txt || { fn_print_error "Python 依赖安装失败！"; fn_press_any_key; return; }
 
-    # 默认开启跟随启动
     mkdir -p "$CONFIG_DIR"
     if ! grep -q "AUTO_START_GCLI" "$LAB_CONFIG_FILE" 2>/dev/null; then
         echo "AUTO_START_GCLI=\"true\"" >> "$LAB_CONFIG_FILE"
@@ -1844,9 +1841,7 @@ fn_install_gcli() {
 
     fn_print_success "gcli2api 安装/更新完成！"
 
-    # 自动启动服务
     if fn_gcli_start_service; then
-        # 尝试打开 Web 面板
         if fn_check_command "termux-open-url"; then
             fn_print_warning "正在尝试打开 Web 面板 (http://127.0.0.1:7861)..."
             termux-open-url "http://127.0.0.1:7861"
@@ -1865,7 +1860,6 @@ fn_gcli_start_service() {
     fi
     cd "$GCLI_DIR" || return 1
     
-    # 检查是否已经在运行
     if pm2 list | grep -q "web"; then
         fn_print_warning "服务已经在运行中。"
         return 0
@@ -1896,7 +1890,6 @@ fn_gcli_uninstall() {
     if [[ "$confirm" =~ ^[yY]$ ]]; then
         fn_gcli_stop_service
         rm -rf "$GCLI_DIR"
-        # 清除自启配置
         if [ -f "$LAB_CONFIG_FILE" ]; then
              sed -i "/^AUTO_START_GCLI=/d" "$LAB_CONFIG_FILE"
         fi

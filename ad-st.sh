@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # 作者: 清绝 | 网址: blog.qjyg.de
-# 清绝咕咕助手 v2.7
+# 清绝咕咕助手 v3.0
 #
 # Copyright (c) 2025 清绝 (QingJue) <blog.qjyg.de>
 # This script is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -32,7 +32,10 @@ CONFIG_FILE="$CONFIG_DIR/backup_prefs.conf"
 GIT_SYNC_CONFIG_FILE="$CONFIG_DIR/git_sync.conf"
 PROXY_CONFIG_FILE="$CONFIG_DIR/proxy.conf"
 SYNC_RULES_CONFIG_FILE="$CONFIG_DIR/sync_rules.conf"
+LAB_CONFIG_FILE="$CONFIG_DIR/lab.conf"
 AGREEMENT_FILE="$CONFIG_DIR/.agreement_shown"
+
+GCLI_DIR="$HOME/gcli2api"
 
 readonly TOP_LEVEL_SYSTEM_FOLDERS=("data/_storage" "data/_cache" "data/_uploads" "data/_webpack")
 
@@ -52,7 +55,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v2.7${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.0${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
     echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
 }
@@ -1021,6 +1024,19 @@ fn_start_st() {
         fn_press_any_key
         return
     fi
+
+    if [ -f "$LAB_CONFIG_FILE" ] && grep -q "AUTO_START_GCLI=\"true\"" "$LAB_CONFIG_FILE"; then
+        if [ -d "$GCLI_DIR" ]; then
+            if ! pm2 list 2>/dev/null | grep -q "web.*online"; then
+                if fn_gcli_start_service >/dev/null 2>&1; then
+                    echo -e "[gcli2api] 服务已在后台启动..."
+                else
+                    echo -e "${YELLOW}[警告] gcli2api 启动失败，跳过...${NC}"
+                fi
+            fi
+        fi
+    fi
+
     cd "$ST_DIR" || fn_print_error_exit "无法进入酒馆目录。"
     echo -e "正在配置NPM镜像并准备启动环境..."
     npm config set registry https://registry.npmmirror.com
@@ -1768,6 +1784,225 @@ fn_menu_version_management() {
     done
 }
 
+fn_install_gcli() {
+    clear
+    fn_print_header "安装 gcli2api"
+    
+    echo -e "${RED}${BOLD}【重要提示】${NC}"
+    echo -e "此组件 (gcli2api) 由 ${CYAN}su-kaka${NC} 开发。"
+    echo -e "项目地址: https://github.com/su-kaka/gcli2api"
+    echo -e "本脚本仅作为聚合工具提供安装引导，不修改其原始代码。"
+    echo -e "该组件遵循 ${YELLOW}CNC-1.0${NC} 协议，${RED}${BOLD}严禁商业用途${NC}。"
+    echo -e "继续安装即代表您知晓并同意遵守该协议。"
+    echo -e "────────────────────────────────────────"
+    read -p "请输入 'yes' 确认并继续安装: " confirm
+    if [[ "$confirm" != "yes" ]]; then
+        fn_print_warning "用户取消安装。"
+        fn_press_any_key
+        return
+    fi
+
+    fn_print_warning "正在检查环境依赖..."
+    local packages_to_install=""
+    if ! command -v uv &> /dev/null; then packages_to_install+=" uv"; fi
+    if ! command -v python &> /dev/null; then packages_to_install+=" python"; fi
+    if ! command -v node &> /dev/null; then packages_to_install+=" nodejs"; fi
+    if ! command -v git &> /dev/null; then packages_to_install+=" git"; fi
+
+    if [ -n "$packages_to_install" ]; then
+        fn_print_warning "正在安装缺失的系统依赖: $packages_to_install"
+        pkg install $packages_to_install -y || { fn_print_error "依赖安装失败！"; fn_press_any_key; return; }
+    fi
+
+    if ! command -v pm2 &> /dev/null; then
+        fn_print_warning "正在安装 pm2..."
+        npm install pm2 -g || { fn_print_error "pm2 安装失败！"; fn_press_any_key; return; }
+    fi
+
+    fn_print_warning "正在部署 gcli2api..."
+    if [ -d "$GCLI_DIR" ]; then
+        fn_print_warning "检测到旧目录，正在更新..."
+        cd "$GCLI_DIR" || return
+        git fetch --all
+        git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
+    else
+        git clone https://github.com/su-kaka/gcli2api.git "$GCLI_DIR" || { fn_print_error "克隆仓库失败！"; fn_press_any_key; return; }
+        cd "$GCLI_DIR" || return
+    fi
+
+    fn_print_warning "正在初始化 Python 环境 (uv)..."
+    uv init
+    uv add -r requirements-termux.txt || { fn_print_error "Python 依赖安装失败！"; fn_press_any_key; return; }
+
+    mkdir -p "$CONFIG_DIR"
+    if ! grep -q "AUTO_START_GCLI" "$LAB_CONFIG_FILE" 2>/dev/null; then
+        echo "AUTO_START_GCLI=\"true\"" >> "$LAB_CONFIG_FILE"
+    fi
+
+    fn_print_success "gcli2api 安装/更新完成！"
+
+    if fn_gcli_start_service; then
+        if fn_check_command "termux-open-url"; then
+            fn_print_warning "正在尝试打开 Web 面板 (http://127.0.0.1:7861)..."
+            termux-open-url "http://127.0.0.1:7861"
+        fi
+    else
+        fn_print_error "服务启动失败，未能自动打开面板。"
+    fi
+    
+    fn_press_any_key
+}
+
+fn_gcli_start_service() {
+    if [ ! -d "$GCLI_DIR" ]; then
+        fn_print_error "gcli2api 尚未安装。"
+        return 1
+    fi
+    cd "$GCLI_DIR" || return 1
+    
+    if pm2 list | grep -q "web"; then
+        fn_print_warning "服务已经在运行中。"
+        return 0
+    fi
+
+    fn_print_warning "正在启动 gcli2api 服务..."
+    source .venv/bin/activate
+    if pm2 start .venv/bin/python --name web -- web.py; then
+        fn_print_success "服务启动成功！"
+        return 0
+    else
+        fn_print_error "服务启动失败。"
+        return 1
+    fi
+}
+
+fn_gcli_stop_service() {
+    fn_print_warning "正在停止 gcli2api 服务..."
+    pm2 stop web >/dev/null 2>&1
+    pm2 delete web >/dev/null 2>&1
+    fn_print_success "服务已停止。"
+}
+
+fn_gcli_uninstall() {
+    clear
+    fn_print_header "卸载 gcli2api"
+    read -p "确认要卸载 gcli2api 吗？(这将删除程序目录和配置文件) [y/N]: " confirm
+    if [[ "$confirm" =~ ^[yY]$ ]]; then
+        fn_gcli_stop_service
+        rm -rf "$GCLI_DIR"
+        if [ -f "$LAB_CONFIG_FILE" ]; then
+             sed -i "/^AUTO_START_GCLI=/d" "$LAB_CONFIG_FILE"
+        fi
+        fn_print_success "gcli2api 已卸载。"
+    else
+        fn_print_warning "操作已取消。"
+    fi
+    fn_press_any_key
+}
+
+fn_gcli_show_logs() {
+    clear
+    fn_print_header "查看运行日志 (最后 50 行)"
+    echo -e "────────────────────────────────────────"
+    pm2 logs web --lines 50 --nostream
+    echo -e "────────────────────────────────────────"
+    fn_press_any_key
+}
+
+fn_get_gcli_status() {
+    if pm2 list 2>/dev/null | grep -q "web.*online"; then
+        echo -e "${GREEN}运行中${NC}"
+    else
+        echo -e "${RED}未运行${NC}"
+    fi
+}
+
+fn_menu_gcli_manage() {
+    while true; do
+        clear
+        fn_print_header "gcli2api 管理"
+        local status_text=$(fn_get_gcli_status)
+        echo -e "      当前状态: ${status_text}\n"
+        
+        local auto_start_status="${RED}关闭${NC}"
+        if [ -f "$LAB_CONFIG_FILE" ] && grep -q "AUTO_START_GCLI=\"true\"" "$LAB_CONFIG_FILE"; then
+            auto_start_status="${GREEN}开启${NC}"
+        fi
+
+        local is_running=false
+        if echo "$status_text" | grep -q "运行中"; then
+            is_running=true
+        fi
+
+        echo -e "      [1] ${CYAN}安装/更新${NC}"
+        if $is_running; then
+            echo -e "      [2] ${YELLOW}停止服务${NC}"
+        else
+            echo -e "      [2] ${GREEN}启动服务${NC}"
+        fi
+        echo -e "      [3] 跟随酒馆启动: [${auto_start_status}]"
+        echo -e "      [4] ${RED}卸载 gcli2api${NC}"
+        echo -e "      [5] 查看运行日志"
+        echo -e "      [6] 打开 Web 面板"
+        echo -e "      [0] ${CYAN}返回上一级${NC}\n"
+        
+        read -p "    请输入选项: " choice
+        case $choice in
+            1) fn_install_gcli ;;
+            2)
+                if $is_running; then
+                    fn_gcli_stop_service
+                else
+                    fn_gcli_start_service
+                fi
+                fn_press_any_key
+                ;;
+            3)
+                mkdir -p "$CONFIG_DIR"
+                touch "$LAB_CONFIG_FILE"
+                if grep -q "AUTO_START_GCLI=\"true\"" "$LAB_CONFIG_FILE"; then
+                    sed -i "/^AUTO_START_GCLI=/d" "$LAB_CONFIG_FILE"
+                    echo "AUTO_START_GCLI=\"false\"" >> "$LAB_CONFIG_FILE"
+                    fn_print_warning "已关闭跟随启动。"
+                else
+                    sed -i "/^AUTO_START_GCLI=/d" "$LAB_CONFIG_FILE"
+                    echo "AUTO_START_GCLI=\"true\"" >> "$LAB_CONFIG_FILE"
+                    fn_print_success "已开启跟随启动。"
+                fi
+                sleep 1
+                ;;
+            4) fn_gcli_uninstall ;;
+            5) fn_gcli_show_logs ;;
+            6)
+                if fn_check_command "termux-open-url"; then
+                    termux-open-url "http://127.0.0.1:7861"
+                    fn_print_success "已尝试打开浏览器。"
+                else
+                    fn_print_error "未找到 termux-open-url 命令。"
+                fi
+                sleep 1
+                ;;
+            0) break ;;
+            *) fn_print_error "无效输入。"; sleep 1 ;;
+        esac
+    done
+}
+
+fn_menu_lab() {
+    while true; do
+        clear
+        fn_print_header "额外功能 (实验室)"
+        echo -e "      [1] ${CYAN}gcli2api${NC}"
+        echo -e "      [0] ${CYAN}返回主菜单${NC}\n"
+        read -p "    请输入选项: " choice
+        case $choice in
+            1) fn_menu_gcli_manage ;;
+            0) break ;;
+            *) fn_print_error "无效输入。"; sleep 1 ;;
+        esac
+    done
+}
+
 while true; do
     clear
     fn_show_main_header
@@ -1784,7 +2019,7 @@ while true; do
     echo -e "      [4] ${YELLOW}${BOLD}首次部署 (全新安装)${NC}\n"
     echo -e "      [5] 酒馆版本管理      [6] 更新咕咕助手${update_notice}"
     echo -e "      [7] 管理助手自启      [8] 查看帮助文档"
-    echo -e "      [9] 配置网络代理\n"
+    echo -e "      [9] 配置网络代理      [10] 额外功能 (实验室)\n"
     echo -e "      ${RED}[0] 退出咕咕助手${NC}\n"
     read -p "    请输入选项数字: " choice
 
@@ -1798,6 +2033,7 @@ while true; do
         7) fn_manage_autostart ;;
         8) fn_open_docs ;;
         9) fn_menu_proxy ;;
+        10) fn_menu_lab ;;
         0) echo -e "\n感谢使用，咕咕助手已退出。"; rm -f "$UPDATE_FLAG_FILE"; exit 0 ;;
         *) fn_print_warning "无效输入，请重新选择。"; sleep 1.5 ;;
     esac
