@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # 作者: 清绝 | 网址: blog.qjyg.de
-# 清绝咕咕助手 v3.0
+# 清绝咕咕助手 v3.1
 #
 # Copyright (c) 2025 清绝 (QingJue) <blog.qjyg.de>
 # This script is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -55,7 +55,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.0${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.1${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
     echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
 }
@@ -1798,6 +1798,13 @@ fn_install_gcli() {
     read -p "请输入 'yes' 确认并继续安装: " confirm
     if [[ "$confirm" != "yes" ]]; then
         fn_print_warning "用户取消安装。"
+        fn_press_any_key
+        return
+    fi
+
+    fn_print_warning "正在更新系统软件包以确保兼容性 (pkg upgrade)..."
+    if ! pkg update -y || ! pkg upgrade -y; then
+        fn_print_error "软件包更新失败！请检查网络连接或手动执行 'pkg upgrade'。"
         fn_press_any_key
         return
     fi
