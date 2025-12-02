@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v3.1"
+$ScriptVersion = "v3.2"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -31,6 +31,8 @@ $GitSyncConfigFile = Join-Path $ConfigDir "git_sync.conf"
 $ProxyConfigFile = Join-Path $ConfigDir "proxy.conf"
 $SyncRulesConfigFile = Join-Path $ConfigDir "sync_rules.conf"
 $AgreementFile = Join-Path $ConfigDir ".agreement_shown"
+$LabConfigFile = Join-Path $ConfigDir "lab.conf"
+$GcliDir = Join-Path $ScriptBaseDir "gcli2api"
 
 $Mirror_List = @(
     "https://github.com/SillyTavern/SillyTavern.git",
@@ -876,12 +878,31 @@ function Export-ExtensionLinks {
 function Start-SillyTavern {
     Clear-Host
     Write-Header "启动酒馆"
-    Check-PortAndShowError -SillyTavernPath $ST_Dir
+
+    $labConfig = Parse-ConfigFile $LabConfigFile
+    if ($labConfig.ContainsKey("AUTO_START_GCLI") -and $labConfig["AUTO_START_GCLI"] -eq "true") {
+        if (Test-Path $GcliDir) {
+            if ((Get-Gcli2ApiStatus) -ne "运行中") {
+                Write-Host "[gcli2api] 检测到自动启动已开启，正在新窗口中启动服务..." -ForegroundColor DarkGray
+                if (Start-Gcli2ApiService) {
+                    Start-Sleep -Seconds 1
+                } else {
+                    Start-Sleep -Seconds 2
+                }
+            }
+        } else {
+            Write-Warning "[警告] gcli2api 目录不存在，无法自动启动。"
+        }
+    }
+
     if (-not (Test-Path (Join-Path $ST_Dir "start.bat"))) {
         Write-Warning "酒馆尚未安装，请先部署。"
         Press-Any-Key
         return
     }
+    
+    Check-PortAndShowError -SillyTavernPath $ST_Dir
+
     Set-Location $ST_Dir
     Write-Host "正在配置NPM镜像并准备启动环境..."
     npm config set registry https://registry.npmmirror.com
@@ -1466,19 +1487,16 @@ function Get-UnifiedMirrorCandidates {
         $g = $null; $f = $null
         
         if ($m -match "/gh/") {
-            # 模式: https://domain/gh/User/Repo.git
             $base = $m.Substring(0, $m.IndexOf("/gh/"))
             $repoPath = $GitUrl -replace '^https://github.com/', ''
             $filePath = $FileUrl -replace '^https://github.com/', ''
             $g = "$base/gh/$repoPath"
             $f = "$base/gh/$filePath"
         } elseif ($m -match "/https://github.com/") {
-            # 模式: https://domain/https://github.com/...
             $base = $m.Substring(0, $m.IndexOf("/https://github.com/"))
             $g = "$base/$GitUrl"
             $f = "$base/$FileUrl"
         } elseif ($m -match "/github.com/") {
-            # 模式: https://domain/github.com/... (如 gh-proxy.com)
             $base = $m.Substring(0, $m.IndexOf("/github.com/"))
             $g = "$base/$GitUrl"
             $f = "$base/$FileUrl"
@@ -1669,7 +1687,7 @@ function Get-AiStudioToken {
                         Write-Warning "检测到嵌套目录，正在调整结构..."
                         $parentDir = $nestedExe.Directory.FullName
                         Get-ChildItem -Path $parentDir | Move-Item -Destination $camoufoxDir -Force
-                        if ((Get-ChildItem $parentDir).Count -eq 0) { Remove-Item $parentDir -Force }
+                        if ((Get-ChildItem $parentDir -Force).Count -eq 0) { Remove-Item $parentDir -Force }
                     } else {
                         Write-Error "解压后未找到 camoufox.exe！"
                         Press-Any-Key; return
@@ -1719,26 +1737,272 @@ function Get-AiStudioToken {
                 if (Test-Path $authFile) {
                     Invoke-Item $authFile
                 } else {
-                    Write-Warning "凭证文件 'single-line-auth' 不存在。"
-                    Start-Sleep -Seconds 2
+                    Write-Warning "凭证文件不存在。"
                 }
-                continue
             }
             if ($next -eq '0') { Set-Location $ScriptBaseDir; return }
         }
     }
-    Set-Location $ScriptBaseDir
 }
+
+function Get-Gcli2ApiStatus {
+    $connection = Get-NetTCPConnection -LocalPort 7861 -State Listen -ErrorAction SilentlyContinue
+    if ($null -ne $connection) {
+        return "运行中"
+    } else {
+        return "未运行"
+    }
+}
+
+function Stop-Gcli2ApiService {
+    Write-Warning "正在停止 gcli2api 服务..."
+    $connection = Get-NetTCPConnection -LocalPort 7861 -State Listen -ErrorAction SilentlyContinue
+    if ($null -ne $connection) {
+        $processId = $connection.OwningProcess
+        try {
+            Stop-Process -Id $processId -Force -ErrorAction Stop
+            Write-Success "服务已停止 (PID: $processId)。"
+        } catch {
+            Write-Error "停止进程 PID:$($processId) 失败: $($_.Exception.Message)"
+        }
+    } else {
+        Write-Warning "服务未在运行。"
+    }
+}
+
+function Start-Gcli2ApiService {
+    if (-not (Test-Path $GcliDir)) {
+        Write-Error "gcli2api 尚未安装。"
+        return $false
+    }
+    if ((Get-Gcli2ApiStatus) -eq "运行中") {
+        Write-Warning "服务已经在运行中。"
+        return $true
+    }
+
+    $pythonExe = Join-Path $GcliDir ".venv/Scripts/python.exe"
+    $webPy = Join-Path $GcliDir "web.py"
+    if (-not (Test-Path $pythonExe) -or -not (Test-Path $webPy)) {
+        Write-Error "gcli2api 环境不完整，请尝试重新安装。"
+        return $false
+    }
+
+    Write-Warning "正在新窗口中启动 gcli2api 服务..."
+    try {
+        $powerShellExecutable = if (Get-Command pwsh -ErrorAction SilentlyContinue) { "pwsh.exe" } else { "powershell.exe" }
+        $command = "& `"$pythonExe`" -u `"$webPy`"; Write-Host '`n进程已结束，请按任意键关闭此窗口...'; [System.Console]::ReadKey({intercept: `$true}) | Out-Null"
+        Start-Process $powerShellExecutable -ArgumentList "-NoExit", "-Command", $command -WorkingDirectory $GcliDir
+        
+        Write-Host "正在等待服务初始化 (最多15秒)..." -ForegroundColor DarkGray
+        $startTime = Get-Date
+        $timeout = 15
+        $connection = $null
+
+        while (((Get-Date) - $startTime).TotalSeconds -lt $timeout) {
+            $connection = Get-NetTCPConnection -LocalPort 7861 -State Listen -ErrorAction SilentlyContinue
+            if ($null -ne $connection) {
+                break
+            }
+            Start-Sleep -Seconds 1
+        }
+
+        if ($null -ne $connection) {
+            Write-Success "服务启动成功！请在新窗口中查看日志。"
+            return $true
+        } else {
+            Write-Error "服务启动失败，请在新窗口中查看错误信息。"
+            return $false
+        }
+    } catch {
+        Write-Error "启动服务时发生错误: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Uninstall-Gcli2Api {
+    Clear-Host
+    Write-Header "卸载 gcli2api"
+    $confirm = Read-Host "确认要卸载 gcli2api 吗？(这将删除程序目录和配置文件) [y/N]"
+    if ($confirm -eq 'y') {
+        Stop-Gcli2ApiService
+        if (Test-Path $GcliDir) {
+            Write-Warning "正在删除目录: $GcliDir"
+            Remove-Item -Path $GcliDir -Recurse -Force
+        }
+        Update-SyncRuleValue "AUTO_START_GCLI" $null $LabConfigFile
+        Write-Success "gcli2api 已卸载。"
+    } else {
+        Write-Warning "操作已取消。"
+    }
+    Press-Any-Key
+}
+
+function Install-Gcli2Api {
+    Clear-Host
+    Write-Header "安装/更新 gcli2api"
+    
+    Write-Host "【重要提示】" -ForegroundColor Red
+    Write-Host "此组件 (gcli2api) 由 " -NoNewline; Write-Host "su-kaka" -ForegroundColor Cyan -NoNewline; Write-Host " 开发。"
+    Write-Host "项目地址: https://github.com/su-kaka/gcli2api"
+    Write-Host "本脚本仅作为聚合工具提供安装引导，不修改其原始代码。"
+    Write-Host "该组件遵循 " -NoNewline; Write-Host "CNC-1.0" -ForegroundColor Yellow -NoNewline; Write-Host " 协议，" -NoNewline; Write-Host "严禁商业用途" -ForegroundColor Red -NoNewline; Write-Host "。"
+    Write-Host "继续安装即代表您知晓并同意遵守该协议。"
+    Write-Host "────────────────────────────────────────"
+    $confirm = Read-Host "请输入 'yes' 确认并继续安装"
+    if ($confirm -ne "yes") {
+        Write-Warning "用户取消安装。"; Press-Any-Key; return
+    }
+
+    Write-Warning "正在检查环境依赖..."
+    if (-not (Check-Command "git") -or -not (Check-Command "python")) {
+        Write-Error "错误: Git 或 Python 未安装。"
+        Write-Host "请确保已安装 Git 和 Python 3.10+ 并将其添加至系统 PATH。" -ForegroundColor Cyan
+        Press-Any-Key; return
+    }
+    if (-not (Check-Command "uv")) {
+        Write-Warning "正在安装 uv (Python 环境管理工具)..."
+        pip install uv
+        if ($LASTEXITCODE -ne 0) { Write-ErrorExit "uv 安装失败！请检查 pip 是否正确配置。" }
+    }
+    Write-Success "核心依赖检查通过。"
+
+    Write-Warning "正在部署 gcli2api..."
+    if (Test-Path $GcliDir) {
+        Write-Warning "检测到旧目录，正在尝试更新..."
+        Set-Location $GcliDir
+        git fetch --all
+        git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
+        if ($LASTEXITCODE -ne 0) {
+            Set-Location $ScriptBaseDir
+            Write-Error "Git 更新失败！请检查网络或手动处理。"; Press-Any-Key; return
+        }
+    } else {
+        git clone "https://github.com/su-kaka/gcli2api.git" $GcliDir
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "克隆 gcli2api 仓库失败！请检查网络或代理设置。"; Press-Any-Key; return
+        }
+    }
+    Set-Location $GcliDir
+
+    Write-Warning "正在初始化 Python 环境并安装依赖 (uv)..."
+    uv venv
+    Write-Warning "正在尝试使用国内镜像源安装依赖..."
+    uv pip install -r requirements.txt --index-url https://pypi.tuna.tsinghua.edu.cn/simple
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "镜像源安装失败，正在尝试使用官方源..."
+        uv pip install -r requirements.txt
+        if ($LASTEXITCODE -ne 0) {
+            Set-Location $ScriptBaseDir
+            Write-Error "Python 依赖安装失败！"; Press-Any-Key; return
+        }
+    }
+    Set-Location $ScriptBaseDir
+
+    Update-SyncRuleValue "AUTO_START_GCLI" "true" $LabConfigFile
+
+    Write-Success "gcli2api 安装/更新完成！"
+
+    if (Start-Gcli2ApiService) {
+        Write-Warning "正在尝试打开 Web 面板 (http://127.0.0.1:7861)..."
+        try {
+            Start-Process "http://127.0.0.1:7861"
+        } catch {
+            Write-Error "无法自动打开浏览器。"
+        }
+    } else {
+        Write-Error "服务启动失败，未能自动打开面板。"
+    }
+    
+    Press-Any-Key
+}
+
+function Toggle-Gcli2ApiAutostart {
+    $labConfig = Parse-ConfigFile $LabConfigFile
+    $currentStatus = if ($labConfig.ContainsKey("AUTO_START_GCLI")) { $labConfig["AUTO_START_GCLI"] } else { "false" }
+    $newStatus = if ($currentStatus -eq "true") { "false" } else { "true" }
+    
+    Update-SyncRuleValue "AUTO_START_GCLI" $newStatus $LabConfigFile
+
+    if ($newStatus -eq "true") {
+        Write-Success "已开启跟随启动。"
+    } else {
+        Write-Warning "已关闭跟随启动。"
+    }
+    Start-Sleep -Seconds 1
+}
+
+function Show-Gcli2ApiMenu {
+    while ($true) {
+        Clear-Host
+        Write-Header "gcli2api 管理"
+        
+        $statusText = Get-Gcli2ApiStatus
+        $isRunning = $statusText -eq "运行中"
+        
+        Write-Host "      当前状态: " -NoNewline
+        if ($isRunning) { Write-Host $statusText -ForegroundColor Green } else { Write-Host $statusText -ForegroundColor Red }
+
+        $labConfig = Parse-ConfigFile $LabConfigFile
+        $autoStartEnabled = $labConfig.ContainsKey("AUTO_START_GCLI") -and $labConfig["AUTO_START_GCLI"] -eq "true"
+        
+        Write-Host "`n      [1] " -NoNewline; Write-Host "安装/更新" -ForegroundColor Cyan
+        
+        if (Test-Path $GcliDir) {
+            if ($isRunning) {
+                Write-Host "      [2] " -NoNewline; Write-Host "停止服务" -ForegroundColor Yellow
+            } else {
+                Write-Host "      [2] " -NoNewline; Write-Host "启动服务" -ForegroundColor Green
+            }
+            
+            Write-Host "      [3] 跟随酒馆启动: " -NoNewline
+            if ($autoStartEnabled) { Write-Host "[开启]" -ForegroundColor Green } else { Write-Host "[关闭]" -ForegroundColor Red }
+
+            Write-Host "      [4] " -NoNewline; Write-Host "卸载 gcli2api" -ForegroundColor Red
+            Write-Host "      [5] " -NoNewline; Write-Host "打开 Web 面板"
+        }
+        
+        Write-Host "`n      [0] " -NoNewline; Write-Host "返回上一级" -ForegroundColor Cyan
+
+        $choice = Read-Host "`n    请输入选项"
+        
+        if (-not (Test-Path $GcliDir) -and $choice -ne '1' -and $choice -ne '0') {
+            Write-Warning "无效输入。gcli2api 尚未安装。"; Start-Sleep 1.5
+            continue
+        }
+
+        switch ($choice) {
+            "1" { Install-Gcli2Api }
+            "2" {
+                if ($isRunning) { Stop-Gcli2ApiService } else { Start-Gcli2ApiService }
+                Press-Any-Key
+            }
+            "3" { Toggle-Gcli2ApiAutostart }
+            "4" { Uninstall-Gcli2Api }
+            "5" {
+                try {
+                    Start-Process "http://127.0.0.1:7861"
+                } catch {
+                    Write-Error "无法自动打开浏览器。"
+                }
+            }
+            "0" { return }
+            default { Write-Warning "无效输入。"; Start-Sleep 1 }
+        }
+    }
+}
+
 
 function Show-ExtraFeaturesMenu {
     while ($true) {
         Clear-Host
         Write-Header "额外功能 (实验室)"
-        Write-Host "      [1] " -NoNewline; Write-Host "获取 AI Studio 凭证 (ais2api)" -ForegroundColor Cyan
+        Write-Host "      [1] " -NoNewline; Write-Host "gcli2api 管理" -ForegroundColor Cyan
+        Write-Host "      [2] " -NoNewline; Write-Host "获取 AI Studio 凭证" -ForegroundColor Cyan
         Write-Host "`n      [0] " -NoNewline; Write-Host "返回主菜单" -ForegroundColor Cyan
         $choice = Read-Host "`n    请输入选项"
         switch ($choice) {
-            "1" { Get-AiStudioToken }
+            "1" { Show-Gcli2ApiMenu }
+            "2" { Get-AiStudioToken }
             "0" { return }
             default { Write-Warning "无效输入。"; Start-Sleep 1 }
         }
