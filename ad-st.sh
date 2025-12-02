@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # 作者: 清绝 | 网址: blog.qjyg.de
-# 清绝咕咕助手 v3.1
+# 清绝咕咕助手 v3.2
 #
 # Copyright (c) 2025 清绝 (QingJue) <blog.qjyg.de>
 # This script is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -55,7 +55,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.1${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.2${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
     echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
 }
@@ -1096,7 +1096,7 @@ fn_create_zip_backup() {
         return 1
     fi
 
-    local exclude_params=(-x "*/_cache/*" -x "*.log" -x "*/backups/*" -x "*/extensions/*")
+    local exclude_params=(-x "*/_cache/*" -x "*.log" -x "*/backups/*")
     if zip -rq "$backup_zip_path" "${valid_paths[@]}" "${exclude_params[@]}"; then
         if [ "$current_backup_count" -ge "$BACKUP_LIMIT" ]; then
             fn_print_warning "正在清理旧备份..."
