@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v3.61test"
+$ScriptVersion = "v3.62test"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1472,7 +1472,6 @@ function Update-AssistantScript {
         
         $batchContent = @"
 @echo off
-chcp 65001 >nul
 title 咕咕助手自动更新程序
 echo 正在等待旧进程释放...
 
@@ -1504,7 +1503,8 @@ echo 更新完成，正在重启助手...
 start "" "$starterScript"
 del "%~f0"
 "@
-        [System.IO.File]::WriteAllText($batchPath, $batchContent, [System.Text.Encoding]::Default)
+        # 使用 GBK 编码写入批处理文件，防止中文路径乱码
+        [System.IO.File]::WriteAllText($batchPath, $batchContent, [System.Text.Encoding]::GetEncoding("GBK"))
 
         Write-Warning "助手即将重启以应用更新..."
         Start-Sleep -Seconds 1
