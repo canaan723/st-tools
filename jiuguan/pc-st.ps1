@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v3.2"
+$ScriptVersion = "v3.3"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1446,6 +1446,12 @@ function Update-AssistantScript {
     try {
         $newScriptContent = (Invoke-WebRequest -Uri $ScriptSelfUpdateUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop).Content
         if ([string]::IsNullOrWhiteSpace($newScriptContent)) { Write-ErrorExit "下载失败：脚本内容为空！" }
+
+        # 移除可能存在的 BOM (Byte Order Mark)
+        if ($newScriptContent.StartsWith([char]0xFEFF)) {
+            $newScriptContent = $newScriptContent.Substring(1)
+        }
+
         $currentScriptContent = Get-Content -Path $PSCommandPath -Raw
         if ($newScriptContent.Replace("`r`n", "`n").Trim() -eq $currentScriptContent.Replace("`r`n", "`n").Trim()) {
             Write-Success "当前已是最新版本。"

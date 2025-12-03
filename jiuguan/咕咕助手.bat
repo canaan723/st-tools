@@ -1,6 +1,6 @@
 @echo off
-%SystemRoot%\System32\chcp.exe 65001 > nul
-%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass -File "%~dp0pc-st.ps1"
+chcp 65001 > nul 2>&1
+powershell -ExecutionPolicy Bypass -File "%~dp0pc-st.ps1"
 echo.
-echo 助手已关闭。
+echo 锟斤拷锟斤拷锟窖关闭★拷
 pause
