@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v3.62test"
+$ScriptVersion = "v3.621test"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1474,13 +1474,16 @@ function Update-AssistantScript {
 @echo off
 title 咕咕助手自动更新程序
 echo 正在等待旧进程释放...
+echo [DEBUG] 开始更新流程 > update_debug.log 2>&1
 
 :RetryLoop
 timeout /t 2 /nobreak >nul
 if exist "$currentScriptPath" (
-    del /f /q "$currentScriptPath" >nul 2>&1
+    echo [DEBUG] 尝试删除旧文件... >> update_debug.log 2>&1
+    del /f /q "$currentScriptPath" >> update_debug.log 2>&1
     if exist "$currentScriptPath" (
         echo [!] 旧文件仍被占用，正在重试...
+        echo [DEBUG] 删除失败，重试中... >> update_debug.log 2>&1
         goto RetryLoop
     )
 )
@@ -1488,20 +1491,24 @@ if exist "$currentScriptPath" (
 if not exist "$newFilePath" (
     echo [X] 错误：未找到新版本文件！
     echo     路径: "$newFilePath"
+    echo [DEBUG] 错误：新文件不存在 "$newFilePath" >> update_debug.log 2>&1
     pause
     exit
 )
 
-move /y "$newFilePath" "$currentScriptPath" >nul
+echo [DEBUG] 正在移动新文件... >> update_debug.log 2>&1
+move /y "$newFilePath" "$currentScriptPath" >> update_debug.log 2>&1
 if not exist "$currentScriptPath" (
     echo [X] 错误：文件移动失败！
+    echo [DEBUG] 错误：移动失败，目标文件不存在 >> update_debug.log 2>&1
     pause
     exit
 )
 
 echo 更新完成，正在重启助手...
+echo [DEBUG] 更新成功，启动新进程... >> update_debug.log 2>&1
 start "" "$starterScript"
-del "%~f0"
+:: del "%~f0"
 "@
         # 使用 GBK 编码写入批处理文件，防止中文路径乱码
         [System.IO.File]::WriteAllText($batchPath, $batchContent, [System.Text.Encoding]::GetEncoding("GBK"))
