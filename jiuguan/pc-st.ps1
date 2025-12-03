@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v3.624test"
+$ScriptVersion = "v4.0"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1470,7 +1470,6 @@ function Update-AssistantScript {
         $currentScriptPath = $PSCommandPath
         $starterScript = Join-Path $ScriptBaseDir "咕咕助手.bat"
         
-        # 手动构建批处理内容，强制使用 CRLF 换行符，防止 cmd.exe 解析错误
         $batchContent = "@echo off`r`n"
         $batchContent += "chcp 936 >nul`r`n"
         $batchContent += "title GuGu Assistant Auto Updater`r`n"
@@ -1512,7 +1511,6 @@ function Update-AssistantScript {
         $batchContent += "start `"`" `"$starterScript`"`r`n"
         $batchContent += "del `"%~f0`"`r`n"
 
-        # 使用 GBK (CodePage 936) 编码写入批处理文件，以支持中文路径
         if (Test-Path $batchPath) { Remove-Item $batchPath -Force }
         [System.IO.File]::WriteAllText($batchPath, $batchContent, [System.Text.Encoding]::GetEncoding(936))
 
