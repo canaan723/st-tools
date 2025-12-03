@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v4.1"
+$ScriptVersion = "v4.2"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1469,42 +1469,38 @@ function Update-AssistantScript {
         $batchPath = Join-Path $ScriptBaseDir "update_helper.bat"
         $currentScriptPath = $PSCommandPath
         $starterScript = Join-Path $ScriptBaseDir "咕咕助手.bat"
-        $debugLog = Join-Path $ScriptBaseDir "update_debug.log"
         
         $batchContent = "@echo off`r`n"
         $batchContent += "chcp 936 >nul`r`n"
         $batchContent += "title GuGu Assistant Auto Updater`r`n"
-        $batchContent += "echo [`%time%`] Updater started. >> `"$debugLog`"`r`n"
         $batchContent += "cd /d `"$ScriptBaseDir`"`r`n"
-        $batchContent += "echo [`%time%`] Waiting for the old process to release... >> `"$debugLog`"`r`n"
+        $batchContent += "echo Waiting for the old process to release...`r`n"
         $batchContent += "`r`n"
         $batchContent += ":RetryLoop`r`n"
         $batchContent += "timeout /t 2 /nobreak >nul`r`n"
         $batchContent += "if exist `"$currentScriptPath`" (`r`n"
-        $batchContent += "    echo [`%time%`] Deleting old script: `"$currentScriptPath`" >> `"$debugLog`"`r`n"
         $batchContent += "    del /f /q `"$currentScriptPath`"`r`n"
         $batchContent += "    if exist `"$currentScriptPath`" (`r`n"
-        $batchContent += "        echo [`%time%`] [!] Old file is still locked, retrying... >> `"$debugLog`"`r`n"
+        $batchContent += "        echo [!] Old file is still locked, retrying...`r`n"
         $batchContent += "        goto RetryLoop`r`n"
         $batchContent += "    )`r`n"
         $batchContent += ")`r`n"
         $batchContent += "`r`n"
         $batchContent += "if not exist `"$newFilePath`" (`r`n"
-        $batchContent += "    echo [`%time%`] [X] Error: New version file not found! >> `"$debugLog`"`r`n"
-        $batchContent += "    echo [`%time%`]     Path: `"$newFilePath`" >> `"$debugLog`"`r`n"
+        $batchContent += "    echo [X] Error: New version file not found!`r`n"
+        $batchContent += "    echo     Path: `"$newFilePath`"`r`n"
         $batchContent += "    pause`r`n"
         $batchContent += "    exit`r`n"
         $batchContent += ")`r`n"
         $batchContent += "`r`n"
-        $batchContent += "echo [`%time%`] Moving new script... >> `"$debugLog`"`r`n"
         $batchContent += "move /y `"$newFilePath`" `"$currentScriptPath`"`r`n"
         $batchContent += "if not exist `"$currentScriptPath`" (`r`n"
-        $batchContent += "    echo [`%time%`] [X] Error: Failed to move file! >> `"$debugLog`"`r`n"
+        $batchContent += "    echo [X] Error: Failed to move file!`r`n"
         $batchContent += "    pause`r`n"
         $batchContent += "    exit`r`n"
         $batchContent += ")`r`n"
         $batchContent += "`r`n"
-        $batchContent += "echo [`%time%`] Update completed, restarting assistant... >> `"$debugLog`"`r`n"
+        $batchContent += "echo Update completed, restarting assistant...`r`n"
         $batchContent += "start `"`" `"$starterScript`"`r`n"
         $batchContent += "del `"%~f0`"`r`n"
 
