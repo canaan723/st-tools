@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v3.622test"
+$ScriptVersion = "v3.623test"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1472,6 +1472,7 @@ function Update-AssistantScript {
         
         $batchContent = @"
 @echo off
+chcp 936 >nul
 title GuGu Assistant Auto Updater
 echo Waiting for the old process to release...
 echo [DEBUG] Start update process > update_debug.log 2>&1
@@ -1510,9 +1511,9 @@ echo [DEBUG] Update success, restarting... >> update_debug.log 2>&1
 start "" "$starterScript"
 del "%~f0"
 "@
-        # 使用 ASCII 编码写入批处理文件，彻底避免中文乱码问题
+        # 使用 GBK 编码写入批处理文件，以支持中文路径
         if (Test-Path $batchPath) { Remove-Item $batchPath -Force }
-        [System.IO.File]::WriteAllText($batchPath, $batchContent, [System.Text.Encoding]::ASCII)
+        [System.IO.File]::WriteAllText($batchPath, $batchContent, [System.Text.Encoding]::GetEncoding("GBK"))
 
         Write-Warning "助手即将重启以应用更新..."
         Start-Sleep -Seconds 1
