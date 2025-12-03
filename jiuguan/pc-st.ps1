@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v3.6"
+$ScriptVersion = "v3.61test"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1472,10 +1472,34 @@ function Update-AssistantScript {
         
         $batchContent = @"
 @echo off
-echo 正在等待脚本进程结束...
-timeout /t 3 /nobreak >nul
-if exist "$currentScriptPath" del "$currentScriptPath"
-if exist "$newFilePath" move "$newFilePath" "$currentScriptPath"
+chcp 65001 >nul
+title 咕咕助手自动更新程序
+echo 正在等待旧进程释放...
+
+:RetryLoop
+timeout /t 2 /nobreak >nul
+if exist "$currentScriptPath" (
+    del /f /q "$currentScriptPath" >nul 2>&1
+    if exist "$currentScriptPath" (
+        echo [!] 旧文件仍被占用，正在重试...
+        goto RetryLoop
+    )
+)
+
+if not exist "$newFilePath" (
+    echo [X] 错误：未找到新版本文件！
+    echo     路径: "$newFilePath"
+    pause
+    exit
+)
+
+move /y "$newFilePath" "$currentScriptPath" >nul
+if not exist "$currentScriptPath" (
+    echo [X] 错误：文件移动失败！
+    pause
+    exit
+)
+
 echo 更新完成，正在重启助手...
 start "" "$starterScript"
 del "%~f0"
@@ -1485,8 +1509,8 @@ del "%~f0"
         Write-Warning "助手即将重启以应用更新..."
         Start-Sleep -Seconds 1
         
-        Start-Process -FilePath $batchPath -WindowStyle Hidden
-        exit
+        Start-Process -FilePath $batchPath
+        exit 2
     } catch {
         Write-ErrorExit "下载脚本时发生错误！`n`n错误详情: $($_.Exception.Message)"
     }
