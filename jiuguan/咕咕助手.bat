@@ -2,5 +2,5 @@
 chcp 65001 > nul 2>&1
 powershell -ExecutionPolicy Bypass -File "%~dp0pc-st.ps1"
 echo.
-echo 锟斤拷锟斤拷锟窖关闭★拷
+echo 咕咕助手已关闭。
 pause
