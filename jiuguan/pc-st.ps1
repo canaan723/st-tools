@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v3.3"
+$ScriptVersion = "v3.4"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1447,7 +1447,6 @@ function Update-AssistantScript {
         $newScriptContent = (Invoke-WebRequest -Uri $ScriptSelfUpdateUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop).Content
         if ([string]::IsNullOrWhiteSpace($newScriptContent)) { Write-ErrorExit "下载失败：脚本内容为空！" }
 
-        # 移除可能存在的 BOM (Byte Order Mark)
         if ($newScriptContent.StartsWith([char]0xFEFF)) {
             $newScriptContent = $newScriptContent.Substring(1)
         }
@@ -1458,21 +1457,36 @@ function Update-AssistantScript {
             Press-Any-Key
             return
         }
-        $newFileName = "pc-st(新版本).ps1"
+
+        $newFileName = "pc-st.new.ps1"
         $newFilePath = Join-Path $ScriptBaseDir $newFileName
-        Set-Content -Path $newFilePath -Value $newScriptContent -Encoding UTF8
+        [System.IO.File]::WriteAllText($newFilePath, $newScriptContent, [System.Text.Encoding]::UTF8)
+
         Clear-Host
         Write-Header "新版本下载完成！"
-        Write-Success "新版本已保存为: $newFileName"
-        Write-Warning "请按以下步骤手动完成更新 (本窗口将保持打开供您参考):"
-        Write-Host "`n  1. " -NoNewline; Write-Host "在即将自动打开的文件夹中..." -ForegroundColor Cyan
-        Write-Host "  2. " -NoNewline; Write-Host "先删除旧的 'pc-st.ps1' 文件。" -ForegroundColor Cyan
-        Write-Host "  3. " -NoNewline; Write-Host "再将 '$newFileName' 重命名为 'pc-st.ps1'。" -ForegroundColor Cyan
-        Write-Host "`n完成后，请手动关闭本窗口，并重新运行 '咕咕助手.bat' 即可。" -ForegroundColor Green
-        Write-Host "`n"
-        Write-Warning "4秒后将自动为您打开文件夹..."
-        Start-Sleep -Seconds 4
-        Invoke-Item $ScriptBaseDir
+        Write-Success "正在自动应用更新..."
+
+        $batchPath = Join-Path $ScriptBaseDir "update_helper.bat"
+        $currentScriptPath = $PSCommandPath
+        $starterScript = Join-Path $ScriptBaseDir "咕咕助手.bat"
+        
+        $batchContent = @"
+@echo off
+chcp 65001 >nul
+echo 正在等待脚本进程结束...
+timeout /t 2 /nobreak >nul
+if exist "$currentScriptPath" del "$currentScriptPath"
+if exist "$newFilePath" move "$newFilePath" "$currentScriptPath"
+echo 更新完成，正在重启助手...
+start "" "$starterScript"
+del "%~f0"
+"@
+        [System.IO.File]::WriteAllText($batchPath, $batchContent, [System.Text.Encoding]::Default)
+
+        Write-Warning "助手即将重启以应用更新..."
+        Start-Sleep -Seconds 1
+        
+        Start-Process -FilePath $batchPath -WindowStyle Hidden
         exit
     } catch {
         Write-ErrorExit "下载脚本时发生错误！`n`n错误详情: $($_.Exception.Message)"
