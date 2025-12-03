@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v3.621test"
+$ScriptVersion = "v3.622test"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1472,46 +1472,47 @@ function Update-AssistantScript {
         
         $batchContent = @"
 @echo off
-title 咕咕助手自动更新程序
-echo 正在等待旧进程释放...
-echo [DEBUG] 开始更新流程 > update_debug.log 2>&1
+title GuGu Assistant Auto Updater
+echo Waiting for the old process to release...
+echo [DEBUG] Start update process > update_debug.log 2>&1
 
 :RetryLoop
 timeout /t 2 /nobreak >nul
 if exist "$currentScriptPath" (
-    echo [DEBUG] 尝试删除旧文件... >> update_debug.log 2>&1
+    echo [DEBUG] Trying to delete old file... >> update_debug.log 2>&1
     del /f /q "$currentScriptPath" >> update_debug.log 2>&1
     if exist "$currentScriptPath" (
-        echo [!] 旧文件仍被占用，正在重试...
-        echo [DEBUG] 删除失败，重试中... >> update_debug.log 2>&1
+        echo [!] Old file is still locked, retrying...
+        echo [DEBUG] Delete failed, retrying... >> update_debug.log 2>&1
         goto RetryLoop
     )
 )
 
 if not exist "$newFilePath" (
-    echo [X] 错误：未找到新版本文件！
-    echo     路径: "$newFilePath"
-    echo [DEBUG] 错误：新文件不存在 "$newFilePath" >> update_debug.log 2>&1
+    echo [X] Error: New version file not found!
+    echo     Path: "$newFilePath"
+    echo [DEBUG] Error: New file not found "$newFilePath" >> update_debug.log 2>&1
     pause
     exit
 )
 
-echo [DEBUG] 正在移动新文件... >> update_debug.log 2>&1
+echo [DEBUG] Moving new file... >> update_debug.log 2>&1
 move /y "$newFilePath" "$currentScriptPath" >> update_debug.log 2>&1
 if not exist "$currentScriptPath" (
-    echo [X] 错误：文件移动失败！
-    echo [DEBUG] 错误：移动失败，目标文件不存在 >> update_debug.log 2>&1
+    echo [X] Error: Failed to move file!
+    echo [DEBUG] Error: Move failed, target file not found >> update_debug.log 2>&1
     pause
     exit
 )
 
-echo 更新完成，正在重启助手...
-echo [DEBUG] 更新成功，启动新进程... >> update_debug.log 2>&1
+echo Update completed, restarting assistant...
+echo [DEBUG] Update success, restarting... >> update_debug.log 2>&1
 start "" "$starterScript"
-:: del "%~f0"
+del "%~f0"
 "@
-        # 使用 GBK 编码写入批处理文件，防止中文路径乱码
-        [System.IO.File]::WriteAllText($batchPath, $batchContent, [System.Text.Encoding]::GetEncoding("GBK"))
+        # 使用 ASCII 编码写入批处理文件，彻底避免中文乱码问题
+        if (Test-Path $batchPath) { Remove-Item $batchPath -Force }
+        [System.IO.File]::WriteAllText($batchPath, $batchContent, [System.Text.Encoding]::ASCII)
 
         Write-Warning "助手即将重启以应用更新..."
         Start-Sleep -Seconds 1
