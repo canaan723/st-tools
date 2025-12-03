@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v3.623test"
+$ScriptVersion = "v3.624test"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1470,50 +1470,51 @@ function Update-AssistantScript {
         $currentScriptPath = $PSCommandPath
         $starterScript = Join-Path $ScriptBaseDir "咕咕助手.bat"
         
-        $batchContent = @"
-@echo off
-chcp 936 >nul
-title GuGu Assistant Auto Updater
-echo Waiting for the old process to release...
-echo [DEBUG] Start update process > update_debug.log 2>&1
+        # 手动构建批处理内容，强制使用 CRLF 换行符，防止 cmd.exe 解析错误
+        $batchContent = "@echo off`r`n"
+        $batchContent += "chcp 936 >nul`r`n"
+        $batchContent += "title GuGu Assistant Auto Updater`r`n"
+        $batchContent += "cd /d `"$ScriptBaseDir`"`r`n"
+        $batchContent += "echo Waiting for the old process to release...`r`n"
+        $batchContent += "echo [DEBUG] Start update process > update_debug.log 2>&1`r`n"
+        $batchContent += "`r`n"
+        $batchContent += ":RetryLoop`r`n"
+        $batchContent += "timeout /t 2 /nobreak >nul`r`n"
+        $batchContent += "if exist `"$currentScriptPath`" (`r`n"
+        $batchContent += "    echo [DEBUG] Trying to delete old file... >> update_debug.log 2>&1`r`n"
+        $batchContent += "    del /f /q `"$currentScriptPath`" >> update_debug.log 2>&1`r`n"
+        $batchContent += "    if exist `"$currentScriptPath`" (`r`n"
+        $batchContent += "        echo [!] Old file is still locked, retrying...`r`n"
+        $batchContent += "        echo [DEBUG] Delete failed, retrying... >> update_debug.log 2>&1`r`n"
+        $batchContent += "        goto RetryLoop`r`n"
+        $batchContent += "    )`r`n"
+        $batchContent += ")`r`n"
+        $batchContent += "`r`n"
+        $batchContent += "if not exist `"$newFilePath`" (`r`n"
+        $batchContent += "    echo [X] Error: New version file not found!`r`n"
+        $batchContent += "    echo     Path: `"$newFilePath`"`r`n"
+        $batchContent += "    echo [DEBUG] Error: New file not found `"$newFilePath`" >> update_debug.log 2>&1`r`n"
+        $batchContent += "    pause`r`n"
+        $batchContent += "    exit`r`n"
+        $batchContent += ")`r`n"
+        $batchContent += "`r`n"
+        $batchContent += "echo [DEBUG] Moving new file... >> update_debug.log 2>&1`r`n"
+        $batchContent += "move /y `"$newFilePath`" `"$currentScriptPath`" >> update_debug.log 2>&1`r`n"
+        $batchContent += "if not exist `"$currentScriptPath`" (`r`n"
+        $batchContent += "    echo [X] Error: Failed to move file!`r`n"
+        $batchContent += "    echo [DEBUG] Error: Move failed, target file not found >> update_debug.log 2>&1`r`n"
+        $batchContent += "    pause`r`n"
+        $batchContent += "    exit`r`n"
+        $batchContent += ")`r`n"
+        $batchContent += "`r`n"
+        $batchContent += "echo Update completed, restarting assistant...`r`n"
+        $batchContent += "echo [DEBUG] Update success, restarting... >> update_debug.log 2>&1`r`n"
+        $batchContent += "start `"`" `"$starterScript`"`r`n"
+        $batchContent += "del `"%~f0`"`r`n"
 
-:RetryLoop
-timeout /t 2 /nobreak >nul
-if exist "$currentScriptPath" (
-    echo [DEBUG] Trying to delete old file... >> update_debug.log 2>&1
-    del /f /q "$currentScriptPath" >> update_debug.log 2>&1
-    if exist "$currentScriptPath" (
-        echo [!] Old file is still locked, retrying...
-        echo [DEBUG] Delete failed, retrying... >> update_debug.log 2>&1
-        goto RetryLoop
-    )
-)
-
-if not exist "$newFilePath" (
-    echo [X] Error: New version file not found!
-    echo     Path: "$newFilePath"
-    echo [DEBUG] Error: New file not found "$newFilePath" >> update_debug.log 2>&1
-    pause
-    exit
-)
-
-echo [DEBUG] Moving new file... >> update_debug.log 2>&1
-move /y "$newFilePath" "$currentScriptPath" >> update_debug.log 2>&1
-if not exist "$currentScriptPath" (
-    echo [X] Error: Failed to move file!
-    echo [DEBUG] Error: Move failed, target file not found >> update_debug.log 2>&1
-    pause
-    exit
-)
-
-echo Update completed, restarting assistant...
-echo [DEBUG] Update success, restarting... >> update_debug.log 2>&1
-start "" "$starterScript"
-del "%~f0"
-"@
-        # 使用 GBK 编码写入批处理文件，以支持中文路径
+        # 使用 GBK (CodePage 936) 编码写入批处理文件，以支持中文路径
         if (Test-Path $batchPath) { Remove-Item $batchPath -Force }
-        [System.IO.File]::WriteAllText($batchPath, $batchContent, [System.Text.Encoding]::GetEncoding("GBK"))
+        [System.IO.File]::WriteAllText($batchPath, $batchContent, [System.Text.Encoding]::GetEncoding(936))
 
         Write-Warning "助手即将重启以应用更新..."
         Start-Sleep -Seconds 1
