@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v3.5"
+$ScriptVersion = "v3.6"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1472,9 +1472,8 @@ function Update-AssistantScript {
         
         $batchContent = @"
 @echo off
-chcp 65001 >nul
 echo 正在等待脚本进程结束...
-timeout /t 2 /nobreak >nul
+timeout /t 3 /nobreak >nul
 if exist "$currentScriptPath" del "$currentScriptPath"
 if exist "$newFilePath" move "$newFilePath" "$currentScriptPath"
 echo 更新完成，正在重启助手...
