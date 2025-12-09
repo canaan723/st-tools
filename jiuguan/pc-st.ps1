@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v4.2"
+$ScriptVersion = "v4.3"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1905,7 +1905,7 @@ function Install-Gcli2Api {
     }
     if (-not (Check-Command "uv")) {
         Write-Warning "正在安装 uv (Python 环境管理工具)..."
-        pip install uv
+        python -m pip install uv
         if ($LASTEXITCODE -ne 0) { Write-ErrorExit "uv 安装失败！请检查 pip 是否正确配置。" }
     }
     Write-Success "核心依赖检查通过。"
@@ -1929,12 +1929,12 @@ function Install-Gcli2Api {
     Set-Location $GcliDir
 
     Write-Warning "正在初始化 Python 环境并安装依赖 (uv)..."
-    uv venv
+    python -m uv venv
     Write-Warning "正在尝试使用国内镜像源安装依赖..."
-    uv pip install -r requirements.txt --index-url https://pypi.tuna.tsinghua.edu.cn/simple
+    python -m uv pip install -r requirements.txt --python .venv --index-url https://pypi.tuna.tsinghua.edu.cn/simple
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "镜像源安装失败，正在尝试使用官方源..."
-        uv pip install -r requirements.txt
+        python -m uv pip install -r requirements.txt --python .venv
         if ($LASTEXITCODE -ne 0) {
             Set-Location $ScriptBaseDir
             Write-Error "Python 依赖安装失败！"; Press-Any-Key; return
