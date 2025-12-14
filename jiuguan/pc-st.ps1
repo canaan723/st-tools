@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v4.3"
+$ScriptVersion = "v4.4"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -33,6 +33,7 @@ $SyncRulesConfigFile = Join-Path $ConfigDir "sync_rules.conf"
 $AgreementFile = Join-Path $ConfigDir ".agreement_shown"
 $LabConfigFile = Join-Path $ConfigDir "lab.conf"
 $GcliDir = Join-Path $ScriptBaseDir "gcli2api"
+$AntiGravityDir = Join-Path $ScriptBaseDir "Antigravity2api"
 
 $Mirror_List = @(
     "https://github.com/SillyTavern/SillyTavern.git",
@@ -892,6 +893,21 @@ function Start-SillyTavern {
             }
         } else {
             Write-Warning "[警告] gcli2api 目录不存在，无法自动启动。"
+        }
+    }
+
+    if ($labConfig.ContainsKey("AUTO_START_ANTIGRAVITY") -and $labConfig["AUTO_START_ANTIGRAVITY"] -eq "true") {
+        if (Test-Path $AntiGravityDir) {
+            if ((Get-AntiGravityStatus) -ne "运行中") {
+                Write-Host "[反重力2api] 检测到自动启动已开启，正在新窗口中启动服务..." -ForegroundColor DarkGray
+                if (Start-AntiGravityService) {
+                    Start-Sleep -Seconds 1
+                } else {
+                    Start-Sleep -Seconds 2
+                }
+            }
+        } else {
+            Write-Warning "[警告] 反重力2api 目录不存在，无法自动启动。"
         }
     }
 
@@ -1890,6 +1906,7 @@ function Install-Gcli2Api {
     Write-Host "项目地址: https://github.com/su-kaka/gcli2api"
     Write-Host "本脚本仅作为聚合工具提供安装引导，不修改其原始代码。"
     Write-Host "该组件遵循 " -NoNewline; Write-Host "CNC-1.0" -ForegroundColor Yellow -NoNewline; Write-Host " 协议，" -NoNewline; Write-Host "严禁商业用途" -ForegroundColor Red -NoNewline; Write-Host "。"
+    Write-Host "所有2api项目均存在封号风险，继续安装即代表您知晓并愿意承担此风险。" -ForegroundColor Red
     Write-Host "继续安装即代表您知晓并同意遵守该协议。"
     Write-Host "────────────────────────────────────────"
     $confirm = Read-Host "请输入 'yes' 确认并继续安装"
@@ -2035,18 +2052,276 @@ function Show-Gcli2ApiMenu {
     }
 }
 
+function Get-AntiGravityStatus {
+    $connection = Get-NetTCPConnection -LocalPort 8045 -State Listen -ErrorAction SilentlyContinue
+    if ($null -ne $connection) {
+        return "运行中"
+    } else {
+        return "未运行"
+    }
+}
+
+function Stop-AntiGravityService {
+    Write-Warning "正在停止 反重力2api 服务..."
+    $connection = Get-NetTCPConnection -LocalPort 8045 -State Listen -ErrorAction SilentlyContinue
+    if ($null -ne $connection) {
+        $processId = $connection.OwningProcess
+        try {
+            Stop-Process -Id $processId -Force -ErrorAction Stop
+            Write-Success "服务已停止 (PID: $processId)。"
+        } catch {
+            Write-Error "停止进程 PID:$($processId) 失败: $($_.Exception.Message)"
+        }
+    } else {
+        Write-Warning "服务未在运行。"
+    }
+}
+
+function Start-AntiGravityService {
+    if (-not (Test-Path $AntiGravityDir)) {
+        Write-Error "反重力2api 尚未安装。"
+        return $false
+    }
+    if ((Get-AntiGravityStatus) -eq "运行中") {
+        Write-Warning "服务已经在运行中。"
+        return $true
+    }
+
+    # Check Node.js version
+    $nodeVer = node -v
+    if ($nodeVer -match "v(\d+)") {
+        $majorVer = [int]$matches[1]
+        if ($majorVer -lt 18) {
+            Write-Error "Node.js 版本过低 ($nodeVer)，需要 v18.0.0 或更高版本。"
+            return $false
+        }
+    }
+
+    Write-Warning "正在新窗口中启动 反重力2api 服务..."
+    try {
+        $powerShellExecutable = if (Get-Command pwsh -ErrorAction SilentlyContinue) { "pwsh.exe" } else { "powershell.exe" }
+        # Use npm start
+        $command = "npm start; Write-Host '`n进程已结束，请按任意键关闭此窗口...'; [System.Console]::ReadKey({intercept: `$true}) | Out-Null"
+        Start-Process $powerShellExecutable -ArgumentList "-NoExit", "-Command", $command -WorkingDirectory $AntiGravityDir
+        
+        Write-Host "正在等待服务初始化 (最多15秒)..." -ForegroundColor DarkGray
+        $startTime = Get-Date
+        $timeout = 15
+        $connection = $null
+
+        while (((Get-Date) - $startTime).TotalSeconds -lt $timeout) {
+            $connection = Get-NetTCPConnection -LocalPort 8045 -State Listen -ErrorAction SilentlyContinue
+            if ($null -ne $connection) {
+                break
+            }
+            Start-Sleep -Seconds 1
+        }
+
+        if ($null -ne $connection) {
+            Write-Success "服务启动成功！请在新窗口中查看日志。"
+            return $true
+        } else {
+            Write-Error "服务启动失败，请在新窗口中查看错误信息。"
+            return $false
+        }
+    } catch {
+        Write-Error "启动服务时发生错误: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Install-AntiGravity {
+    Clear-Host
+    Write-Header "安装/更新 反重力2api"
+    
+    Write-Host "【重要提示】" -ForegroundColor Red
+    Write-Host "此组件 (Antigravity2api) 由 " -NoNewline; Write-Host "zhongruan0522" -ForegroundColor Cyan -NoNewline; Write-Host " 开发。"
+    Write-Host "项目地址: https://github.com/zhongruan0522/Antigravity2api-node-js"
+    Write-Host "本脚本仅作为聚合工具提供安装引导，不修改其原始代码。"
+    Write-Host "该组件遵循 " -NoNewline; Write-Host "CC BY-NC-SA 4.0" -ForegroundColor Yellow -NoNewline; Write-Host " 协议，" -NoNewline; Write-Host "严禁商业用途" -ForegroundColor Red -NoNewline; Write-Host "。"
+    Write-Host "所有2api项目均存在封号风险，继续安装即代表您知晓并愿意承担此风险。" -ForegroundColor Red
+    Write-Host "继续安装即代表您知晓并同意遵守该协议。"
+    Write-Host "────────────────────────────────────────"
+    $confirm = Read-Host "请输入 'yes' 确认并继续安装"
+    if ($confirm -ne "yes") {
+        Write-Warning "用户取消安装。"; Press-Any-Key; return
+    }
+
+    Write-Warning "正在检查环境依赖..."
+    if (-not (Check-Command "git") -or -not (Check-Command "node")) {
+        Write-Error "错误: Git 或 Node.js 未安装。"
+        Write-Host "请确保已安装 Git 和 Node.js (v18+) 并将其添加至系统 PATH。" -ForegroundColor Cyan
+        Press-Any-Key; return
+    }
+    
+    # Check Node version again just in case
+    $nodeVer = node -v
+    if ($nodeVer -match "v(\d+)") {
+        $majorVer = [int]$matches[1]
+        if ($majorVer -lt 18) {
+            Write-Error "Node.js 版本过低 ($nodeVer)，需要 v18.0.0 或更高版本。"
+            Press-Any-Key; return
+        }
+    }
+
+    Write-Warning "正在部署 反重力2api..."
+    if (Test-Path $AntiGravityDir) {
+        Write-Warning "检测到旧目录，正在尝试更新..."
+        Set-Location $AntiGravityDir
+        git fetch --all
+        git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
+        if ($LASTEXITCODE -ne 0) {
+            Set-Location $ScriptBaseDir
+            Write-Error "Git 更新失败！请检查网络或手动处理。"; Press-Any-Key; return
+        }
+    } else {
+        git clone "https://github.com/zhongruan0522/Antigravity2api-node-js.git" $AntiGravityDir
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "克隆仓库失败！请检查网络或代理设置。"; Press-Any-Key; return
+        }
+    }
+    Set-Location $AntiGravityDir
+
+    Write-Warning "正在安装依赖 (npm install)..."
+    npm install
+    if ($LASTEXITCODE -ne 0) {
+        Set-Location $ScriptBaseDir
+        Write-Error "依赖安装失败！"; Press-Any-Key; return
+    }
+
+    if (-not (Test-Path ".env")) {
+        if (Test-Path ".env.example") {
+            Copy-Item ".env.example" ".env"
+            Write-Success "已创建默认配置文件 (.env)。"
+            Write-Host "默认账号: admin" -ForegroundColor Yellow
+            Write-Host "默认密码: your-strong-password" -ForegroundColor Yellow
+            Write-Host "默认Key: sk-text" -ForegroundColor Yellow
+        } else {
+            Write-Warning "未找到 .env.example 模板文件，请手动配置 .env。"
+        }
+    }
+
+    Set-Location $ScriptBaseDir
+    Update-SyncRuleValue "AUTO_START_ANTIGRAVITY" "true" $LabConfigFile
+    Write-Success "反重力2api 安装/更新完成！"
+
+    if (Start-AntiGravityService) {
+        Write-Warning "正在尝试打开 Web 面板 (http://127.0.0.1:8045)..."
+        try {
+            Start-Process "http://127.0.0.1:8045"
+        } catch {
+            Write-Error "无法自动打开浏览器。"
+        }
+    }
+    Press-Any-Key
+}
+
+function Uninstall-AntiGravity {
+    Clear-Host
+    Write-Header "卸载 反重力2api"
+    $confirm = Read-Host "确认要卸载 反重力2api 吗？(这将删除程序目录和配置文件) [y/N]"
+    if ($confirm -eq 'y') {
+        Stop-AntiGravityService
+        if (Test-Path $AntiGravityDir) {
+            Write-Warning "正在删除目录: $AntiGravityDir"
+            Remove-Item -Path $AntiGravityDir -Recurse -Force
+        }
+        Update-SyncRuleValue "AUTO_START_ANTIGRAVITY" $null $LabConfigFile
+        Write-Success "反重力2api 已卸载。"
+    } else {
+        Write-Warning "操作已取消。"
+    }
+    Press-Any-Key
+}
+
+function Toggle-AntiGravityAutostart {
+    $labConfig = Parse-ConfigFile $LabConfigFile
+    $currentStatus = if ($labConfig.ContainsKey("AUTO_START_ANTIGRAVITY")) { $labConfig["AUTO_START_ANTIGRAVITY"] } else { "false" }
+    $newStatus = if ($currentStatus -eq "true") { "false" } else { "true" }
+    
+    Update-SyncRuleValue "AUTO_START_ANTIGRAVITY" $newStatus $LabConfigFile
+
+    if ($newStatus -eq "true") {
+        Write-Success "已开启跟随启动。"
+    } else {
+        Write-Warning "已关闭跟随启动。"
+    }
+    Start-Sleep -Seconds 1
+}
+
+function Show-AntiGravityMenu {
+    while ($true) {
+        Clear-Host
+        Write-Header "反重力2api 管理"
+        
+        $statusText = Get-AntiGravityStatus
+        $isRunning = $statusText -eq "运行中"
+        
+        Write-Host "      当前状态: " -NoNewline
+        if ($isRunning) { Write-Host $statusText -ForegroundColor Green } else { Write-Host $statusText -ForegroundColor Red }
+
+        $labConfig = Parse-ConfigFile $LabConfigFile
+        $autoStartEnabled = $labConfig.ContainsKey("AUTO_START_ANTIGRAVITY") -and $labConfig["AUTO_START_ANTIGRAVITY"] -eq "true"
+        
+        Write-Host "`n      [1] " -NoNewline; Write-Host "安装/更新" -ForegroundColor Cyan
+        
+        if (Test-Path $AntiGravityDir) {
+            if ($isRunning) {
+                Write-Host "      [2] " -NoNewline; Write-Host "停止服务" -ForegroundColor Yellow
+            } else {
+                Write-Host "      [2] " -NoNewline; Write-Host "启动服务" -ForegroundColor Green
+            }
+            
+            Write-Host "      [3] 跟随酒馆启动: " -NoNewline
+            if ($autoStartEnabled) { Write-Host "[开启]" -ForegroundColor Green } else { Write-Host "[关闭]" -ForegroundColor Red }
+
+            Write-Host "      [4] " -NoNewline; Write-Host "卸载 反重力2api" -ForegroundColor Red
+            Write-Host "      [5] " -NoNewline; Write-Host "打开 Web 面板"
+        }
+        
+        Write-Host "`n      [0] " -NoNewline; Write-Host "返回上一级" -ForegroundColor Cyan
+
+        $choice = Read-Host "`n    请输入选项"
+        
+        if (-not (Test-Path $AntiGravityDir) -and $choice -ne '1' -and $choice -ne '0') {
+            Write-Warning "无效输入。反重力2api 尚未安装。"; Start-Sleep 1.5
+            continue
+        }
+
+        switch ($choice) {
+            "1" { Install-AntiGravity }
+            "2" {
+                if ($isRunning) { Stop-AntiGravityService } else { Start-AntiGravityService }
+                Press-Any-Key
+            }
+            "3" { Toggle-AntiGravityAutostart }
+            "4" { Uninstall-AntiGravity }
+            "5" {
+                try {
+                    Start-Process "http://127.0.0.1:8045"
+                } catch {
+                    Write-Error "无法自动打开浏览器。"
+                }
+            }
+            "0" { return }
+            default { Write-Warning "无效输入。"; Start-Sleep 1 }
+        }
+    }
+}
 
 function Show-ExtraFeaturesMenu {
     while ($true) {
         Clear-Host
         Write-Header "额外功能 (实验室)"
         Write-Host "      [1] " -NoNewline; Write-Host "gcli2api 管理" -ForegroundColor Cyan
-        Write-Host "      [2] " -NoNewline; Write-Host "获取 AI Studio 凭证" -ForegroundColor Cyan
+        Write-Host "      [2] " -NoNewline; Write-Host "反重力2api 管理" -ForegroundColor Cyan
+        Write-Host "      [9] " -NoNewline; Write-Host "获取 AI Studio 凭证" -ForegroundColor Cyan
         Write-Host "`n      [0] " -NoNewline; Write-Host "返回主菜单" -ForegroundColor Cyan
         $choice = Read-Host "`n    请输入选项"
         switch ($choice) {
             "1" { Show-Gcli2ApiMenu }
-            "2" { Get-AiStudioToken }
+            "2" { Show-AntiGravityMenu }
+            "9" { Get-AiStudioToken }
             "0" { return }
             default { Write-Warning "无效输入。"; Start-Sleep 1 }
         }
