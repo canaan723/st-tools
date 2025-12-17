@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # 作者: 清绝 | 网址: blog.qjyg.de
-# 清绝咕咕助手 v3.2
+# 清绝咕咕助手
 #
 # Copyright (c) 2025 清绝 (QingJue) <blog.qjyg.de>
 # This script is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -10,6 +10,10 @@
 # 本脚本为免费开源项目，仅供个人学习和非商业用途使用。
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
+
+# ============ 版本配置 ============
+SCRIPT_VERSION="v3.3test"
+# ==================================
 
 BOLD=$'\e[1m'
 CYAN=$'\e[1;36m'
@@ -36,6 +40,7 @@ LAB_CONFIG_FILE="$CONFIG_DIR/lab.conf"
 AGREEMENT_FILE="$CONFIG_DIR/.agreement_shown"
 
 GCLI_DIR="$HOME/gcli2api"
+ANTIGRAVITY_DIR="$HOME/Antigravity2api-node-js"
 
 readonly TOP_LEVEL_SYSTEM_FOLDERS=("data/_storage" "data/_cache" "data/_uploads" "data/_webpack")
 
@@ -55,7 +60,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.2${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 ${SCRIPT_VERSION}${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
     echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
 }
@@ -1037,6 +1042,18 @@ fn_start_st() {
         fi
     fi
 
+    if [ -f "$LAB_CONFIG_FILE" ] && grep -q "AUTO_START_ANTIGRAVITY=\"true\"" "$LAB_CONFIG_FILE"; then
+        if [ -d "$ANTIGRAVITY_DIR" ]; then
+            if ! pm2 list 2>/dev/null | grep -q "antigravity.*online"; then
+                if fn_antigravity_start_service >/dev/null 2>&1; then
+                    echo -e "[反重力2api] 服务已在后台启动..."
+                else
+                    echo -e "${YELLOW}[警告] 反重力2api 启动失败，跳过...${NC}"
+                fi
+            fi
+        fi
+    fi
+
     cd "$ST_DIR" || fn_print_error_exit "无法进入酒馆目录。"
     echo -e "正在配置NPM镜像并准备启动环境..."
     npm config set registry https://registry.npmmirror.com
@@ -1793,6 +1810,10 @@ fn_install_gcli() {
     echo -e "项目地址: https://github.com/su-kaka/gcli2api"
     echo -e "本脚本仅作为聚合工具提供安装引导，不修改其原始代码。"
     echo -e "该组件遵循 ${YELLOW}CNC-1.0${NC} 协议，${RED}${BOLD}严禁商业用途${NC}。"
+    echo -e ""
+    echo -e "${RED}${BOLD}⚠️  风险警告${NC}"
+    echo -e "所有 2api 项目均存在账号封禁风险，继续安装即代表您已了解并愿意承担此风险。"
+    echo -e ""
     echo -e "继续安装即代表您知晓并同意遵守该协议。"
     echo -e "────────────────────────────────────────"
     read -p "请输入 'yes' 确认并继续安装: " confirm
@@ -1924,6 +1945,236 @@ fn_get_gcli_status() {
     fi
 }
 
+fn_install_antigravity() {
+    clear
+    fn_print_header "安装 反重力2api"
+    
+    echo -e "${RED}${BOLD}【重要提示】${NC}"
+    echo -e "此组件 (反重力2api) 由 ${CYAN}zhongruan0522${NC} 开发。"
+    echo -e "项目地址: https://github.com/zhongruan0522/Antigravity2api-node-js"
+    echo -e "本脚本仅作为聚合工具提供安装引导，不修改其原始代码。"
+    echo -e "该组件遵循 ${YELLOW}CC BY-NC-SA 4.0${NC} 协议，${RED}${BOLD}严禁商业用途${NC}。"
+    echo -e ""
+    echo -e "${RED}${BOLD}⚠️  风险警告${NC}"
+    echo -e "所有 2api 项目均存在账号封禁风险，继续安装即代表您已了解并愿意承担此风险。"
+    echo -e ""
+    echo -e "继续安装即代表您知晓并同意遵守该协议。"
+    echo -e "────────────────────────────────────────"
+    read -p "请输入 'yes' 确认并继续安装: " confirm
+    if [[ "$confirm" != "yes" ]]; then
+        fn_print_warning "用户取消安装。"
+        fn_press_any_key
+        return
+    fi
+
+    fn_print_warning "正在检查 Node.js 环境..."
+    if ! command -v node &> /dev/null; then
+        fn_print_error "未检测到 Node.js！请先安装 Node.js (>= 18.0.0)。"
+        fn_press_any_key
+        return
+    fi
+    
+    local node_version=$(node -v | sed 's/v//' | cut -d. -f1)
+    if [ "$node_version" -lt 18 ]; then
+        fn_print_error "Node.js 版本过低！当前版本: $(node -v)，需要 >= 18.0.0"
+        fn_print_error "请升级 Node.js 后再试。"
+        fn_press_any_key
+        return
+    fi
+    fn_print_success "Node.js 版本检查通过: $(node -v)"
+
+    if ! command -v pm2 &> /dev/null; then
+        fn_print_warning "正在安装 pm2..."
+        npm install pm2 -g || { fn_print_error "pm2 安装失败！"; fn_press_any_key; return; }
+    fi
+
+    fn_print_warning "正在部署 反重力2api..."
+    if [ -d "$ANTIGRAVITY_DIR" ]; then
+        fn_print_warning "检测到旧目录，正在更新..."
+        cd "$ANTIGRAVITY_DIR" || return
+        git fetch --all
+        git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
+    else
+        git clone https://github.com/zhongruan0522/Antigravity2api-node-js.git "$ANTIGRAVITY_DIR" || { fn_print_error "克隆仓库失败！"; fn_press_any_key; return; }
+        cd "$ANTIGRAVITY_DIR" || return
+    fi
+
+    fn_print_warning "正在安装依赖 (npm install)..."
+    npm install || { fn_print_error "依赖安装失败！"; fn_press_any_key; return; }
+
+    fn_print_warning "正在配置环境变量..."
+    if [ ! -f ".env" ]; then
+        if [ -f ".env.example" ]; then
+            cp .env.example .env
+            fn_print_success "已创建 .env 配置文件（使用默认配置）"
+        else
+            fn_print_warning "未找到 .env.example 文件，跳过配置。"
+        fi
+    else
+        fn_print_success ".env 配置文件已存在。"
+    fi
+
+    mkdir -p "$CONFIG_DIR"
+    if ! grep -q "AUTO_START_ANTIGRAVITY" "$LAB_CONFIG_FILE" 2>/dev/null; then
+        echo "AUTO_START_ANTIGRAVITY=\"true\"" >> "$LAB_CONFIG_FILE"
+    fi
+
+    fn_print_success "反重力2api 安装/更新完成！"
+    echo -e ""
+    echo -e "${CYAN}${BOLD}【默认配置信息】${NC}"
+    echo -e "  Web 面板地址: ${GREEN}http://127.0.0.1:8045${NC}"
+    echo -e "  默认账号: ${YELLOW}admin${NC}"
+    echo -e "  默认密码: ${YELLOW}your-strong-password${NC}"
+    echo -e "  默认API密钥: ${YELLOW}sk-text${NC}"
+    echo -e "${CYAN}提示: 可在 .env 文件中修改配置${NC}"
+    echo -e ""
+
+    if fn_antigravity_start_service; then
+        if fn_check_command "termux-open-url"; then
+            fn_print_warning "正在尝试打开 Web 面板 (http://127.0.0.1:8045)..."
+            termux-open-url "http://127.0.0.1:8045"
+        fi
+    else
+        fn_print_error "服务启动失败，未能自动打开面板。"
+    fi
+    
+    fn_press_any_key
+}
+
+fn_antigravity_start_service() {
+    if [ ! -d "$ANTIGRAVITY_DIR" ]; then
+        fn_print_error "反重力2api 尚未安装。"
+        return 1
+    fi
+    cd "$ANTIGRAVITY_DIR" || return 1
+    
+    if pm2 list | grep -q "antigravity"; then
+        fn_print_warning "服务已经在运行中。"
+        return 0
+    fi
+
+    fn_print_warning "正在启动 反重力2api 服务..."
+    if pm2 start npm --name antigravity -- start; then
+        fn_print_success "服务启动成功！"
+        return 0
+    else
+        fn_print_error "服务启动失败。"
+        return 1
+    fi
+}
+
+fn_antigravity_stop_service() {
+    fn_print_warning "正在停止 反重力2api 服务..."
+    pm2 stop antigravity >/dev/null 2>&1
+    pm2 delete antigravity >/dev/null 2>&1
+    fn_print_success "服务已停止。"
+}
+
+fn_antigravity_uninstall() {
+    clear
+    fn_print_header "卸载 反重力2api"
+    read -p "确认要卸载 反重力2api 吗？(这将删除程序目录和配置文件) [y/N]: " confirm
+    if [[ "$confirm" =~ ^[yY]$ ]]; then
+        fn_antigravity_stop_service
+        rm -rf "$ANTIGRAVITY_DIR"
+        if [ -f "$LAB_CONFIG_FILE" ]; then
+             sed -i "/^AUTO_START_ANTIGRAVITY=/d" "$LAB_CONFIG_FILE"
+        fi
+        fn_print_success "反重力2api 已卸载。"
+    else
+        fn_print_warning "操作已取消。"
+    fi
+    fn_press_any_key
+}
+
+fn_antigravity_show_logs() {
+    clear
+    fn_print_header "查看运行日志 (最后 50 行)"
+    echo -e "────────────────────────────────────────"
+    pm2 logs antigravity --lines 50 --nostream
+    echo -e "────────────────────────────────────────"
+    fn_press_any_key
+}
+
+fn_get_antigravity_status() {
+    if pm2 list 2>/dev/null | grep -q "antigravity.*online"; then
+        echo -e "${GREEN}运行中${NC}"
+    else
+        echo -e "${RED}未运行${NC}"
+    fi
+}
+
+fn_menu_antigravity_manage() {
+    while true; do
+        clear
+        fn_print_header "反重力2api 管理"
+        local status_text=$(fn_get_antigravity_status)
+        echo -e "      当前状态: ${status_text}\n"
+        
+        local auto_start_status="${RED}关闭${NC}"
+        if [ -f "$LAB_CONFIG_FILE" ] && grep -q "AUTO_START_ANTIGRAVITY=\"true\"" "$LAB_CONFIG_FILE"; then
+            auto_start_status="${GREEN}开启${NC}"
+        fi
+
+        local is_running=false
+        if echo "$status_text" | grep -q "运行中"; then
+            is_running=true
+        fi
+
+        echo -e "      [1] ${CYAN}安装/更新${NC}"
+        if $is_running; then
+            echo -e "      [2] ${YELLOW}停止服务${NC}"
+        else
+            echo -e "      [2] ${GREEN}启动服务${NC}"
+        fi
+        echo -e "      [3] 跟随酒馆启动: [${auto_start_status}]"
+        echo -e "      [4] ${RED}卸载 反重力2api${NC}"
+        echo -e "      [5] 查看运行日志"
+        echo -e "      [6] 打开 Web 面板"
+        echo -e "      [0] ${CYAN}返回上一级${NC}\n"
+        
+        read -p "    请输入选项: " choice
+        case $choice in
+            1) fn_install_antigravity ;;
+            2)
+                if $is_running; then
+                    fn_antigravity_stop_service
+                else
+                    fn_antigravity_start_service
+                fi
+                fn_press_any_key
+                ;;
+            3)
+                mkdir -p "$CONFIG_DIR"
+                touch "$LAB_CONFIG_FILE"
+                if grep -q "AUTO_START_ANTIGRAVITY=\"true\"" "$LAB_CONFIG_FILE"; then
+                    sed -i "/^AUTO_START_ANTIGRAVITY=/d" "$LAB_CONFIG_FILE"
+                    echo "AUTO_START_ANTIGRAVITY=\"false\"" >> "$LAB_CONFIG_FILE"
+                    fn_print_warning "已关闭跟随启动。"
+                else
+                    sed -i "/^AUTO_START_ANTIGRAVITY=/d" "$LAB_CONFIG_FILE"
+                    echo "AUTO_START_ANTIGRAVITY=\"true\"" >> "$LAB_CONFIG_FILE"
+                    fn_print_success "已开启跟随启动。"
+                fi
+                sleep 1
+                ;;
+            4) fn_antigravity_uninstall ;;
+            5) fn_antigravity_show_logs ;;
+            6)
+                if fn_check_command "termux-open-url"; then
+                    termux-open-url "http://127.0.0.1:8045"
+                    fn_print_success "已尝试打开浏览器。"
+                else
+                    fn_print_error "未找到 termux-open-url 命令。"
+                fi
+                sleep 1
+                ;;
+            0) break ;;
+            *) fn_print_error "无效输入。"; sleep 1 ;;
+        esac
+    done
+}
+
 fn_menu_gcli_manage() {
     while true; do
         clear
@@ -2000,10 +2251,14 @@ fn_menu_lab() {
         clear
         fn_print_header "额外功能 (实验室)"
         echo -e "      [1] ${CYAN}gcli2api${NC}"
+        echo -e "      [2] ${CYAN}反重力2api${NC}"
+        echo -e "      [9] ${CYAN}获取 AI Studio 凭证${NC}"
         echo -e "      [0] ${CYAN}返回主菜单${NC}\n"
         read -p "    请输入选项: " choice
         case $choice in
             1) fn_menu_gcli_manage ;;
+            2) fn_menu_antigravity_manage ;;
+            9) echo "AI Studio 凭证功能待实现"; fn_press_any_key ;;
             0) break ;;
             *) fn_print_error "无效输入。"; sleep 1 ;;
         esac
