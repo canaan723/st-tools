@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v4.4"
+$ScriptVersion = "v4.5"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1946,7 +1946,7 @@ function Install-Gcli2Api {
     Set-Location $GcliDir
 
     Write-Warning "正在初始化 Python 环境并安装依赖 (uv)..."
-    python -m uv venv
+    python -m uv venv --clear
     Write-Warning "正在尝试使用国内镜像源安装依赖..."
     python -m uv pip install -r requirements.txt --python .venv --index-url https://pypi.tuna.tsinghua.edu.cn/simple
     if ($LASTEXITCODE -ne 0) {
