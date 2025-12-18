@@ -1770,7 +1770,6 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 fn_gcli_patch_pydantic() {
     if [ ! -d "$GCLI_DIR/.venv" ]; then return 1; fi
     fn_print_warning "正在检查并应用 Pydantic 兼容性补丁..."
-    # 使用运行时别名补丁解决 Termux 上 Pydantic V1 缺少 model_dump 方法的问题
     "$GCLI_DIR/.venv/bin/python" -c "import pydantic; from pydantic import BaseModel;
 if not hasattr(BaseModel, 'model_dump'):
     path = pydantic.main.__file__
@@ -1855,7 +1854,6 @@ fn_install_gcli() {
     fn_print_warning "正在安装 Python 依赖..."
     uv pip install -r requirements-termux.txt --link-mode copy || { fn_print_error "Python 依赖安装失败！"; fn_press_any_key; return; }
 
-    # 应用 Pydantic 兼容性补丁
     fn_gcli_patch_pydantic
 
     mkdir -p "$CONFIG_DIR"
@@ -1888,7 +1886,6 @@ fn_gcli_start_service() {
         return 0
     fi
 
-    # 启动前确保补丁已应用
     fn_gcli_patch_pydantic
 
     fn_print_warning "正在启动 gcli2api 服务..."
