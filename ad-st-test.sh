@@ -55,7 +55,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.3test${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.4test${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
     echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
 }
@@ -1767,6 +1767,18 @@ fi
 
 git config --global --add safe.directory '*' 2>/dev/null || true
 
+fn_gcli_patch_pydantic() {
+    if [ ! -d "$GCLI_DIR/.venv" ]; then return 1; fi
+    fn_print_warning "正在检查并应用 Pydantic 兼容性补丁..."
+    # 使用运行时别名补丁解决 Termux 上 Pydantic V1 缺少 model_dump 方法的问题
+    "$GCLI_DIR/.venv/bin/python" -c "import pydantic; from pydantic import BaseModel;
+if not hasattr(BaseModel, 'model_dump'):
+    path = pydantic.main.__file__
+    with open(path, 'a') as f:
+        f.write('\nBaseModel.model_dump = BaseModel.dict\n')
+" &>/dev/null
+}
+
 fn_menu_version_management() {
     while true; do
         clear
@@ -1843,6 +1855,9 @@ fn_install_gcli() {
     fn_print_warning "正在安装 Python 依赖..."
     uv pip install -r requirements-termux.txt --link-mode copy || { fn_print_error "Python 依赖安装失败！"; fn_press_any_key; return; }
 
+    # 应用 Pydantic 兼容性补丁
+    fn_gcli_patch_pydantic
+
     mkdir -p "$CONFIG_DIR"
     if ! grep -q "AUTO_START_GCLI" "$LAB_CONFIG_FILE" 2>/dev/null; then
         echo "AUTO_START_GCLI=\"true\"" >> "$LAB_CONFIG_FILE"
@@ -1872,6 +1887,9 @@ fn_gcli_start_service() {
         fn_print_warning "服务已经在运行中。"
         return 0
     fi
+
+    # 启动前确保补丁已应用
+    fn_gcli_patch_pydantic
 
     fn_print_warning "正在启动 gcli2api 服务..."
     if pm2 start "$GCLI_DIR/.venv/bin/python" --name web --cwd "$GCLI_DIR" -- web.py; then
