@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # 作者: 清绝 | 网址: blog.qjyg.de
-# 清绝咕咕助手 v3.2
+# 清绝咕咕助手
 #
 # Copyright (c) 2025 清绝 (QingJue) <blog.qjyg.de>
 # This script is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -55,7 +55,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.2${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.3${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
     echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
 }
@@ -1827,6 +1827,7 @@ fn_install_gcli() {
     fi
 
     fn_print_warning "正在部署 gcli2api..."
+    cd "$HOME" || return
     if [ -d "$GCLI_DIR" ]; then
         fn_print_warning "检测到旧目录，正在更新..."
         cd "$GCLI_DIR" || return
@@ -1838,8 +1839,9 @@ fn_install_gcli() {
     fi
 
     fn_print_warning "正在初始化 Python 环境 (uv)..."
-    uv init
-    uv add -r requirements-termux.txt || { fn_print_error "Python 依赖安装失败！"; fn_press_any_key; return; }
+    uv venv --clear
+    fn_print_warning "正在安装 Python 依赖..."
+    uv pip install -r requirements-termux.txt --link-mode copy || { fn_print_error "Python 依赖安装失败！"; fn_press_any_key; return; }
 
     mkdir -p "$CONFIG_DIR"
     if ! grep -q "AUTO_START_GCLI" "$LAB_CONFIG_FILE" 2>/dev/null; then
@@ -1865,16 +1867,14 @@ fn_gcli_start_service() {
         fn_print_error "gcli2api 尚未安装。"
         return 1
     fi
-    cd "$GCLI_DIR" || return 1
     
-    if pm2 list | grep -q "web"; then
+    if pm2 list 2>/dev/null | grep -q "web"; then
         fn_print_warning "服务已经在运行中。"
         return 0
     fi
 
     fn_print_warning "正在启动 gcli2api 服务..."
-    source .venv/bin/activate
-    if pm2 start .venv/bin/python --name web -- web.py; then
+    if pm2 start "$GCLI_DIR/.venv/bin/python" --name web --cwd "$GCLI_DIR" -- web.py; then
         fn_print_success "服务启动成功！"
         return 0
     else
@@ -1897,6 +1897,7 @@ fn_gcli_uninstall() {
     if [[ "$confirm" =~ ^[yY]$ ]]; then
         fn_gcli_stop_service
         rm -rf "$GCLI_DIR"
+        cd "$HOME" || return
         if [ -f "$LAB_CONFIG_FILE" ]; then
              sed -i "/^AUTO_START_GCLI=/d" "$LAB_CONFIG_FILE"
         fi
