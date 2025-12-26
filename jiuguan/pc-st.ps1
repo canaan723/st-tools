@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v4.5"
+$ScriptVersion = "v4.6"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -63,7 +63,21 @@ function Write-Warning($Message) { Write-Host "⚠ $Message" -ForegroundColor Ye
 function Write-Error($Message) { Write-Host "✗ $Message" -ForegroundColor Red }
 function Write-ErrorExit($Message) { Write-Host "`n✗ $Message`n流程已终止。" -ForegroundColor Red; Press-Any-Key; exit }
 function Press-Any-Key { Write-Host "`n请按任意键返回..." -ForegroundColor Cyan; $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null }
-function Check-Command($Command) { return (Get-Command $Command -ErrorAction SilentlyContinue) }
+function Check-Command($Command) {
+    # 首先尝试使用 Get-Command 检测
+    $cmd = Get-Command $Command -ErrorAction SilentlyContinue
+    if ($cmd) { return $true }
+    
+    # 如果 Get-Command 失败，尝试直接运行命令验证
+    try {
+        $testOutput = & $Command --version 2>&1
+        if ($LASTEXITCODE -eq 0 -or $testOutput) { return $true }
+    } catch {
+        # 忽略异常，继续返回 false
+    }
+    
+    return $false
+}
 
 function Check-PortAndShowError {
     param([string]$SillyTavernPath)
@@ -265,8 +279,17 @@ function Parse-ConfigFile($filePath) {
 }
 
 function Test-GitSyncDeps {
-    if (-not (Check-Command "git") -or -not (Check-Command "robocopy")) {
-        Write-Warning "Git尚未安装，请先运行 [首次部署]。"
+    $gitExists = Check-Command "git"
+    $robocopyExists = Check-Command "robocopy"
+    
+    if (-not $gitExists -or -not $robocopyExists) {
+        $missingTools = @()
+        if (-not $gitExists) { $missingTools += "Git" }
+        if (-not $robocopyExists) { $missingTools += "Robocopy" }
+        
+        Write-Warning "检测到以下工具缺失: $($missingTools -join ', ')"
+        Write-Host "  - 如果您刚安装了这些工具，请尝试【重启终端】或【重启电脑】后再试。" -ForegroundColor Cyan
+        Write-Host "  - 如果确认未安装，请先运行主菜单的 [首次部署] 选项。" -ForegroundColor Cyan
         Press-Any-Key
         return $false
     }
@@ -922,14 +945,19 @@ function Start-SillyTavern {
     Set-Location $ST_Dir
     Write-Host "正在配置NPM镜像并准备启动环境..."
     npm config set registry https://registry.npmmirror.com
-    Write-Warning "环境准备就绪，正在启动酒馆服务..."
+    
+    $startBatPath = Join-Path $ST_Dir "start.bat"
+    Write-Success "环境准备就绪，即将在新窗口中启动酒馆服务..."
     Write-Warning "首次启动或更新后会自动安装依赖，耗时可能较长，请耐心等待..."
-    Write-Warning "服务将在此窗口中运行，请勿关闭。"
-    try {
-        cmd /c "start.bat"
-    } catch {
-        Write-Warning "酒馆服务已停止。"
-    }
+    Write-Host "酒馆将在新窗口中运行，请勿关闭该窗口。" -ForegroundColor Cyan
+    Write-Host "如需停止服务，请直接关闭酒馆运行窗口。" -ForegroundColor Cyan
+    
+    Start-Sleep -Seconds 2
+    
+    Start-Process -FilePath $startBatPath -WorkingDirectory $ST_Dir
+    
+    Write-Success "酒馆已在新窗口中启动！"
+    Write-Host "提示：如果启动失败，请检查新窗口中的错误信息。" -ForegroundColor Yellow
     Press-Any-Key
 }
 
