@@ -31,7 +31,7 @@ fn_ssh_rollback() {
     else
         log_error "未找到备份文件 /etc/ssh/sshd_config.bak，无法自动回滚。"
     fi
-    echo -e "\033[34m[提示] 脚本将退出。请检查云服务商的防火墙/NAT映射设置后重试。\033[0m"
+    echo -e "\033[34m[提示] 脚本将退出。请检查防火墙/NAT映射设置后重试。\033[0m"
 }
 
 # 获取当前 SSH 端口
@@ -339,8 +339,8 @@ fn_set_timezone() {
 
 fn_change_ssh_port() {
     log_step "修改 SSH 服务端口" "增强安全性"
-    local current_port=$(fn_get_ssh_port)
-    log_info "当前 SSH 端口: ${YELLOW}${current_port}${NC}"
+    local current_ports=$(fn_get_ssh_port)
+    log_info "当前生效的 SSH 端口: ${YELLOW}${current_ports}${NC}"
     
     log_info "执行前，请确保已在云服务商控制台放行新端口。"
     read -rp "请输入新的 SSH 端口号 (1-65535): " NEW_SSH_PORT < /dev/tty
@@ -350,9 +350,14 @@ fn_change_ssh_port() {
         return 1
     fi
 
-    if [ "$NEW_SSH_PORT" -eq "$current_port" ]; then
-        log_info "新端口与当前端口一致，无需修改。"
-        return 0
+    # 检查新端口是否已经在当前生效列表中
+    if echo "$current_ports" | grep -qE "(^|,)$NEW_SSH_PORT(,|$)"; then
+        # 如果当前只有一个端口且就是新端口，则跳过
+        if [[ "$current_ports" == "$NEW_SSH_PORT" ]]; then
+            log_info "新端口与当前端口一致，无需修改。"
+            return 0
+        fi
+        log_info "新端口已经在监听列表中，脚本将尝试清理其他冗余端口并收拢为单端口。"
     fi
 
     if [ "$NEW_SSH_PORT" -lt 1024 ]; then
@@ -361,27 +366,24 @@ fn_change_ssh_port() {
         if [[ ! "$confirm_low" =~ ^[Yy]$ ]]; then return 1; fi
     fi
 
-    log_action "正在修改 SSH 端口配置..."
+    log_action "正在修改 SSH 端口配置并清理冗余定义..."
     # 备份主配置文件
     cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
     
-    # 现代管理方式：优先使用 sshd_config.d 目录
+    # 1. 无论哪种模式，先注释掉主文件中的所有 Port 定义
+    sed -i 's/^\s*Port /#Port /g' /etc/ssh/sshd_config
+
+    # 2. 现代管理方式：处理 sshd_config.d 目录
     if [ -d /etc/ssh/sshd_config.d ] && grep -qE "^Include /etc/ssh/sshd_config.d/\*.conf" /etc/ssh/sshd_config; then
-        log_info "检测到支持 sshd_config.d 目录，将使用现代管理方式。"
-        # 1. 注释掉主文件中的所有 Port 定义，防止冲突
-        sed -i 's/^\s*Port /#Port /g' /etc/ssh/sshd_config
-        # 2. 在子目录创建独立配置文件
+        log_info "检测到支持 sshd_config.d 目录，正在清理冗余配置..."
+        # 注释掉该目录下所有 .conf 文件中的 Port 定义（排除我们自己的 99-gugu-ssh.conf）
+        find /etc/ssh/sshd_config.d/ -name "*.conf" ! -name "99-gugu-ssh.conf" -exec sed -i 's/^\s*Port /#Port /g' {} +
+        # 创建/更新我们的独立配置文件
         echo "Port $NEW_SSH_PORT" | sudo tee /etc/ssh/sshd_config.d/99-gugu-ssh.conf > /dev/null
     else
         log_info "使用传统方式修改 /etc/ssh/sshd_config。"
-        # 传统方式：
-        # 1. 如果主文件里有 Port 定义（无论是否被注释），则替换它
-        # 2. 如果主文件里完全没有 Port 定义，则在文件开头添加
-        if grep -qE '^#? *Port [0-9]+' /etc/ssh/sshd_config; then
-            sed -i "s/^#\? *Port [0-9]\+/Port $NEW_SSH_PORT/" /etc/ssh/sshd_config
-        else
-            sed -i "1iPort $NEW_SSH_PORT" /etc/ssh/sshd_config
-        fi
+        # 传统方式：在文件开头添加（因为上面已经注释了所有旧的）
+        sed -i "1iPort $NEW_SSH_PORT" /etc/ssh/sshd_config
     fi
     
     log_action "正在重启 SSH 服务以应用新端口 ${NEW_SSH_PORT}..."
@@ -398,8 +400,14 @@ fn_change_ssh_port() {
     read -rp "新端口是否连接成功？(输入 y 确认并继续 / 直接回车则回滚退出) [y/N]: " choice < /dev/tty
     if [[ "$choice" =~ ^[Yy]$ ]]; then
         log_success "确认新端口可用。SSH 端口已成功更换为 ${NEW_SSH_PORT}！"
-        echo -e "\n${YELLOW}[提示] 为了系统安全，请务必前往云服务商控制台：${NC}"
-        echo -e "       ${RED}禁用/删除旧端口 (${current_port}) 的防火墙放行规则。${NC}\n"
+        
+        # 计算需要关闭的旧端口（排除掉新端口）
+        local ports_to_close=$(echo "$current_ports" | tr ',' '\n' | grep -v "^$NEW_SSH_PORT$" | paste -sd "," -)
+        
+        if [ -n "$ports_to_close" ]; then
+            echo -e "\n${YELLOW}[提示] 为了系统安全，请务必前往云服务商控制台：${NC}"
+            echo -e "       ${RED}禁用/删除旧端口 (${ports_to_close}) 的防火墙放行规则。${NC}\n"
+        fi
         
         # 如果安装了 Fail2ban，自动更新其监听端口
         if command -v fail2ban-client &> /dev/null; then
@@ -804,7 +812,7 @@ install_1panel() {
 
     echo -e "\n${CYAN}================ 1Panel 安装完成 ===================${NC}"
     log_warn "重要：需牢记已设置的 1Panel 访问地址、端口、账号和密码。"
-    echo -e "并确保云服务商的防火墙/安全组中 ${GREEN}已放行 1Panel 的端口${NC}。"
+    echo -e "并确保防火墙/安全组中 ${GREEN}已放行 1Panel 的端口${NC}。"
     echo -e "\n${BOLD}可重新运行本脚本，选择【步骤3】来部署 SillyTavern。${NC}"
     log_warn "若刚才有用户被添加到 docker 组，务必先退出并重新登录SSH！"
 }
