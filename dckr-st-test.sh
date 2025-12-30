@@ -49,10 +49,48 @@ fn_get_ssh_port() {
     echo "${port:-22}"
 }
 
-# 获取当前连接 IP
+# 获取当前连接 IP (多重回退机制确保识别)
 fn_get_current_ip() {
     local current_ip
+    # 1. 尝试从 SSH_CLIENT 变量获取
     current_ip=$(echo "$SSH_CLIENT" | awk '{print $1}')
+    
+    # 2. 尝试从 SSH_CONNECTION 变量获取
+    if [ -z "$current_ip" ]; then
+        current_ip=$(echo "$SSH_CONNECTION" | awk '{print $1}')
+    fi
+    
+    # 3. 尝试从 who am i 获取 (处理 sudo 环境)
+    if [ -z "$current_ip" ]; then
+        current_ip=$(who am i 2>/dev/null | awk -F'[()]' '{print $2}')
+    fi
+    
+    # 4. 尝试从 who -m 获取
+    if [ -z "$current_ip" ]; then
+        current_ip=$(who -m 2>/dev/null | awk -F'[()]' '{print $2}')
+    fi
+
+    # 5. 尝试通过 ss 探测 (针对 SSH 端口)
+    if [ -z "$current_ip" ]; then
+        local ssh_port
+        ssh_port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' | head -n1)
+        ssh_port=${ssh_port:-22}
+        current_ip=$(ss -nt 2>/dev/null | grep ":$ssh_port" | grep ESTAB | awk '{print $5}' | cut -d: -f1 | grep -v -E '127.0.0.1|::1' | head -n 1)
+    fi
+
+    # 6. 尝试通过 netstat 探测
+    if [ -z "$current_ip" ]; then
+        local ssh_port
+        ssh_port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' | head -n1)
+        ssh_port=${ssh_port:-22}
+        current_ip=$(netstat -tn 2>/dev/null | grep ":$ssh_port" | grep ESTABLISHED | awk '{print $5}' | cut -d: -f1 | grep -v -E '127.0.0.1|::1' | head -n 1)
+    fi
+
+    # 过滤掉非 IP 格式的输出 (如空值或本地终端名)
+    if [[ ! "$current_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        current_ip=""
+    fi
+    
     echo "$current_ip"
 }
 
@@ -285,7 +323,11 @@ create_dynamic_swap() {
 
     local final_swap
     final_swap=$(free -m | awk '/^Swap:/{print $2}')
-    log_success "Swap 优化完成！当前总 Swap 容量: ${final_swap}MB (原生分区 + 补足文件)。"
+    if [ "$native_swap_mb" -eq 0 ]; then
+        log_success "Swap 优化完成！当前总 Swap 容量: ${final_swap}MB (补足文件)。"
+    else
+        log_success "Swap 优化完成！当前总 Swap 容量: ${final_swap}MB (原生分区 + 补足文件)。"
+    fi
 }
 
 fn_set_timezone() {
@@ -373,7 +415,7 @@ fn_change_ssh_port() {
 }
 
 fn_install_fail2ban() {
-    log_step "安装进阶版 Fail2ban" "双重防护体系"
+    log_step "安装/更新进阶版 Fail2ban" "双重防护体系"
     
     log_action "正在安装 Fail2ban 及依赖..."
     apt-get update
@@ -386,25 +428,35 @@ fn_install_fail2ban() {
     local current_ip=$(fn_get_current_ip)
     log_info "检测到当前 SSH 端口: ${YELLOW}${ssh_port}${NC}"
     
+    if [ -z "$current_ip" ]; then
+        log_warn "未能自动识别您的连接 IP。"
+        read -rp "为了防止误伤，请输入您的常用 IP 或 CIDR（直接回车则跳过）: " manual_ip < /dev/tty
+        current_ip="$manual_ip"
+    fi
+
     local ignore_ips="127.0.0.1/8 ::1"
     if [ -n "$current_ip" ]; then
-        log_info "检测到您的连接 IP: ${YELLOW}${current_ip}${NC} (将自动加入白名单)"
+        log_info "将 IP: ${YELLOW}${current_ip}${NC} 加入白名单。"
         ignore_ips="${ignore_ips} ${current_ip}"
     else
-        log_warn "未能检测到远程连接 IP，仅添加本地回环到白名单。"
+        log_warn "未设置远程白名单 IP，仅添加本地回环。"
     fi
 
     # 1. 创建自定义过滤器 (针对 systemd journal)
     log_info "配置自定义过滤器: /etc/fail2ban/filter.d/sshd-systemd.conf"
     cat > /etc/fail2ban/filter.d/sshd-systemd.conf << 'EOF'
 [Definition]
+# 针对systemd journal的SSH攻击过滤器
 failregex = ^.*sshd\[\d+\]:\s+Failed password for .* from <HOST> port \d+ ssh2?$
             ^.*sshd\[\d+\]:\s+Invalid user .* from <HOST> port \d+.*$
             ^.*sshd\[\d+\]:\s+Disconnected from authenticating user .* <HOST> port \d+ \[preauth\]$
             ^.*sshd\[\d+\]:\s+Received disconnect from <HOST> port \d+:11: Bye Bye \[preauth\]$
             ^.*sshd\[\d+\]:\s+Connection closed by <HOST> port \d+ \[preauth\]$
             ^.*sshd\[\d+\]:\s+Disconnected from invalid user .* <HOST> port \d+ \[preauth\]$
+
+# 忽略成功登录
 ignoreregex = ^.*sshd\[\d+\]:\s+Accepted .* from <HOST> port \d+ .*$
+
 [INCLUDES]
 before = common.conf
 EOF
@@ -413,8 +465,8 @@ EOF
     log_info "配置防护规则: /etc/fail2ban/jail.local"
     cat > /etc/fail2ban/jail.local << EOF
 [DEFAULT]
-bantime = 1h
-findtime = 10m
+bantime = 86400
+findtime = 600
 maxretry = 5
 banaction = iptables-multiport
 action = %(action_)s
@@ -425,8 +477,8 @@ enabled = true
 filter = sshd
 port = ${ssh_port}
 maxretry = 3
-findtime = 10m
-bantime = 40d
+findtime = 600
+bantime = 86400
 backend = systemd
 journalmatch = _SYSTEMD_UNIT=ssh.service + _COMM=sshd
 action = iptables-multiport[name=SSH, port="%(port)s", protocol=tcp]
@@ -436,8 +488,8 @@ enabled = true
 filter = sshd-systemd
 port = ${ssh_port}
 maxretry = 2
-findtime = 5m
-bantime = 40d
+findtime = 300
+bantime = 86400
 backend = systemd
 journalmatch = _SYSTEMD_UNIT=ssh.service + _COMM=sshd
 action = iptables-multiport[name=SSH-AGG, port="%(port)s", protocol=tcp]
@@ -447,34 +499,90 @@ EOF
     log_info "创建监控脚本: /usr/local/bin/fail2ban-status.sh"
     cat > /usr/local/bin/fail2ban-status.sh << 'EOF'
 #!/bin/bash
-RED='\033[0;31m'
+# Fail2ban 状态监控脚本
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+RED='\033[0;31m'
 NC='\033[0m'
 
+seconds_to_readable() {
+    local seconds=$1
+    if [ "$seconds" = "-1" ]; then
+        echo "永久封禁"
+    else
+        local days=$((seconds / 86400))
+        local hours=$(((seconds % 86400) / 3600))
+        local mins=$(((seconds % 3600) / 60))
+        echo "${days}天${hours}小时${mins}分钟"
+    fi
+}
+
+get_remaining_time() {
+    local jail=$1
+    local ip=$2
+    local ban_time=$(fail2ban-client get $jail bantime 2>/dev/null)
+    if [ "$ban_time" = "-1" ]; then echo "永久"; return; fi
+    local ban_start=$(grep "Ban $ip" /var/log/fail2ban.log | tail -1 | cut -d' ' -f1-2)
+    if [ -z "$ban_start" ]; then echo "未知"; return; fi
+    local ban_timestamp=$(date -d "$ban_start" +%s 2>/dev/null)
+    local current_timestamp=$(date +%s)
+    local elapsed=$((current_timestamp - ban_timestamp))
+    local remaining=$((ban_time - elapsed))
+    if [ $remaining -le 0 ]; then echo "即将解封"; else seconds_to_readable $remaining; fi
+}
+
+show_jail_status() {
+    local jail=$1
+    local name=$2
+    echo -e "${YELLOW}$name：${NC}"
+    local status=$(fail2ban-client status $jail 2>/dev/null)
+    if [ $? -ne 0 ]; then echo "  ${RED}jail '$jail' 未运行${NC}"; return; fi
+    local bantime=$(fail2ban-client get $jail bantime 2>/dev/null)
+    local findtime=$(fail2ban-client get $jail findtime 2>/dev/null)
+    local maxretry=$(fail2ban-client get $jail maxretry 2>/dev/null)
+    echo -e "${BLUE}  封禁策略: ${maxretry}次失败(${findtime}秒内) → 封禁$(seconds_to_readable $bantime)${NC}"
+    local banned_ips=$(fail2ban-client get $jail banip 2>/dev/null)
+    if [ -n "$banned_ips" ]; then
+        echo -e "${RED}  被封禁的IP及剩余时间：${NC}"
+        for ip in $banned_ips; do
+            local remaining=$(get_remaining_time $jail $ip)
+            echo "    $ip → 剩余: $remaining"
+        done
+    else
+        echo "  当前无IP被封禁"
+    fi
+    echo
+}
+
 echo -e "${BLUE}========== Fail2ban 状态报告 $(date) ==========${NC}"
-echo -e "${YELLOW}1. 服务状态：${NC}"
+# 显示当前白名单
+if command -v fail2ban-client &> /dev/null; then
+    local white_list=$(fail2ban-client get sshd ignoreip 2>/dev/null)
+    echo -e "${CYAN}当前白名单 (ignoreip): ${NC}${white_list:-未设置}"
+fi
+
+echo -e "\n${YELLOW}1. 服务状态：${NC}"
 systemctl is-active --quiet fail2ban && echo -e "${GREEN}运行中${NC}" || echo -e "${RED}未运行${NC}"
-
-echo -e "\n${YELLOW}2. 活跃的防护监狱 (Jails)：${NC}"
+echo -e "\n${YELLOW}2. 活跃的 jail：${NC}"
 fail2ban-client status
-
-for jail in $(fail2ban-client status | grep "Jail list" | sed 's/.*list://' | tr ',' ' '); do
-    echo -e "\n${CYAN}--- Jail: $jail ---${NC}"
-    fail2ban-client status $jail
-done
-
-echo -e "\n${YELLOW}3. 今日攻击 IP 排行 (前5)：${NC}"
-journalctl _SYSTEMD_UNIT=ssh.service --since today | grep -E "(Failed password|Invalid user)" | grep -oP 'from \K[0-9.]+' | sort | uniq -c | sort -nr | head -5
-
+echo
+show_jail_status "sshd" "3. SSH 标准保护状态"
+show_jail_status "sshd-aggressive" "4. SSH 激进保护状态"
+echo -e "${YELLOW}5. 今日攻击统计：${NC}"
+count=$(journalctl _SYSTEMD_UNIT=ssh.service --since today | grep -E "(Failed password|Invalid user)" | wc -l)
+echo "攻击次数：$count"
+if [ $count -gt 0 ]; then
+    echo "攻击IP排行："
+    journalctl _SYSTEMD_UNIT=ssh.service --since today | grep -E "(Failed password|Invalid user)" | grep -oP 'from \K[0-9.]+' | sort | uniq -c | sort -nr | head -5
+fi
 echo -e "\n${GREEN}========== 报告结束 ==========${NC}"
 EOF
     chmod +x /usr/local/bin/fail2ban-status.sh
 
     systemctl enable --now fail2ban
     systemctl restart fail2ban
-    log_success "Fail2ban 进阶防护已开启！"
+    log_success "Fail2ban 进阶防护已开启/更新！"
     log_info "您可以使用 ${YELLOW}sudo /usr/local/bin/fail2ban-status.sh${NC} 查看实时报告。"
 }
 
@@ -486,7 +594,9 @@ fn_fail2ban_manager() {
         echo -e "  [2] 查看实时拦截日志 (Ctrl+C 退出)"
         echo -e "  [3] 手动解封指定 IP"
         echo -e "  [4] 手动封禁指定 IP"
-        echo -e "  [5] 重启 Fail2ban 服务"
+        echo -e "  [5] 修改封禁时长 (小时)"
+        echo -e "  [6] 查看当前白名单 IP"
+        echo -e "  [7] 重启 Fail2ban 服务"
         echo -e "  [0] 返回上一级"
         echo -e "------------------------"
         read -rp "请输入选项: " f2b_choice < /dev/tty
@@ -506,7 +616,32 @@ fn_fail2ban_manager() {
                 log_success "封禁指令已发送。"
                 sleep 2
                 ;;
-            5) systemctl restart fail2ban; log_success "服务已重启"; sleep 1 ;;
+            5)
+                read -rp "请输入新的封禁时长 (小时，输入 -1 为永久): " ban_hours < /dev/tty
+                if [[ "$ban_hours" == "-1" ]]; then
+                    local ban_seconds="-1"
+                elif [[ "$ban_hours" =~ ^[0-9]+$ ]]; then
+                    local ban_seconds=$((ban_hours * 3600))
+                else
+                    log_warn "输入无效。"
+                    sleep 1
+                    continue
+                fi
+                fail2ban-client set sshd bantime $ban_seconds
+                fail2ban-client set sshd-aggressive bantime $ban_seconds
+                # 同步更新配置文件
+                sed -i "s/bantime = .*/bantime = $ban_seconds/" /etc/fail2ban/jail.local
+                log_success "封禁时长已更新为 ${ban_hours} 小时 (运行时已生效并保存配置)。"
+                sleep 2
+                ;;
+            6)
+                local white_list=$(fail2ban-client get sshd ignoreip 2>/dev/null)
+                echo -e "\n${CYAN}当前生效的白名单 IP:${NC}"
+                echo -e "${YELLOW}${white_list:-未设置}${NC}"
+                echo -e "\n${BLUE}提示: 重新运行安装脚本可自动将当前 IP 加入白名单。${NC}"
+                read -rp "按 Enter 继续..." < /dev/tty
+                ;;
+            7) systemctl restart fail2ban; log_success "服务已重启"; sleep 1 ;;
             0) break ;;
         esac
     done
@@ -1190,10 +1325,15 @@ main_menu() {
         fi
         
         echo -e " ${GREEN}[3] 部署 SillyTavern (基于Docker)${NC}"
+        
+        if command -v fail2ban-client &> /dev/null; then
+            echo -e " ${GREEN}[4] Fail2ban 运维管理${NC}"
+        fi
+
         echo -e "---------------------------------------------------------------------------"
 
         if [ "$IS_DEBIAN_LIKE" = true ]; then
-            echo -e " ${CYAN}[4] 系统安全清理 (清理缓存和无用镜像)${NC}"
+            echo -e " ${CYAN}[5] 系统安全清理 (清理缓存和无用镜像)${NC}"
         fi
 
         echo -e "${BLUE}===========================================================================${NC}"
@@ -1201,138 +1341,66 @@ main_menu() {
 
         local options_str="3"
         if [ "$IS_DEBIAN_LIKE" = true ]; then
-            options_str="1,2,3,4"
+            options_str="1,2,3,4,5"
         fi
         local valid_options="${options_str},q"
         read -rp "请输入选项 [${valid_options}]: " choice < /dev/tty
 
         case "$choice" in
-            1) 
-                if [ "$IS_DEBIAN_LIKE" = true ]; then 
+            1)
+                if [ "$IS_DEBIAN_LIKE" = true ]; then
                     check_root
                     run_initialization
                     read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
-                else 
+                else
                     log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"
                     sleep 2
                 fi
                 ;;
-            2) 
-                if [ "$IS_DEBIAN_LIKE" = true ]; then 
+            2)
+                if [ "$IS_DEBIAN_LIKE" = true ]; then
                     check_root
                     install_1panel
                     while read -r -t 0.1; do :; done
                     read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
-                else 
+                else
                     log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"
                     sleep 2
                 fi
                 ;;
-            3) 
+            3)
                 check_root
                 install_sillytavern
                 while read -r -t 0.1; do :; done
                 read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
                 ;;
             4)
-                if [ "$IS_DEBIAN_LIKE" = true ]; then 
+                if command -v fail2ban-client &> /dev/null; then
+                    fn_fail2ban_manager
+                else
+                    log_warn "未检测到 Fail2ban，请先在初始化菜单中安装。"
+                    sleep 2
+                fi
+                ;;
+            5)
+                if [ "$IS_DEBIAN_LIKE" = true ]; then
                     check_root
                     run_system_cleanup
                     while read -r -t 0.1; do :; done
                     read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
-                else 
+                else
                     log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"
                     sleep 2
                 fi
                 ;;
-            q|Q) 
-                echo -e "\n感谢使用，再见！"; exit 0 
+            q|Q)
+                echo -e "\n感谢使用，再见！"; exit 0
                 ;;
-            *) 
-                echo -e "\n${RED}无效输入，请重新选择。${NC}"; sleep 2 
+            *)
+                echo -e "\n${RED}无效输入，请重新选择。${NC}"; sleep 2
                 ;;
         esac
     done
-}
-
-run_initialization() {
-    while true; do
-        tput reset
-        echo -e "${CYAN}=== 服务器初始化与安全加固 ===${NC}"
-        echo -e "  [1] ${BOLD}${YELLOW}一键全自动优化${NC} (执行以下所有项)"
-        echo -e "  [2] 设置系统时区 (Asia/Shanghai)"
-        echo -e "  [3] 修改 SSH 端口 (支持 1-65535)"
-        echo -e "  [4] 安装进阶 Fail2ban (双重防护 + 自动白名单)"
-        echo -e "  [5] 系统升级与内核优化 (BBR + Swap)"
-        if command -v fail2ban-client &> /dev/null; then
-            echo -e "  [6] ${GREEN}Fail2ban 运维管理${NC}"
-        fi
-        echo -e "  [0] 返回主菜单"
-        echo -e "------------------------------"
-        read -rp "请输入选项 [0-6]: " init_choice < /dev/tty
-        
-        case $init_choice in
-            1)
-                fn_check_base_deps
-                fn_set_timezone
-                fn_change_ssh_port || true
-                fn_install_fail2ban
-                fn_system_upgrade_optimize
-                log_success "一键全自动优化完成！建议重启服务器。"
-                read -rp "按 Enter 返回..." < /dev/tty
-                ;;
-            2) fn_set_timezone; sleep 1 ;;
-            3) fn_change_ssh_port; sleep 1 ;;
-            4) fn_install_fail2ban; sleep 2 ;;
-            5) fn_system_upgrade_optimize; sleep 2 ;;
-            6)
-                if command -v fail2ban-client &> /dev/null; then
-                    fn_fail2ban_manager
-                else
-                    log_warn "请先执行选项 [4] 安装 Fail2ban。"
-                    sleep 2
-                fi
-                ;;
-            0) break ;;
-            *) log_warn "无效输入"; sleep 1 ;;
-        esac
-    done
-}
-
-fn_system_upgrade_optimize() {
-    log_step "系统升级与内核优化" "BBR + Swap + Upgrade"
-    
-    log_action "正在更新包列表并升级软件包..."
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
-    
-    log_action "正在优化内核参数 (BBR)..."
-    # 确保 /etc/sysctl.conf 存在，防止 sed 报错
-    if [ ! -f /etc/sysctl.conf ]; then
-        log_info "/etc/sysctl.conf 不存在，正在创建..."
-        touch /etc/sysctl.conf
-    fi
-
-    # 清理旧配置
-    sed -i -e '/net.core.default_qdisc=fq/d' \
-           -e '/net.ipv4.tcp_congestion_control=bbr/d' \
-           -e '/vm.swappiness=10/d' /etc/sysctl.conf
-    
-    # 确保文件末尾有且只有一个空行，然后追加配置
-    if [ -s /etc/sysctl.conf ]; then
-        sed -i '${/^$/d;}' /etc/sysctl.conf
-    fi
-
-    cat <<EOF >> /etc/sysctl.conf
-
-net.core.default_qdisc=fq
-net.ipv4.tcp_congestion_control=bbr
-vm.swappiness=10
-EOF
-    sysctl -p > /dev/null 2>&1 || true
-    
-    create_dynamic_swap
-    log_success "系统升级与内核优化完成。"
 }
 
 main_menu
