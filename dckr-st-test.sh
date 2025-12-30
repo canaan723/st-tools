@@ -36,17 +36,18 @@ fn_ssh_rollback() {
 
 # 获取当前 SSH 端口
 fn_get_ssh_port() {
-    local port
-    # 优先使用 sshd -T 获取实际生效的配置（支持 Include 目录）
-    port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' | head -n1)
+    local ports
+    # 优先使用 sshd -T 获取实际生效的配置（支持 Include 目录和多端口）
+    # 使用 paste 将多行端口合并为逗号分隔，如 "22,2222"
+    ports=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' | sort -un | paste -sd "," -)
     
     # 如果 sshd -T 失败，回退到主配置文件搜索
-    if [ -z "$port" ]; then
-        port=$(grep -E '^ *Port [0-9]+' /etc/ssh/sshd_config | awk '{print $2}' | head -n1)
+    if [ -z "$ports" ]; then
+        ports=$(grep -E '^ *Port [0-9]+' /etc/ssh/sshd_config | awk '{print $2}' | sort -un | paste -sd "," -)
     fi
     
     # 最终默认值为 22
-    echo "${port:-22}"
+    echo "${ports:-22}"
 }
 
 # 获取当前连接 IP (多重回退机制确保识别)
@@ -386,32 +387,30 @@ fn_change_ssh_port() {
     log_action "正在重启 SSH 服务以应用新端口 ${NEW_SSH_PORT}..."
     systemctl restart sshd
     
-    echo -e "\033[0;34m----------------------------------------------------------------\033[0m"
-    echo -e "\033[1;33m[重要] 请立即打开一个新的终端窗口，使用新端口 ${NEW_SSH_PORT} 尝试连接服务器。\033[0m"
-    echo -e "\033[0;34m----------------------------------------------------------------\033[0m"
+    echo -e "\n${BLUE}╔═══════════════════════ SSH 端口连接测试 ═══════════════════════╗${NC}"
+    echo -e "║                                                                ║"
+    echo -e "║  ${YELLOW}[重要] 请立即打开一个新的终端窗口，尝试连接新端口：${NC}${BOLD}${GREEN}${NEW_SSH_PORT}${NC}      ║"
+    echo -e "║                                                                ║"
+    echo -e "║  ${CYAN}注意：在确认连接成功前，请勿关闭当前窗口！${NC}                    ║"
+    echo -e "║                                                                ║"
+    echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}"
 
-    while true; do
-        read -p "新端口是否连接成功？ [直接回车]=成功并继续 / [输入N再回车]=失败并恢复: " choice < /dev/tty
-        case $choice in
-            "" | [Yy]* )
-                log_success "确认新端口可用。SSH 端口已成功更换为 ${NEW_SSH_PORT}！"
-                # 如果安装了 Fail2ban，自动更新其监听端口
-                if command -v fail2ban-client &> /dev/null; then
-                    log_info "检测到 Fail2ban，正在同步更新其监听端口..."
-                    sed -i "s/^port = .*/port = $NEW_SSH_PORT/" /etc/fail2ban/jail.local
-                    systemctl restart fail2ban
-                fi
-                break
-                ;;
-            [Nn]* )
-                fn_ssh_rollback
-                return 1
-                ;;
-            * )
-                echo -e "${RED}无效输入。请直接按【回车键】确认成功，或输入【N】并回车进行恢复。${NC}"
-                ;;
-        esac
-    done
+    read -rp "新端口是否连接成功？(输入 y 确认并继续 / 直接回车则回滚退出) [y/N]: " choice < /dev/tty
+    if [[ "$choice" =~ ^[Yy]$ ]]; then
+        log_success "确认新端口可用。SSH 端口已成功更换为 ${NEW_SSH_PORT}！"
+        echo -e "\n${YELLOW}[提示] 为了系统安全，请务必前往云服务商控制台：${NC}"
+        echo -e "       ${RED}禁用/删除旧端口 (${current_port}) 的防火墙放行规则。${NC}\n"
+        
+        # 如果安装了 Fail2ban，自动更新其监听端口
+        if command -v fail2ban-client &> /dev/null; then
+            log_info "检测到 Fail2ban，正在同步更新其监听端口..."
+            sed -i "s/^port = .*/port = $NEW_SSH_PORT/" /etc/fail2ban/jail.local
+            systemctl restart fail2ban
+        fi
+    else
+        fn_ssh_rollback
+        return 1
+    fi
 }
 
 fn_install_fail2ban() {
@@ -565,8 +564,8 @@ systemctl is-active --quiet fail2ban && echo -e "${GREEN}运行中${NC}" || echo
 
 # 显示当前白名单
 if command -v fail2ban-client &> /dev/null; then
-    white_list=$(fail2ban-client get sshd ignoreip 2>/dev/null)
-    echo -e "${CYAN}当前白名单 (ignoreip): ${NC}${white_list:-未设置}"
+    white_list=$(fail2ban-client get sshd ignoreip 2>/dev/null || echo "获取失败")
+    echo -e "${CYAN}当前白名单 (ignoreip): ${NC}${white_list}"
 fi
 
 echo -e "\n${YELLOW}2. 活跃的 jail：${NC}"
@@ -718,10 +717,10 @@ run_initialization() {
         tput reset
         echo -e "${CYAN}=== 服务器初始化与安全加固 ===${NC}"
         echo -e "  [1] ${BOLD}${YELLOW}一键全自动优化${NC} (执行以下所有项)"
-        echo -e "  [2] 设置系统时区 (Asia/Shanghai)"
-        echo -e "  [3] 修改 SSH 端口 (支持 1-65535)"
-        echo -e "  [4] 安装进阶 Fail2ban (双重防护 + 自动白名单)"
-        echo -e "  [5] 系统升级与内核优化 (BBR + Swap)"
+        echo -e "  [2] 系统升级与内核优化 (BBR + Swap)"
+        echo -e "  [3] 设置系统时区 (Asia/Shanghai)"
+        echo -e "  [4] 修改 SSH 端口 (支持 1-65535)"
+        echo -e "  [5] 安装进阶 Fail2ban (双重防护 + 自动白名单)"
         echo -e "  [6] ${RED}立即重启服务器${NC}"
         echo -e "  [0] 返回主菜单"
         echo -e "------------------------------"
@@ -744,10 +743,10 @@ run_initialization() {
                 fn_reboot_system
                 read -rp "按 Enter 返回..." < /dev/tty
                 ;;
-            2) fn_set_timezone; sleep 1 ;;
-            3) fn_change_ssh_port; sleep 1 ;;
-            4) fn_install_fail2ban; sleep 2 ;;
-            5) fn_system_upgrade_optimize; sleep 2 ;;
+            2) fn_system_upgrade_optimize; sleep 2 ;;
+            3) fn_set_timezone; sleep 1 ;;
+            4) fn_change_ssh_port; sleep 1 ;;
+            5) fn_install_fail2ban; sleep 2 ;;
             6) fn_reboot_system; sleep 1 ;;
             0) break ;;
             *) log_warn "无效输入"; sleep 1 ;;
