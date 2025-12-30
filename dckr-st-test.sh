@@ -220,32 +220,62 @@ run_system_cleanup() {
 
 
 create_dynamic_swap() {
-    if [ -f /swapfile ]; then
-        log_info "Swap 文件 /swapfile 已存在，跳过创建。"
-        return 0
-    fi
-
     local mem_total_mb
     mem_total_mb=$(free -m | awk '/^Mem:/{print $2}')
 
-    local swap_size_mb
-    local swap_size_display
-
+    # 设定目标 Swap 大小
+    local target_swap_mb
     if [ "$mem_total_mb" -lt 1024 ]; then
-        swap_size_mb=$((mem_total_mb * 2))
+        target_swap_mb=$((mem_total_mb * 2))
     else
-        swap_size_mb=2048
+        target_swap_mb=2048
     fi
 
-    swap_size_display=$(echo "scale=1; $swap_size_mb / 1024" | bc | sed 's/^\./0./')G
+    # 1. 先暂时关闭脚本可能创建过的旧 swapfile，以便准确计算原生 Swap
+    if [ -f /swapfile ]; then
+        swapoff /swapfile 2>/dev/null || true
+    fi
 
-    log_action "检测到物理内存为 ${mem_total_mb}MB，将创建 ${swap_size_display} 的 Swap 文件..."
-    fallocate -l "${swap_size_mb}M" /swapfile
+    # 2. 获取当前系统剩余的 Swap（通常是原生分区）
+    local native_swap_mb
+    native_swap_mb=$(free -m | awk '/^Swap:/{print $2}')
+
+    if [ "$native_swap_mb" -ge "$target_swap_mb" ]; then
+        log_success "检测到系统原生 Swap (${native_swap_mb}MB) 已超过或等于目标容量 (${target_swap_mb}MB)。"
+        log_info "无需额外配置，将跳过创建补足文件以节省硬盘空间。"
+        # 如果之前有旧的 swapfile 且现在不需要了，清理掉
+        if [ -f /swapfile ]; then
+            rm -f /swapfile
+            sed -i '/\/swapfile/d' /etc/fstab
+        fi
+        return 0
+    fi
+
+    # 3. 计算需要补足的差额
+    local needed_mb=$((target_swap_mb - native_swap_mb))
+    local needed_display
+    needed_display=$(echo "scale=1; $needed_mb / 1024" | bc | sed 's/^\./0./')G
+
+    log_info "当前物理内存: ${mem_total_mb}MB | 原生 Swap: ${native_swap_mb}MB"
+    log_action "将创建 ${needed_display} 的补足文件，使总 Swap 达到约 $(($target_swap_mb / 1024))G..."
+
+    # 4. 创建/更新补足文件
+    if ! fallocate -l "${needed_mb}M" /swapfile 2>/dev/null; then
+        dd if=/dev/zero of=/swapfile bs=1M count="$needed_mb" status=progress
+    fi
+    
     chmod 600 /swapfile
     mkswap /swapfile
     swapon /swapfile
-    echo '/swapfile none swap sw 0 0' >> /etc/fstab
-    log_success "Swap 文件创建、启用并已设置为开机自启。"
+
+    # 5. 确保开机自启条目唯一
+    if ! grep -q "/swapfile" /etc/fstab; then
+        echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    fi
+
+    local final_swap
+    final_swap=$(free -m | awk '/^Swap:/{print $2}')
+    log_success "Swap 优化完成！当前总 Swap 容量: ${final_swap}MB (原生分区 + 补足文件)。"
 }
 
 fn_set_timezone() {
@@ -265,6 +295,11 @@ fn_change_ssh_port() {
     if ! [[ "$NEW_SSH_PORT" =~ ^[0-9]+$ ]] || [ "$NEW_SSH_PORT" -lt 1 ] || [ "$NEW_SSH_PORT" -gt 65535 ]; then
         log_warn "输入无效。端口号必须是 1-65535 之间的数字。"
         return 1
+    fi
+
+    if [ "$NEW_SSH_PORT" -eq "$current_port" ]; then
+        log_info "新端口与当前端口一致，无需修改。"
+        return 0
     fi
 
     if [ "$NEW_SSH_PORT" -lt 1024 ]; then
@@ -317,7 +352,14 @@ fn_install_fail2ban() {
     local ssh_port=$(fn_get_ssh_port)
     local current_ip=$(fn_get_current_ip)
     log_info "检测到当前 SSH 端口: ${YELLOW}${ssh_port}${NC}"
-    log_info "检测到您的连接 IP: ${YELLOW}${current_ip}${NC} (将自动加入白名单)"
+    
+    local ignore_ips="127.0.0.1/8 ::1"
+    if [ -n "$current_ip" ]; then
+        log_info "检测到您的连接 IP: ${YELLOW}${current_ip}${NC} (将自动加入白名单)"
+        ignore_ips="${ignore_ips} ${current_ip}"
+    else
+        log_warn "未能检测到远程连接 IP，仅添加本地回环到白名单。"
+    fi
 
     # 1. 创建自定义过滤器 (针对 systemd journal)
     log_info "配置自定义过滤器: /etc/fail2ban/filter.d/sshd-systemd.conf"
@@ -343,7 +385,7 @@ findtime = 10m
 maxretry = 5
 banaction = iptables-multiport
 action = %(action_)s
-ignoreip = 127.0.0.1/8 ::1 ${current_ip}
+ignoreip = ${ignore_ips}
 
 [sshd]
 enabled = true
@@ -445,15 +487,20 @@ fn_system_upgrade_optimize() {
     DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
     
     log_action "正在优化内核参数 (BBR)..."
+    # 清理旧配置并删除末尾可能存在的重复空行
     sed -i -e '/net.core.default_qdisc=fq/d' \
            -e '/net.ipv4.tcp_congestion_control=bbr/d' \
            -e '/vm.swappiness=10/d' /etc/sysctl.conf
+    
+    # 确保文件末尾有且只有一个空行，然后追加配置
+    sed -i '${/^$/d;}' /etc/sysctl.conf
     cat <<EOF >> /etc/sysctl.conf
+
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 vm.swappiness=10
 EOF
-    sysctl -p
+    sysctl -p > /dev/null 2>&1 || true
     
     create_dynamic_swap
     log_success "系统升级与内核优化完成。"
