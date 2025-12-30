@@ -565,7 +565,7 @@ systemctl is-active --quiet fail2ban && echo -e "${GREEN}运行中${NC}" || echo
 
 # 显示当前白名单
 if command -v fail2ban-client &> /dev/null; then
-    local white_list=$(fail2ban-client get sshd ignoreip 2>/dev/null)
+    white_list=$(fail2ban-client get sshd ignoreip 2>/dev/null)
     echo -e "${CYAN}当前白名单 (ignoreip): ${NC}${white_list:-未设置}"
 fi
 
@@ -595,7 +595,7 @@ fn_fail2ban_manager() {
     while true; do
         tput reset
         echo -e "${BLUE}=== Fail2ban 运维管理 ===${NC}"
-        echo -e "  [1] 查看详细封禁报告 (含白名单)"
+        echo -e "  [1] 查看详细封禁报告"
         echo -e "  [2] 查看实时拦截日志 (Ctrl+C 退出)"
         echo -e "  [3] 手动解封指定 IP"
         echo -e "  [4] 手动封禁指定 IP"
@@ -700,6 +700,19 @@ EOF
     log_success "系统升级与内核优化完成。"
 }
 
+fn_reboot_system() {
+    echo -e "\n${RED}================================================================${NC}"
+    log_warn "系统即将重启，您的 SSH 连接将会断开。"
+    echo -e "${RED}================================================================${NC}"
+    read -rp "确定要立即重启吗？[y/N]: " confirm_reboot < /dev/tty
+    if [[ "$confirm_reboot" =~ ^[Yy]$ ]]; then
+        log_action "正在重启系统..."
+        reboot
+    else
+        log_info "已取消重启。请记得稍后手动重启以使所有配置（如 BBR/内核更新）生效。"
+    fi
+}
+
 run_initialization() {
     while true; do
         tput reset
@@ -709,24 +722,33 @@ run_initialization() {
         echo -e "  [3] 修改 SSH 端口 (支持 1-65535)"
         echo -e "  [4] 安装进阶 Fail2ban (双重防护 + 自动白名单)"
         echo -e "  [5] 系统升级与内核优化 (BBR + Swap)"
+        echo -e "  [6] ${RED}立即重启服务器${NC}"
         echo -e "  [0] 返回主菜单"
         echo -e "------------------------------"
-        read -rp "请输入选项 [0-5]: " init_choice < /dev/tty
+        read -rp "请输入选项 [0-6]: " init_choice < /dev/tty
         
         case $init_choice in
             1)
                 fn_check_base_deps
+                fn_system_upgrade_optimize
                 fn_set_timezone
                 fn_change_ssh_port || true
                 fn_install_fail2ban
-                fn_system_upgrade_optimize
-                log_success "一键全自动优化完成！建议重启服务器。"
+                log_success "一键全自动优化完成！"
+                
+                if [ -f /var/run/reboot-required ]; then
+                    log_warn "检测到系统需要重启以应用内核更新或配置。"
+                else
+                    log_info "为了确保所有优化（如 BBR 和内核参数）完全生效，建议重启。"
+                fi
+                fn_reboot_system
                 read -rp "按 Enter 返回..." < /dev/tty
                 ;;
             2) fn_set_timezone; sleep 1 ;;
             3) fn_change_ssh_port; sleep 1 ;;
             4) fn_install_fail2ban; sleep 2 ;;
             5) fn_system_upgrade_optimize; sleep 2 ;;
+            6) fn_reboot_system; sleep 1 ;;
             0) break ;;
             *) log_warn "无效输入"; sleep 1 ;;
         esac
