@@ -21,17 +21,28 @@ fi
 # --- -------------------------- ---
 
 fn_ssh_rollback() {
+    local failed_port=$1
     echo -e "\033[33m[警告] 检测到新SSH端口连接失败，正在执行回滚操作...\033[0m"
+    
+    # 1. 恢复配置文件
     if [ -f /etc/ssh/sshd_config.bak ]; then
-        mv /etc/ssh/sshd_config.bak /etc/ssh/sshd_config
+        cp -f /etc/ssh/sshd_config.bak /etc/ssh/sshd_config
         # 清理可能存在的 .d 配置文件
         [ -f /etc/ssh/sshd_config.d/99-gugu-ssh.conf ] && rm -f /etc/ssh/sshd_config.d/99-gugu-ssh.conf
         systemctl restart sshd
-        echo -e "\033[32m[成功] SSH配置已恢复到修改前状态。端口恢复正常。\033[0m"
+        echo -e "\033[32m[成功] SSH 配置文件已恢复到修改前状态。\033[0m"
     else
-        log_error "未找到备份文件 /etc/ssh/sshd_config.bak，无法自动回滚。"
+        log_warn "未找到备份文件 /etc/ssh/sshd_config.bak，无法自动恢复配置。"
     fi
-    echo -e "\033[34m[提示] 脚本将退出。请检查防火墙/NAT映射设置后重试。\033[0m"
+
+    # 2. 同步清理 UFW 规则
+    if [ -n "$failed_port" ] && systemctl is-active --quiet ufw; then
+        log_info "正在从 UFW 中移除失败的端口规则 (${failed_port})..."
+        ufw delete allow "$failed_port/tcp" 2>/dev/null || true
+        ufw --force reload
+    fi
+
+    echo -e "\033[34m[提示] SSH 端口修改已回滚。请检查防火墙/NAT映射设置后重试。\033[0m"
 }
 
 # 获取当前 SSH 端口
@@ -388,6 +399,14 @@ fn_change_ssh_port() {
     
     log_action "正在重启 SSH 服务以应用新端口 ${NEW_SSH_PORT}..."
     systemctl restart sshd
+
+    # --- 关键修复：在测试前放行 UFW 端口 ---
+    if systemctl is-active --quiet ufw; then
+        log_info "检测到 UFW 活跃，正在临时放行新端口 ${NEW_SSH_PORT} 以供测试..."
+        ufw allow "$NEW_SSH_PORT/tcp"
+        ufw --force reload
+    fi
+    # ------------------------------------
     
     echo -e "\n${BLUE}╔═══════════════════════ SSH 端口连接测试 ═══════════════════════╗${NC}"
     echo -e "║                                                                ║"
@@ -432,7 +451,7 @@ fn_change_ssh_port() {
             systemctl restart fail2ban
         fi
     else
-        fn_ssh_rollback
+        fn_ssh_rollback "$NEW_SSH_PORT"
         return 1
     fi
 }
@@ -460,9 +479,9 @@ fn_install_ufw() {
     log_info "正在放行当前 SSH 端口 (${ssh_port})..."
     ufw allow "${ssh_port}/tcp"
     
-    echo -e "\n${YELLOW}[警告] 启用 UFW 后，除 SSH 外的所有入站连接将被拦截。${NC}"
-    echo -e "如果您使用的是云服务器，请确保云控制台安全组也已放行对应端口。"
-    read -rp "确定要立即启用 UFW 吗？[y/N]: " confirm_ufw < /dev/tty
+    echo -e "\n${YELLOW}[安全提示] 启用 UFW 后，本地防火墙将接管端口管理。${NC}"
+    echo -e "脚本已自动放行当前的 SSH 端口，开启后不会导致掉线。"
+    read -rp "确定要立即启用 UFW 本地防火墙吗？[y/N]: " confirm_ufw < /dev/tty
     if [[ "$confirm_ufw" =~ ^[Yy]$ ]]; then
         log_action "正在启用 UFW..."
         ufw --force enable
@@ -855,14 +874,18 @@ run_initialization() {
                 fn_system_upgrade_optimize
                 fn_set_timezone
                 
-                echo -e "\n${CYAN}--- 防火墙配置 ---${NC}"
-                echo -e "如果您使用的是云厂商面板（如阿里云安全组），可以跳过 UFW。"
-                read -rp "是否需要安装并启用 UFW 防火墙？[y/N]: " confirm_ufw_all < /dev/tty
+                echo -e "\n${CYAN}--- 本地防火墙配置 ---${NC}"
+                echo -e "如果您使用的是无面板防火墙的服务器（如部分海外 VPS），建议开启 UFW。"
+                echo -e "若已有云厂商面板（如阿里云安全组），则无需重复开启。"
+                read -rp "是否需要安装并启用 UFW 本地防火墙？[y/N]: " confirm_ufw_all < /dev/tty
                 if [[ "$confirm_ufw_all" =~ ^[Yy]$ ]]; then
                     fn_install_ufw
                 fi
 
-                fn_change_ssh_port || true
+                if ! fn_change_ssh_port; then
+                    log_error "SSH 端口修改失败并已回滚。为确保安全，一键优化流程已中止。"
+                fi
+
                 fn_install_fail2ban
                 log_success "一键全自动优化完成！"
                 
