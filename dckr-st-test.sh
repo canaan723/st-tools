@@ -473,6 +473,7 @@ action = %(action_)s
 ignoreip = ${ignore_ips}
 
 [sshd]
+# 密码防爆破 (针对多次输错密码)
 enabled = true
 filter = sshd
 port = ${ssh_port}
@@ -484,12 +485,13 @@ journalmatch = _SYSTEMD_UNIT=ssh.service + _COMM=sshd
 action = iptables-multiport[name=SSH, port="%(port)s", protocol=tcp]
 
 [sshd-aggressive]
+# 恶意扫描拦截 (针对非法用户试探、扫描器探测)
 enabled = true
 filter = sshd-systemd
 port = ${ssh_port}
 maxretry = 2
 findtime = 300
-bantime = 86400
+bantime = 604800
 backend = systemd
 journalmatch = _SYSTEMD_UNIT=ssh.service + _COMM=sshd
 action = iptables-multiport[name=SSH-AGG, port="%(port)s", protocol=tcp]
@@ -504,6 +506,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 RED='\033[0;31m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
 seconds_to_readable() {
@@ -556,19 +559,21 @@ show_jail_status() {
 }
 
 echo -e "${BLUE}========== Fail2ban 状态报告 $(date) ==========${NC}"
+
+echo -e "\n${YELLOW}1. 服务状态：${NC}"
+systemctl is-active --quiet fail2ban && echo -e "${GREEN}运行中${NC}" || echo -e "${RED}未运行${NC}"
+
 # 显示当前白名单
 if command -v fail2ban-client &> /dev/null; then
     local white_list=$(fail2ban-client get sshd ignoreip 2>/dev/null)
     echo -e "${CYAN}当前白名单 (ignoreip): ${NC}${white_list:-未设置}"
 fi
 
-echo -e "\n${YELLOW}1. 服务状态：${NC}"
-systemctl is-active --quiet fail2ban && echo -e "${GREEN}运行中${NC}" || echo -e "${RED}未运行${NC}"
 echo -e "\n${YELLOW}2. 活跃的 jail：${NC}"
 fail2ban-client status
 echo
-show_jail_status "sshd" "3. SSH 标准保护状态"
-show_jail_status "sshd-aggressive" "4. SSH 激进保护状态"
+show_jail_status "sshd" "3. 密码防爆破状态 (sshd)"
+show_jail_status "sshd-aggressive" "4. 恶意扫描拦截状态 (sshd-aggressive)"
 echo -e "${YELLOW}5. 今日攻击统计：${NC}"
 count=$(journalctl _SYSTEMD_UNIT=ssh.service --since today | grep -E "(Failed password|Invalid user)" | wc -l)
 echo "攻击次数：$count"
@@ -590,13 +595,12 @@ fn_fail2ban_manager() {
     while true; do
         tput reset
         echo -e "${BLUE}=== Fail2ban 运维管理 ===${NC}"
-        echo -e "  [1] 查看详细封禁报告"
+        echo -e "  [1] 查看详细封禁报告 (含白名单)"
         echo -e "  [2] 查看实时拦截日志 (Ctrl+C 退出)"
         echo -e "  [3] 手动解封指定 IP"
         echo -e "  [4] 手动封禁指定 IP"
         echo -e "  [5] 修改封禁时长 (小时)"
-        echo -e "  [6] 查看当前白名单 IP"
-        echo -e "  [7] 重启 Fail2ban 服务"
+        echo -e "  [6] 重启 Fail2ban 服务"
         echo -e "  [0] 返回上一级"
         echo -e "------------------------"
         read -rp "请输入选项: " f2b_choice < /dev/tty
@@ -617,31 +621,44 @@ fn_fail2ban_manager() {
                 sleep 2
                 ;;
             5)
+                echo -e "\n${CYAN}--- 修改封禁时长 ---${NC}"
+                echo -e "  [1] 仅修改: 密码防爆破 (sshd)"
+                echo -e "  [2] 仅修改: 恶意扫描拦截 (sshd-aggressive)"
+                echo -e "  [3] 同时修改全部"
+                echo -e "  [0] 取消"
+                read -rp "请选择: " time_choice < /dev/tty
+                
+                local target_jails=()
+                case $time_choice in
+                    1) target_jails=("sshd") ;;
+                    2) target_jails=("sshd-aggressive") ;;
+                    3) target_jails=("sshd" "sshd-aggressive") ;;
+                    *) continue ;;
+                esac
+
                 read -rp "请输入新的封禁时长 (小时，输入 -1 为永久): " ban_hours < /dev/tty
+                local ban_seconds
                 if [[ "$ban_hours" == "-1" ]]; then
-                    local ban_seconds="-1"
+                    ban_seconds="-1"
                 elif [[ "$ban_hours" =~ ^[0-9]+$ ]]; then
-                    local ban_seconds=$((ban_hours * 3600))
+                    ban_seconds=$((ban_hours * 3600))
                 else
                     log_warn "输入无效。"
                     sleep 1
                     continue
                 fi
-                fail2ban-client set sshd bantime $ban_seconds
-                fail2ban-client set sshd-aggressive bantime $ban_seconds
-                # 同步更新配置文件
-                sed -i "s/bantime = .*/bantime = $ban_seconds/" /etc/fail2ban/jail.local
-                log_success "封禁时长已更新为 ${ban_hours} 小时 (运行时已生效并保存配置)。"
+
+                for jail in "${target_jails[@]}"; do
+                    fail2ban-client set "$jail" bantime "$ban_seconds"
+                    # 同步更新配置文件中对应 jail 的 bantime
+                    # 使用 sed 匹配 jail 块并替换其下的 bantime
+                    sed -i "/\[$jail\]/,/\[/ s/bantime = .*/bantime = $ban_seconds/" /etc/fail2ban/jail.local
+                done
+                
+                log_success "封禁时长已更新 (运行时已生效并保存配置)。"
                 sleep 2
                 ;;
-            6)
-                local white_list=$(fail2ban-client get sshd ignoreip 2>/dev/null)
-                echo -e "\n${CYAN}当前生效的白名单 IP:${NC}"
-                echo -e "${YELLOW}${white_list:-未设置}${NC}"
-                echo -e "\n${BLUE}提示: 重新运行安装脚本可自动将当前 IP 加入白名单。${NC}"
-                read -rp "按 Enter 继续..." < /dev/tty
-                ;;
-            7) systemctl restart fail2ban; log_success "服务已重启"; sleep 1 ;;
+            6) systemctl restart fail2ban; log_success "服务已重启"; sleep 1 ;;
             0) break ;;
         esac
     done
@@ -692,12 +709,9 @@ run_initialization() {
         echo -e "  [3] 修改 SSH 端口 (支持 1-65535)"
         echo -e "  [4] 安装进阶 Fail2ban (双重防护 + 自动白名单)"
         echo -e "  [5] 系统升级与内核优化 (BBR + Swap)"
-        if command -v fail2ban-client &> /dev/null; then
-            echo -e "  [6] ${GREEN}Fail2ban 运维管理${NC}"
-        fi
         echo -e "  [0] 返回主菜单"
         echo -e "------------------------------"
-        read -rp "请输入选项 [0-6]: " init_choice < /dev/tty
+        read -rp "请输入选项 [0-5]: " init_choice < /dev/tty
         
         case $init_choice in
             1)
@@ -713,14 +727,6 @@ run_initialization() {
             3) fn_change_ssh_port; sleep 1 ;;
             4) fn_install_fail2ban; sleep 2 ;;
             5) fn_system_upgrade_optimize; sleep 2 ;;
-            6)
-                if command -v fail2ban-client &> /dev/null; then
-                    fn_fail2ban_manager
-                else
-                    log_warn "请先执行选项 [4] 安装 Fail2ban。"
-                    sleep 2
-                fi
-                ;;
             0) break ;;
             *) log_warn "无效输入"; sleep 1 ;;
         esac
