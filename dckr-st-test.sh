@@ -24,6 +24,8 @@ fn_ssh_rollback() {
     echo -e "\033[33m[警告] 检测到新SSH端口连接失败，正在执行回滚操作...\033[0m"
     if [ -f /etc/ssh/sshd_config.bak ]; then
         mv /etc/ssh/sshd_config.bak /etc/ssh/sshd_config
+        # 清理可能存在的 .d 配置文件
+        [ -f /etc/ssh/sshd_config.d/99-gugu-ssh.conf ] && rm -f /etc/ssh/sshd_config.d/99-gugu-ssh.conf
         systemctl restart sshd
         echo -e "\033[32m[成功] SSH配置已恢复到修改前状态。端口恢复正常。\033[0m"
     else
@@ -316,18 +318,27 @@ fn_change_ssh_port() {
         if [[ ! "$confirm_low" =~ ^[Yy]$ ]]; then return 1; fi
     fi
 
-    log_action "正在修改配置文件 /etc/ssh/sshd_config..."
+    log_action "正在修改 SSH 端口配置..."
     # 备份主配置文件
     cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
     
-    # 逻辑优化：
-    # 1. 如果主文件里有 Port 定义（无论是否被注释），则替换它
-    # 2. 如果主文件里完全没有 Port 定义（可能在 Include 里），则在文件开头添加
-    if grep -qE '^#? *Port [0-9]+' /etc/ssh/sshd_config; then
-        sed -i "s/^#\? *Port [0-9]\+/Port $NEW_SSH_PORT/" /etc/ssh/sshd_config
+    # 现代管理方式：优先使用 sshd_config.d 目录
+    if [ -d /etc/ssh/sshd_config.d ] && grep -qE "^Include /etc/ssh/sshd_config.d/\*.conf" /etc/ssh/sshd_config; then
+        log_info "检测到支持 sshd_config.d 目录，将使用现代管理方式。"
+        # 1. 注释掉主文件中的所有 Port 定义，防止冲突
+        sed -i 's/^\s*Port /#Port /g' /etc/ssh/sshd_config
+        # 2. 在子目录创建独立配置文件
+        echo "Port $NEW_SSH_PORT" | sudo tee /etc/ssh/sshd_config.d/99-gugu-ssh.conf > /dev/null
     else
-        # 在第一行非注释行前插入，或者直接在文件开头插入
-        sed -i "1iPort $NEW_SSH_PORT" /etc/ssh/sshd_config
+        log_info "使用传统方式修改 /etc/ssh/sshd_config。"
+        # 传统方式：
+        # 1. 如果主文件里有 Port 定义（无论是否被注释），则替换它
+        # 2. 如果主文件里完全没有 Port 定义，则在文件开头添加
+        if grep -qE '^#? *Port [0-9]+' /etc/ssh/sshd_config; then
+            sed -i "s/^#\? *Port [0-9]\+/Port $NEW_SSH_PORT/" /etc/ssh/sshd_config
+        else
+            sed -i "1iPort $NEW_SSH_PORT" /etc/ssh/sshd_config
+        fi
     fi
     
     log_action "正在重启 SSH 服务以应用新端口 ${NEW_SSH_PORT}..."
@@ -366,6 +377,9 @@ fn_install_fail2ban() {
     
     log_action "正在安装 Fail2ban 及依赖..."
     apt-get update
+    # 预设 debconf 选项，消除 iptables-persistent 的交互弹窗
+    echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
+    echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
     apt-get install -y fail2ban iptables-persistent
     
     local ssh_port=$(fn_get_ssh_port)
@@ -506,13 +520,22 @@ fn_system_upgrade_optimize() {
     DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
     
     log_action "正在优化内核参数 (BBR)..."
-    # 清理旧配置并删除末尾可能存在的重复空行
+    # 确保 /etc/sysctl.conf 存在，防止 sed 报错
+    if [ ! -f /etc/sysctl.conf ]; then
+        log_info "/etc/sysctl.conf 不存在，正在创建..."
+        touch /etc/sysctl.conf
+    fi
+
+    # 清理旧配置
     sed -i -e '/net.core.default_qdisc=fq/d' \
            -e '/net.ipv4.tcp_congestion_control=bbr/d' \
            -e '/vm.swappiness=10/d' /etc/sysctl.conf
     
     # 确保文件末尾有且只有一个空行，然后追加配置
-    sed -i '${/^$/d;}' /etc/sysctl.conf
+    if [ -s /etc/sysctl.conf ]; then
+        sed -i '${/^$/d;}' /etc/sysctl.conf
+    fi
+
     cat <<EOF >> /etc/sysctl.conf
 
 net.core.default_qdisc=fq
@@ -930,9 +953,7 @@ fn_get_public_ip() {
     COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
     
     fn_check_dependencies
-
     fn_check_existing_container
-
     fn_optimize_docker
     
     SERVER_IP=$(fn_get_public_ip)
@@ -963,7 +984,7 @@ fn_get_public_ip() {
     esac
 
     local default_parent_path="$USER_HOME"
-    read -rp "安装路径: SillyTavern 将被安装在 <上级目录>/sillytavern 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
+    read -rp "安装路径: SillyTavern 将被安装 in <上级目录>/sillytavern 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
     local parent_path="${custom_parent_path:-$default_parent_path}"
     INSTALL_DIR="${parent_path}/sillytavern"
     log_info "安装路径最终设置为: ${INSTALL_DIR}"
@@ -1232,6 +1253,86 @@ main_menu() {
                 ;;
         esac
     done
+}
+
+run_initialization() {
+    while true; do
+        tput reset
+        echo -e "${CYAN}=== 服务器初始化与安全加固 ===${NC}"
+        echo -e "  [1] ${BOLD}${YELLOW}一键全自动优化${NC} (执行以下所有项)"
+        echo -e "  [2] 设置系统时区 (Asia/Shanghai)"
+        echo -e "  [3] 修改 SSH 端口 (支持 1-65535)"
+        echo -e "  [4] 安装进阶 Fail2ban (双重防护 + 自动白名单)"
+        echo -e "  [5] 系统升级与内核优化 (BBR + Swap)"
+        if command -v fail2ban-client &> /dev/null; then
+            echo -e "  [6] ${GREEN}Fail2ban 运维管理${NC}"
+        fi
+        echo -e "  [0] 返回主菜单"
+        echo -e "------------------------------"
+        read -rp "请输入选项 [0-6]: " init_choice < /dev/tty
+        
+        case $init_choice in
+            1)
+                fn_check_base_deps
+                fn_set_timezone
+                fn_change_ssh_port || true
+                fn_install_fail2ban
+                fn_system_upgrade_optimize
+                log_success "一键全自动优化完成！建议重启服务器。"
+                read -rp "按 Enter 返回..." < /dev/tty
+                ;;
+            2) fn_set_timezone; sleep 1 ;;
+            3) fn_change_ssh_port; sleep 1 ;;
+            4) fn_install_fail2ban; sleep 2 ;;
+            5) fn_system_upgrade_optimize; sleep 2 ;;
+            6)
+                if command -v fail2ban-client &> /dev/null; then
+                    fn_fail2ban_manager
+                else
+                    log_warn "请先执行选项 [4] 安装 Fail2ban。"
+                    sleep 2
+                fi
+                ;;
+            0) break ;;
+            *) log_warn "无效输入"; sleep 1 ;;
+        esac
+    done
+}
+
+fn_system_upgrade_optimize() {
+    log_step "系统升级与内核优化" "BBR + Swap + Upgrade"
+    
+    log_action "正在更新包列表并升级软件包..."
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
+    
+    log_action "正在优化内核参数 (BBR)..."
+    # 确保 /etc/sysctl.conf 存在，防止 sed 报错
+    if [ ! -f /etc/sysctl.conf ]; then
+        log_info "/etc/sysctl.conf 不存在，正在创建..."
+        touch /etc/sysctl.conf
+    fi
+
+    # 清理旧配置
+    sed -i -e '/net.core.default_qdisc=fq/d' \
+           -e '/net.ipv4.tcp_congestion_control=bbr/d' \
+           -e '/vm.swappiness=10/d' /etc/sysctl.conf
+    
+    # 确保文件末尾有且只有一个空行，然后追加配置
+    if [ -s /etc/sysctl.conf ]; then
+        sed -i '${/^$/d;}' /etc/sysctl.conf
+    fi
+
+    cat <<EOF >> /etc/sysctl.conf
+
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+vm.swappiness=10
+EOF
+    sysctl -p > /dev/null 2>&1 || true
+    
+    create_dynamic_swap
+    log_success "系统升级与内核优化完成。"
 }
 
 main_menu
