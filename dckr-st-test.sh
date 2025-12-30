@@ -35,7 +35,15 @@ fn_ssh_rollback() {
 # 获取当前 SSH 端口
 fn_get_ssh_port() {
     local port
-    port=$(grep -E '^ *Port [0-9]+' /etc/ssh/sshd_config | awk '{print $2}' | head -n1)
+    # 优先使用 sshd -T 获取实际生效的配置（支持 Include 目录）
+    port=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' | head -n1)
+    
+    # 如果 sshd -T 失败，回退到主配置文件搜索
+    if [ -z "$port" ]; then
+        port=$(grep -E '^ *Port [0-9]+' /etc/ssh/sshd_config | awk '{print $2}' | head -n1)
+    fi
+    
+    # 最终默认值为 22
     echo "${port:-22}"
 }
 
@@ -309,7 +317,18 @@ fn_change_ssh_port() {
     fi
 
     log_action "正在修改配置文件 /etc/ssh/sshd_config..."
-    sed -i.bak "s/^#\?Port [0-9]\+/Port $NEW_SSH_PORT/" /etc/ssh/sshd_config
+    # 备份主配置文件
+    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+    
+    # 逻辑优化：
+    # 1. 如果主文件里有 Port 定义（无论是否被注释），则替换它
+    # 2. 如果主文件里完全没有 Port 定义（可能在 Include 里），则在文件开头添加
+    if grep -qE '^#? *Port [0-9]+' /etc/ssh/sshd_config; then
+        sed -i "s/^#\? *Port [0-9]\+/Port $NEW_SSH_PORT/" /etc/ssh/sshd_config
+    else
+        # 在第一行非注释行前插入，或者直接在文件开头插入
+        sed -i "1iPort $NEW_SSH_PORT" /etc/ssh/sshd_config
+    fi
     
     log_action "正在重启 SSH 服务以应用新端口 ${NEW_SSH_PORT}..."
     systemctl restart sshd
