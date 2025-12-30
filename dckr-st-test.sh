@@ -401,6 +401,22 @@ fn_change_ssh_port() {
     if [[ "$choice" =~ ^[Yy]$ ]]; then
         log_success "确认新端口可用。SSH 端口已成功更换为 ${NEW_SSH_PORT}！"
         
+        # --- UFW 协同逻辑 ---
+        if systemctl is-active --quiet ufw; then
+            log_info "检测到 UFW 活跃，正在同步更新规则..."
+            ufw allow "$NEW_SSH_PORT/tcp"
+            # 循环关闭旧端口
+            IFS=',' read -ra ADDR <<< "$current_ports"
+            for old_port in "${ADDR[@]}"; do
+                if [ "$old_port" != "$NEW_SSH_PORT" ]; then
+                    ufw delete allow "$old_port/tcp" 2>/dev/null || true
+                fi
+            done
+            ufw --force reload
+            log_success "UFW 规则已同步。"
+        fi
+        # -------------------
+
         # 计算需要关闭的旧端口（排除掉新端口）
         local ports_to_close=$(echo "$current_ports" | tr ',' '\n' | grep -v "^$NEW_SSH_PORT$" | paste -sd "," -)
         
@@ -421,15 +437,104 @@ fn_change_ssh_port() {
     fi
 }
 
+fn_install_ufw() {
+    log_step "安装并配置 UFW 防火墙" "本地安全加固"
+    
+    if ! command -v ufw &> /dev/null; then
+        log_action "正在安装 UFW..."
+        apt-get update
+        apt-get install -y ufw
+    else
+        log_info "UFW 已安装。"
+    fi
+
+    local ssh_port=$(fn_get_ssh_port)
+    log_info "当前 SSH 端口为: ${YELLOW}${ssh_port}${NC}"
+    
+    log_action "正在配置基础规则..."
+    # 默认策略
+    ufw default deny incoming
+    ufw default allow outgoing
+    
+    # 关键：防锁死，先放行当前 SSH 端口
+    log_info "正在放行当前 SSH 端口 (${ssh_port})..."
+    ufw allow "${ssh_port}/tcp"
+    
+    echo -e "\n${YELLOW}[警告] 启用 UFW 后，除 SSH 外的所有入站连接将被拦截。${NC}"
+    echo -e "如果您使用的是云服务器，请确保云控制台安全组也已放行对应端口。"
+    read -rp "确定要立即启用 UFW 吗？[y/N]: " confirm_ufw < /dev/tty
+    if [[ "$confirm_ufw" =~ ^[Yy]$ ]]; then
+        log_action "正在启用 UFW..."
+        ufw --force enable
+        log_success "UFW 已启用并设置为开机自启。"
+    else
+        log_info "已取消启用 UFW。规则已预设，您可以稍后手动执行 'ufw enable'。"
+    fi
+}
+
+fn_ufw_manager() {
+    while true; do
+        tput reset
+        echo -e "${BLUE}=== UFW 防火墙运维管理 ===${NC}"
+        local status=$(ufw status | head -n 1)
+        echo -e "当前状态: ${CYAN}${status}${NC}"
+        echo -e "------------------------"
+        echo -e "  [1] 查看详细规则列表"
+        echo -e "  [2] 启用防火墙"
+        echo -e "  [3] 禁用防火墙"
+        echo -e "  [4] 放行指定端口 (TCP)"
+        echo -e "  [5] 删除指定端口规则"
+        echo -e "  [6] 查看被 Fail2ban 封禁的 IP"
+        echo -e "  [0] 返回主菜单"
+        echo -e "------------------------"
+        read -rp "请输入选项: " ufw_choice < /dev/tty
+        case $ufw_choice in
+            1) ufw status numbered; read -rp "按 Enter 继续..." < /dev/tty ;;
+            2) ufw --force enable; sleep 1 ;;
+            3) ufw disable; sleep 1 ;;
+            4)
+                read -rp "请输入要放行的端口号: " p_allow < /dev/tty
+                if [[ "$p_allow" =~ ^[0-9]+$ ]]; then
+                    ufw allow "$p_allow/tcp"
+                    log_success "端口 $p_allow 已放行。"
+                else
+                    log_warn "无效输入。"
+                fi
+                sleep 2
+                ;;
+            5)
+                ufw status numbered
+                read -rp "请输入要删除的规则编号 (左侧数字): " r_num < /dev/tty
+                if [[ "$r_num" =~ ^[0-9]+$ ]]; then
+                    ufw --force delete "$r_num"
+                    log_success "规则已删除。"
+                else
+                    log_warn "无效输入。"
+                fi
+                sleep 2
+                ;;
+            6)
+                echo -e "\n${RED}--- 当前被 UFW 拦截的 IP (由 Fail2ban 触发) ---${NC}"
+                ufw status | grep "DENY" || echo "当前无封禁记录。"
+                read -rp "按 Enter 继续..." < /dev/tty
+                ;;
+            0) break ;;
+        esac
+    done
+}
+
 fn_install_fail2ban() {
     log_step "安装/更新进阶版 Fail2ban" "双重防护体系"
     
-    log_action "正在安装 Fail2ban 及依赖..."
+    log_action "正在安装 Fail2ban..."
     apt-get update
-    # 预设 debconf 选项，消除 iptables-persistent 的交互弹窗
-    echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
-    echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
-    apt-get install -y fail2ban iptables-persistent
+    apt-get install -y fail2ban
+    
+    # 移除可能冲突的旧组件
+    if dpkg -l | grep -q iptables-persistent; then
+        log_info "检测到 iptables-persistent，正在移除以避免与 UFW 冲突..."
+        apt-get purge -y iptables-persistent
+    fi
     
     local ssh_port=$(fn_get_ssh_port)
     local current_ip=$(fn_get_current_ip)
@@ -470,12 +575,21 @@ EOF
 
     # 2. 创建主配置文件 jail.local
     log_info "配置防护规则: /etc/fail2ban/jail.local"
+    
+    local f2b_action="iptables-multiport"
+    if systemctl is-active --quiet ufw; then
+        log_info "检测到 UFW 活跃，Fail2ban 将使用 UFW 动作。"
+        f2b_action="ufw"
+    else
+        log_info "UFW 未启用，Fail2ban 将使用标准 iptables 动作。"
+    fi
+
     cat > /etc/fail2ban/jail.local << EOF
 [DEFAULT]
 bantime = 86400
 findtime = 600
 maxretry = 5
-banaction = iptables-multiport
+banaction = ${f2b_action}
 action = %(action_)s
 ignoreip = ${ignore_ips}
 
@@ -489,7 +603,7 @@ findtime = 600
 bantime = 86400
 backend = systemd
 journalmatch = _SYSTEMD_UNIT=ssh.service + _COMM=sshd
-action = iptables-multiport[name=SSH, port="%(port)s", protocol=tcp]
+action = ${f2b_action}[name=SSH, port="%(port)s", protocol=tcp]
 
 [sshd-aggressive]
 # 恶意扫描拦截 (针对非法用户试探、扫描器探测)
@@ -501,7 +615,7 @@ findtime = 300
 bantime = 604800
 backend = systemd
 journalmatch = _SYSTEMD_UNIT=ssh.service + _COMM=sshd
-action = iptables-multiport[name=SSH-AGG, port="%(port)s", protocol=tcp]
+action = ${f2b_action}[name=SSH-AGG, port="%(port)s", protocol=tcp]
 EOF
 
     # 3. 创建状态监控脚本
@@ -727,18 +841,27 @@ run_initialization() {
         echo -e "  [1] ${BOLD}${YELLOW}一键全自动优化${NC} (执行以下所有项)"
         echo -e "  [2] 系统升级与内核优化 (BBR + Swap)"
         echo -e "  [3] 设置系统时区 (Asia/Shanghai)"
-        echo -e "  [4] 修改 SSH 端口 (支持 1-65535)"
-        echo -e "  [5] 安装进阶 Fail2ban (双重防护 + 自动白名单)"
-        echo -e "  [6] ${RED}立即重启服务器${NC}"
+        echo -e "  [4] 安装并启用 UFW 防火墙 (建议无面板防火墙时使用)"
+        echo -e "  [5] 修改 SSH 端口 (支持 1-65535)"
+        echo -e "  [6] 安装进阶 Fail2ban (双重防护 + 自动白名单)"
+        echo -e "  [7] ${RED}立即重启服务器${NC}"
         echo -e "  [0] 返回主菜单"
         echo -e "------------------------------"
-        read -rp "请输入选项 [0-6]: " init_choice < /dev/tty
+        read -rp "请输入选项 [0-7]: " init_choice < /dev/tty
         
         case $init_choice in
             1)
                 fn_check_base_deps
                 fn_system_upgrade_optimize
                 fn_set_timezone
+                
+                echo -e "\n${CYAN}--- 防火墙配置 ---${NC}"
+                echo -e "如果您使用的是云厂商面板（如阿里云安全组），可以跳过 UFW。"
+                read -rp "是否需要安装并启用 UFW 防火墙？[y/N]: " confirm_ufw_all < /dev/tty
+                if [[ "$confirm_ufw_all" =~ ^[Yy]$ ]]; then
+                    fn_install_ufw
+                fi
+
                 fn_change_ssh_port || true
                 fn_install_fail2ban
                 log_success "一键全自动优化完成！"
@@ -753,9 +876,10 @@ run_initialization() {
                 ;;
             2) fn_system_upgrade_optimize; sleep 2 ;;
             3) fn_set_timezone; sleep 1 ;;
-            4) fn_change_ssh_port; sleep 1 ;;
-            5) fn_install_fail2ban; sleep 2 ;;
-            6) fn_reboot_system; sleep 1 ;;
+            4) fn_install_ufw; sleep 2 ;;
+            5) fn_change_ssh_port; sleep 1 ;;
+            6) fn_install_fail2ban; sleep 2 ;;
+            7) fn_reboot_system; sleep 1 ;;
             0) break ;;
             *) log_warn "无效输入"; sleep 1 ;;
         esac
@@ -1308,6 +1432,14 @@ EOF
     fi
     fn_verify_container_health "$CONTAINER_NAME"
     fn_wait_for_service
+
+    # --- UFW 协同逻辑 ---
+    if systemctl is-active --quiet ufw; then
+        log_info "检测到 UFW 活跃，正在自动放行 8000 端口..."
+        ufw allow 8000/tcp
+    fi
+    # -------------------
+
     fn_display_final_info
 
     while true; do
@@ -1364,6 +1496,10 @@ main_menu() {
             echo -e " ${GREEN}[4] Fail2ban 运维管理${NC}"
         fi
 
+        if command -v ufw &> /dev/null; then
+            echo -e " ${GREEN}[6] UFW 防火墙运维管理${NC}"
+        fi
+
         echo -e "---------------------------------------------------------------------------"
 
         if [ "$IS_DEBIAN_LIKE" = true ]; then
@@ -1412,6 +1548,14 @@ main_menu() {
                     fn_fail2ban_manager
                 else
                     log_warn "未检测到 Fail2ban，请先在初始化菜单中安装。"
+                    sleep 2
+                fi
+                ;;
+            6)
+                if command -v ufw &> /dev/null; then
+                    fn_ufw_manager
+                else
+                    log_warn "未检测到 UFW，请先在初始化菜单中安装。"
                     sleep 2
                 fi
                 ;;
