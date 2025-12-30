@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# 咕咕助手 v2.2
+# 咕咕助手 v2.3test
 # 作者: 清绝 | 网址: blog.qjyg.de
 #
 # Copyright (c) 2025 清绝 (QingJue) <blog.qjyg.de>
@@ -22,10 +22,28 @@ fi
 
 fn_ssh_rollback() {
     echo -e "\033[33m[警告] 检测到新SSH端口连接失败，正在执行回滚操作...\033[0m"
-    mv /etc/ssh/sshd_config.bak /etc/ssh/sshd_config
-    systemctl restart sshd
-    echo -e "\033[32m[成功] SSH配置已恢复到修改前状态。端口恢复正常。\033[0m"
+    if [ -f /etc/ssh/sshd_config.bak ]; then
+        mv /etc/ssh/sshd_config.bak /etc/ssh/sshd_config
+        systemctl restart sshd
+        echo -e "\033[32m[成功] SSH配置已恢复到修改前状态。端口恢复正常。\033[0m"
+    else
+        log_error "未找到备份文件 /etc/ssh/sshd_config.bak，无法自动回滚。"
+    fi
     echo -e "\033[34m[提示] 脚本将退出。请检查云服务商的防火墙/NAT映射设置后重试。\033[0m"
+}
+
+# 获取当前 SSH 端口
+fn_get_ssh_port() {
+    local port
+    port=$(grep -E '^ *Port [0-9]+' /etc/ssh/sshd_config | awk '{print $2}' | head -n1)
+    echo "${port:-22}"
+}
+
+# 获取当前连接 IP
+fn_get_current_ip() {
+    local current_ip
+    current_ip=$(echo "$SSH_CLIENT" | awk '{print $1}')
+    echo "$current_ip"
 }
 
 set -e
@@ -58,7 +76,7 @@ log_step() { echo -e "\n${BLUE}--- $1: $2 ---${NC}"; }
 log_success() { echo -e "${GREEN}✓ $1${NC}"; }
 
 fn_show_main_header() {
-    echo -e "${YELLOW}>>${GREEN} 咕咕助手 v2.2${NC}"
+    echo -e "${YELLOW}>>${GREEN} 咕咕助手 v2.3test${NC}"
     echo -e "   ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
 }
 
@@ -230,115 +248,259 @@ create_dynamic_swap() {
     log_success "Swap 文件创建、启用并已设置为开机自启。"
 }
 
-
-run_initialization() {
-    tput reset
-    echo -e "${CYAN}即将执行【服务器初始化】流程...${NC}"
-    
-    fn_check_base_deps
-
-    log_step "步骤 1" "配置云服务商安全组"
-    log_info "执行前，必须在云服务商控制台完成安全组/防火墙配置。"
-    log_info "需放行以下两个TCP端口的入站流量："
-    echo -e "  - ${YELLOW}22${NC}: 当前SSH连接使用的端口。"
-    echo -e "  - ${YELLOW}一个新的高位端口${NC}: 范围 ${GREEN}49152-65535${NC}，将用作新SSH端口。"
-    log_warn "若新SSH端口未在安全组放行，脚本执行后将导致SSH无法连接。"
-    read -rp "确认已完成上述配置后，按 Enter 键继续。" < /dev/tty
-
-    log_step "步骤 2" "设置系统时区"
-    log_action "正在设置时区为 Asia/Shanghai..."
+fn_set_timezone() {
+    log_step "设置系统时区" "Asia/Shanghai"
     timedatectl set-timezone Asia/Shanghai
     log_success "时区设置完成。当前系统时间: $(date +"%Y-%m-%d %H:%M:%S")"
+}
 
-    log_step "步骤 3" "修改SSH服务端口"
-    log_info "目的: 更改默认22端口，降低被自动化攻击的风险。"
-    read -rp "请输入新的SSH端口号 (范围 49152 - 65535): " NEW_SSH_PORT < /dev/tty
-    if ! [[ "$NEW_SSH_PORT" =~ ^[0-9]+$ ]] || [ "$NEW_SSH_PORT" -lt 49152 ] || [ "$NEW_SSH_PORT" -gt 65535 ]; then
-        log_error "输入无效。端口号必须是 49152-65535 之间的数字。"
+fn_change_ssh_port() {
+    log_step "修改 SSH 服务端口" "增强安全性"
+    local current_port=$(fn_get_ssh_port)
+    log_info "当前 SSH 端口: ${YELLOW}${current_port}${NC}"
+    
+    log_info "执行前，请确保已在云服务商控制台放行新端口。"
+    read -rp "请输入新的 SSH 端口号 (1-65535): " NEW_SSH_PORT < /dev/tty
+    
+    if ! [[ "$NEW_SSH_PORT" =~ ^[0-9]+$ ]] || [ "$NEW_SSH_PORT" -lt 1 ] || [ "$NEW_SSH_PORT" -gt 65535 ]; then
+        log_warn "输入无效。端口号必须是 1-65535 之间的数字。"
+        return 1
     fi
+
+    if [ "$NEW_SSH_PORT" -lt 1024 ]; then
+        log_warn "您输入的是低位端口 (${NEW_SSH_PORT})，容易被扫描，建议使用 49152-65535 之间的高位端口。"
+        read -rp "确定要继续吗？[y/N]: " confirm_low < /dev/tty
+        if [[ ! "$confirm_low" =~ ^[Yy]$ ]]; then return 1; fi
+    fi
+
     log_action "正在修改配置文件 /etc/ssh/sshd_config..."
     sed -i.bak "s/^#\?Port [0-9]\+/Port $NEW_SSH_PORT/" /etc/ssh/sshd_config
-    log_success "SSH端口已在配置中更新为 ${NEW_SSH_PORT}。"
-
-    log_step "步骤 4" "安装Fail2ban"
-    log_info "目的: 自动阻止有恶意登录企图的IP地址。"
-    log_action "正在更新包列表并安装 Fail2ban..."
-    apt-get update
-    apt-get install -y fail2ban
-    systemctl enable --now fail2ban
-    log_success "Fail2ban 安装并配置为开机自启。"
-
-    log_step "步骤 5" "应用并验证新的SSH端口"
-    log_action "正在重启SSH服务以应用新端口 ${NEW_SSH_PORT}..."
+    
+    log_action "正在重启 SSH 服务以应用新端口 ${NEW_SSH_PORT}..."
     systemctl restart sshd
-    log_info "SSH服务已重启。现在必须验证新端口的连通性。"
-
+    
     echo -e "\033[0;34m----------------------------------------------------------------\033[0m"
     echo -e "\033[1;33m[重要] 请立即打开一个新的终端窗口，使用新端口 ${NEW_SSH_PORT} 尝试连接服务器。\033[0m"
     echo -e "\033[0;34m----------------------------------------------------------------\033[0m"
 
-while true; do
-    read -p "新端口是否连接成功？ [直接回车]=成功并继续 / [输入N再回车]=失败并恢复: " choice < /dev/tty
-    case $choice in
-        "" | [Yy]* )
-            echo -e "\033[0;32m[成功] 确认新端口可用。SSH端口已成功更换为 ${NEW_SSH_PORT}！\033[0m"
-            break
-            ;;
-        [Nn]* )
-            fn_ssh_rollback
-            exit 1
-            ;;
-        * )
-            echo -e "\033[0;31m无效输入。请直接按【回车键】确认成功，或输入【N】并回车进行恢复。\033[0m"
-            ;;
-    esac
+    while true; do
+        read -p "新端口是否连接成功？ [直接回车]=成功并继续 / [输入N再回车]=失败并恢复: " choice < /dev/tty
+        case $choice in
+            "" | [Yy]* )
+                log_success "确认新端口可用。SSH 端口已成功更换为 ${NEW_SSH_PORT}！"
+                # 如果安装了 Fail2ban，自动更新其监听端口
+                if command -v fail2ban-client &> /dev/null; then
+                    log_info "检测到 Fail2ban，正在同步更新其监听端口..."
+                    sed -i "s/^port = .*/port = $NEW_SSH_PORT/" /etc/fail2ban/jail.local
+                    systemctl restart fail2ban
+                fi
+                break
+                ;;
+            [Nn]* )
+                fn_ssh_rollback
+                return 1
+                ;;
+            * )
+                echo -e "${RED}无效输入。请直接按【回车键】确认成功，或输入【N】并回车进行恢复。${NC}"
+                ;;
+        esac
+    done
+}
+
+fn_install_fail2ban() {
+    log_step "安装进阶版 Fail2ban" "双重防护体系"
+    
+    log_action "正在安装 Fail2ban 及依赖..."
+    apt-get update
+    apt-get install -y fail2ban iptables-persistent
+    
+    local ssh_port=$(fn_get_ssh_port)
+    local current_ip=$(fn_get_current_ip)
+    log_info "检测到当前 SSH 端口: ${YELLOW}${ssh_port}${NC}"
+    log_info "检测到您的连接 IP: ${YELLOW}${current_ip}${NC} (将自动加入白名单)"
+
+    # 1. 创建自定义过滤器 (针对 systemd journal)
+    log_info "配置自定义过滤器: /etc/fail2ban/filter.d/sshd-systemd.conf"
+    cat > /etc/fail2ban/filter.d/sshd-systemd.conf << 'EOF'
+[Definition]
+failregex = ^.*sshd\[\d+\]:\s+Failed password for .* from <HOST> port \d+ ssh2?$
+            ^.*sshd\[\d+\]:\s+Invalid user .* from <HOST> port \d+.*$
+            ^.*sshd\[\d+\]:\s+Disconnected from authenticating user .* <HOST> port \d+ \[preauth\]$
+            ^.*sshd\[\d+\]:\s+Received disconnect from <HOST> port \d+:11: Bye Bye \[preauth\]$
+            ^.*sshd\[\d+\]:\s+Connection closed by <HOST> port \d+ \[preauth\]$
+            ^.*sshd\[\d+\]:\s+Disconnected from invalid user .* <HOST> port \d+ \[preauth\]$
+ignoreregex = ^.*sshd\[\d+\]:\s+Accepted .* from <HOST> port \d+ .*$
+[INCLUDES]
+before = common.conf
+EOF
+
+    # 2. 创建主配置文件 jail.local
+    log_info "配置防护规则: /etc/fail2ban/jail.local"
+    cat > /etc/fail2ban/jail.local << EOF
+[DEFAULT]
+bantime = 1h
+findtime = 10m
+maxretry = 5
+banaction = iptables-multiport
+action = %(action_)s
+ignoreip = 127.0.0.1/8 ::1 ${current_ip}
+
+[sshd]
+enabled = true
+filter = sshd
+port = ${ssh_port}
+maxretry = 3
+findtime = 10m
+bantime = 40d
+backend = systemd
+journalmatch = _SYSTEMD_UNIT=ssh.service + _COMM=sshd
+action = iptables-multiport[name=SSH, port="%(port)s", protocol=tcp]
+
+[sshd-aggressive]
+enabled = true
+filter = sshd-systemd
+port = ${ssh_port}
+maxretry = 2
+findtime = 5m
+bantime = 40d
+backend = systemd
+journalmatch = _SYSTEMD_UNIT=ssh.service + _COMM=sshd
+action = iptables-multiport[name=SSH-AGG, port="%(port)s", protocol=tcp]
+EOF
+
+    # 3. 创建状态监控脚本
+    log_info "创建监控脚本: /usr/local/bin/fail2ban-status.sh"
+    cat > /usr/local/bin/fail2ban-status.sh << 'EOF'
+#!/bin/bash
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+echo -e "${BLUE}========== Fail2ban 状态报告 $(date) ==========${NC}"
+echo -e "${YELLOW}1. 服务状态：${NC}"
+systemctl is-active --quiet fail2ban && echo -e "${GREEN}运行中${NC}" || echo -e "${RED}未运行${NC}"
+
+echo -e "\n${YELLOW}2. 活跃的防护监狱 (Jails)：${NC}"
+fail2ban-client status
+
+for jail in $(fail2ban-client status | grep "Jail list" | sed 's/.*list://' | tr ',' ' '); do
+    echo -e "\n${CYAN}--- Jail: $jail ---${NC}"
+    fail2ban-client status $jail
 done
 
-    log_step "步骤 6" "升级系统软件包"
-    log_info "目的: 应用最新的安全补丁和软件更新。"
-    log_action "正在执行系统升级，此过程可能需要一些时间，请耐心等待..."
-    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
-    log_success "所有软件包已升级至最新版本。"
+echo -e "\n${YELLOW}3. 今日攻击 IP 排行 (前5)：${NC}"
+journalctl _SYSTEMD_UNIT=ssh.service --since today | grep -E "(Failed password|Invalid user)" | grep -oP 'from \K[0-9.]+' | sort | uniq -c | sort -nr | head -5
 
-    log_step "步骤 7" "优化内核参数并创建Swap"
-    log_info "目的: 启用BBR优化网络，并创建Swap防止内存溢出。"
-    log_action "正在向 /etc/sysctl.conf 添加配置..."
-    if [ ! -f /etc/sysctl.conf ]; then
-        echo "[INFO] /etc/sysctl.conf 不存在，正在创建..."
-        touch /etc/sysctl.conf
-    fi
+echo -e "\n${GREEN}========== 报告结束 ==========${NC}"
+EOF
+    chmod +x /usr/local/bin/fail2ban-status.sh
+
+    systemctl enable --now fail2ban
+    systemctl restart fail2ban
+    log_success "Fail2ban 进阶防护已开启！"
+    log_info "您可以使用 ${YELLOW}sudo /usr/local/bin/fail2ban-status.sh${NC} 查看实时报告。"
+}
+
+fn_fail2ban_manager() {
+    while true; do
+        tput reset
+        echo -e "${BLUE}=== Fail2ban 运维管理 ===${NC}"
+        echo -e "  [1] 查看详细封禁报告"
+        echo -e "  [2] 查看实时拦截日志 (Ctrl+C 退出)"
+        echo -e "  [3] 手动解封指定 IP"
+        echo -e "  [4] 手动封禁指定 IP"
+        echo -e "  [5] 重启 Fail2ban 服务"
+        echo -e "  [0] 返回上一级"
+        echo -e "------------------------"
+        read -rp "请输入选项: " f2b_choice < /dev/tty
+        case $f2b_choice in
+            1) /usr/local/bin/fail2ban-status.sh; read -rp "按 Enter 继续..." < /dev/tty ;;
+            2) tail -f /var/log/fail2ban.log ;;
+            3)
+                read -rp "请输入要解封的 IP: " unban_ip < /dev/tty
+                fail2ban-client set sshd unbanip $unban_ip
+                fail2ban-client set sshd-aggressive unbanip $unban_ip
+                log_success "解封指令已发送。"
+                sleep 2
+                ;;
+            4)
+                read -rp "请输入要封禁的 IP: " ban_ip < /dev/tty
+                fail2ban-client set sshd banip $ban_ip
+                log_success "封禁指令已发送。"
+                sleep 2
+                ;;
+            5) systemctl restart fail2ban; log_success "服务已重启"; sleep 1 ;;
+            0) break ;;
+        esac
+    done
+}
+
+fn_system_upgrade_optimize() {
+    log_step "系统升级与内核优化" "BBR + Swap + Upgrade"
+    
+    log_action "正在更新包列表并升级软件包..."
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
+    
+    log_action "正在优化内核参数 (BBR)..."
     sed -i -e '/net.core.default_qdisc=fq/d' \
            -e '/net.ipv4.tcp_congestion_control=bbr/d' \
            -e '/vm.swappiness=10/d' /etc/sysctl.conf
     cat <<EOF >> /etc/sysctl.conf
-
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 vm.swappiness=10
 EOF
-    log_success "内核参数配置完成。"
-
-    create_dynamic_swap
-
-    log_step "步骤 8" "应用配置并准备重启"
-    log_action "正在应用内核参数..."
     sysctl -p
-    log_info "所有配置已写入。服务器需要重启以使所有更改完全生效。"
-    read -n 1 -r -p "是否立即重启服务器? [Y/n] " REPLY < /dev/tty
-    echo
+    
+    create_dynamic_swap
+    log_success "系统升级与内核优化完成。"
+}
 
-    log_step "步骤 9" "重启后操作指南"
-    log_info "服务器重启后，使用新端口 ${GREEN}${NEW_SSH_PORT}${NC} 成功登录，然后再次运行本脚本选择【步骤2】。"
-    echo -e "  - ${YELLOW}验证(可选):${NC} 执行 'sudo sysctl net.ipv4.tcp_congestion_control && free -h' 检查BBR和Swap。"
-    echo -e "  - ${YELLOW}安全(重要):${NC} 确认一切正常后，需登录云平台，从安全组中${BOLD}移除旧的22端口规则${NC}。"
-
-    if [[ -z "$REPLY" || "$REPLY" =~ ^[Yy]$ ]]; then
-        log_info "服务器将立即重启..."
-        reboot
-        exit 0
-    else
-        log_info "已选择稍后重启。请在方便时手动执行 'sudo reboot'。"
-    fi
+run_initialization() {
+    while true; do
+        tput reset
+        echo -e "${CYAN}=== 服务器初始化与安全加固 ===${NC}"
+        echo -e "  [1] ${BOLD}${YELLOW}一键全自动优化${NC} (执行以下所有项)"
+        echo -e "  [2] 设置系统时区 (Asia/Shanghai)"
+        echo -e "  [3] 修改 SSH 端口 (支持 1-65535)"
+        echo -e "  [4] 安装进阶 Fail2ban (双重防护 + 自动白名单)"
+        echo -e "  [5] 系统升级与内核优化 (BBR + Swap)"
+        if command -v fail2ban-client &> /dev/null; then
+            echo -e "  [6] ${GREEN}Fail2ban 运维管理${NC}"
+        fi
+        echo -e "  [0] 返回主菜单"
+        echo -e "------------------------------"
+        read -rp "请输入选项 [0-6]: " init_choice < /dev/tty
+        
+        case $init_choice in
+            1)
+                fn_check_base_deps
+                fn_set_timezone
+                fn_change_ssh_port || true
+                fn_install_fail2ban
+                fn_system_upgrade_optimize
+                log_success "一键全自动优化完成！建议重启服务器。"
+                read -rp "按 Enter 返回..." < /dev/tty
+                ;;
+            2) fn_set_timezone; sleep 1 ;;
+            3) fn_change_ssh_port; sleep 1 ;;
+            4) fn_install_fail2ban; sleep 2 ;;
+            5) fn_system_upgrade_optimize; sleep 2 ;;
+            6)
+                if command -v fail2ban-client &> /dev/null; then
+                    fn_fail2ban_manager
+                else
+                    log_warn "请先执行选项 [4] 安装 Fail2ban。"
+                    sleep 2
+                fi
+                ;;
+            0) break ;;
+            *) log_warn "无效输入"; sleep 1 ;;
+        esac
+    done
 }
 
 install_1panel() {
