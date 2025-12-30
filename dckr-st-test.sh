@@ -776,7 +776,6 @@ install_1panel() {
 
     log_step "步骤 1/3" "运行 1Panel 官方安装脚本"
     log_warn "即将进入 1Panel 交互式安装界面，需根据其提示操作。"
-    read -rp "按 Enter 键开始..." < /dev/tty
     bash -c "$(curl -sSL https://resource.fit2cloud.com/1panel/package/v2/quick_start.sh)" < /dev/tty
     
     log_step "步骤 2/3" "检查并确保 Docker 已安装"
@@ -1386,7 +1385,6 @@ main_menu() {
                 if [ "$IS_DEBIAN_LIKE" = true ]; then
                     check_root
                     run_initialization
-                    read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
                 else
                     log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"
                     sleep 2
