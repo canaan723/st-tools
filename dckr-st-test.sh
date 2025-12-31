@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# 咕咕助手 v2.3test
+# 咕咕助手
 # 作者: 清绝 | 网址: blog.qjyg.de
 #
 # Copyright (c) 2025 清绝 (QingJue) <blog.qjyg.de>
@@ -121,6 +121,7 @@ fn_get_current_ip() {
 set -e
 set -o pipefail
 
+readonly SCRIPT_VERSION="v2.3test2"
 readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[1;33m'
 readonly RED='\033[0;31m'
@@ -148,7 +149,7 @@ log_step() { echo -e "\n${BLUE}--- $1: $2 ---${NC}"; }
 log_success() { echo -e "${GREEN}✓ $1${NC}"; }
 
 fn_show_main_header() {
-    echo -e "${YELLOW}>>${GREEN} 咕咕助手 v2.3test${NC}"
+    echo -e "${YELLOW}>>${GREEN} 咕咕助手 ${SCRIPT_VERSION}${NC}"
     echo -e "   ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
 }
 
@@ -779,7 +780,7 @@ fn_fail2ban_manager() {
         read -rp "请输入选项: " f2b_choice < /dev/tty
         case $f2b_choice in
             1) /usr/local/bin/fail2ban-status.sh; read -rp "按 Enter 继续..." < /dev/tty ;;
-            2) tail -f /var/log/fail2ban.log ;;
+            2) (trap 'exit 0' INT; tail -f /var/log/fail2ban.log) ;;
             3)
                 read -rp "请输入要解封的 IP: " unban_ip < /dev/tty
                 fail2ban-client set sshd unbanip $unban_ip
@@ -1507,7 +1508,7 @@ EOF
         read -p "请输入选项: " choice < /dev/tty
         case "$choice" in
             1) fn_check_and_explain_status "$CONTAINER_NAME";;
-            2) echo -e "\n${YELLOW}--- 实时日志 (按 Ctrl+C 停止) ---${NC}"; docker logs -f "$CONTAINER_NAME" || true;;
+            2) echo -e "\n${YELLOW}--- 实时日志 (按 Ctrl+C 停止) ---${NC}"; (trap 'exit 0' INT; docker logs -f "$CONTAINER_NAME" || true);;
             3) fn_display_final_info;;
             q|Q) echo -e "\n已退出部署后菜单。"; break;;
             *) log_warn "无效输入，请输入 1, 2, 3 或 q。";;
@@ -1535,11 +1536,11 @@ main_menu() {
             echo -e "${YELLOW}╚═════════════════════════════════════════════════════════════════════════════╝${NC}"
         else
             echo -e "\n${BOLD}使用说明 (Debian/Ubuntu):${NC}"
-            echo -e "  • ${YELLOW}全新服务器${NC}: 请按 ${GREEN}1 -> 2 -> 3${NC} 的顺序分步执行。"
-            echo -e "  • ${YELLOW}已有Docker环境${NC}: 可直接从【步骤3】开始。"
+            echo -e "  • ${YELLOW}部署流程${NC}: 请按 ${GREEN}1 -> 2 -> 3${NC} 的顺序分步执行。"
+            echo -e "  • ${YELLOW}运维管理${NC}: 部署完成后，使用 ${GREEN}4, 5, 6${NC} 进行日常维护。"
         fi
 
-        echo -e "\n${BLUE}================================== 菜 单 ==================================${NC}"
+        echo -e "\n${BLUE}============================== [ 部署区域 ] ===============================${NC}"
         
         if [ "$IS_DEBIAN_LIKE" = true ]; then
             echo -e " ${GREEN}[1] 服务器初始化 (安全加固、系统优化)${NC}"
@@ -1548,10 +1549,10 @@ main_menu() {
         
         echo -e " ${GREEN}[3] 部署 SillyTavern (基于Docker)${NC}"
         
-        echo -e "---------------------------------------------------------------------------"
+        echo -e "\n${BLUE}============================== [ 运维区域 ] ===============================${NC}"
 
         if [ "$IS_DEBIAN_LIKE" = true ]; then
-            echo -e " ${CYAN}[4] 系统安全清理 (清理缓存和无用镜像)${NC}"
+            echo -e " ${GREEN}[4] 系统安全清理 (清理缓存和无用镜像)${NC}"
         fi
 
         if command -v fail2ban-client &> /dev/null; then
