@@ -13,6 +13,8 @@
 # 任何违反本协议的行为都将受到法律追究。
 
 # --- [核心配置] ---
+# 脚本版本号
+readonly SCRIPT_VERSION="v3.0test"
 # 模式切换: "test" (测试版) 或 "prod" (正式版)
 GUGU_MODE="test"
 
@@ -150,7 +152,6 @@ fn_get_current_ip() {
 # set -e  # 已移除全局退出设置，改为逻辑容错
 # set -o pipefail
 
-readonly SCRIPT_VERSION="v2.3test6"
 readonly GUGU_PATH="/usr/local/bin/$GUGU_COMMAND"
 readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[1;33m'
@@ -1561,10 +1562,30 @@ fn_get_public_ip() {
 
     fn_create_project_structure() {
         fn_print_info "正在创建项目目录结构..."
-        mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"
+        mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/third-party" "$INSTALL_DIR/config" "$INSTALL_DIR/.config"
         fn_print_info "正在设置文件所有权..."
         chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
         log_success "项目目录创建并授权成功！"
+    }
+
+    fn_create_git_sync_config() {
+        fn_print_info "正在创建 Git 同步配置文件 (.config/git_sync.conf)..."
+        mkdir -p "$INSTALL_DIR/.config"
+        cat <<EOF > "$INSTALL_DIR/.config/git_sync.conf"
+REPO_URL="仓库"
+REPO_TOKEN="令牌"
+GIT_USER_NAME="用户名"
+GIT_USER_EMAIL="邮箱"
+
+# --- 可选项 (高级同步规则，不懂可不填) ---
+# 是否同步 config.yaml 文件 (true / false)。默认为不同步。
+SYNC_CONFIG_YAML=""
+
+# 用户数据映射规则 ("本地用户名:云端用户名"，使用英文冒号分隔，默认用户名是 default-user)
+USER_MAP=""
+EOF
+        chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR/.config"
+        log_success "Git 同步配置文件创建成功！"
     }
 
     fn_pull_with_progress_bar() {
@@ -1778,7 +1799,7 @@ fn_get_public_ip() {
 
     if [[ "$run_mode" == "3" ]]; then
         fn_print_info "正在创建开发者模式项目目录结构..."
-        mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/public/scripts/extensions/third-party"
+        mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/third-party" "$INSTALL_DIR/config" "$INSTALL_DIR/.config"
         mkdir -p "$INSTALL_DIR/custom/images"
         touch "$INSTALL_DIR/custom/login.html"
         fn_print_info "正在设置文件所有权..."
@@ -1787,6 +1808,8 @@ fn_get_public_ip() {
     else
         fn_create_project_structure
     fi
+
+    fn_create_git_sync_config
 
     cd "$INSTALL_DIR"
     fn_print_info "工作目录已切换至: $(pwd)"
@@ -1807,12 +1830,12 @@ services:
     ports:
       - "${ST_PORT}:8000"
     volumes:
-      - "./:/home/node/app/config:Z"
-      - "./data:/home/node/app/data:Z"
-      - "./plugins:/home/node/app/plugins:Z"
-      - "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party:Z"
-      - "./custom/login.html:/home/node/app/public/login.html:Z"
-      - "./custom/images:/home/node/app/public/images:Z"
+      - "./config:/home/node/app/config:z"
+      - "./data:/home/node/app/data:z"
+      - "./plugins:/home/node/app/plugins:z"
+      - "./third-party:/home/node/app/public/scripts/extensions/third-party:z"
+      - "./custom/login.html:/home/node/app/public/login.html:z"
+      - "./custom/images:/home/node/app/public/images:z"
     restart: unless-stopped
 EOF
     else
@@ -1831,10 +1854,10 @@ services:
     ports:
       - "${ST_PORT}:8000"
     volumes:
-      - "./:/home/node/app/config:Z"
-      - "./data:/home/node/app/data:Z"
-      - "./plugins:/home/node/app/plugins:Z"
-      - "./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party:Z"
+      - "./config:/home/node/app/config:z"
+      - "./data:/home/node/app/data:z"
+      - "./plugins:/home/node/app/plugins:z"
+      - "./third-party:/home/node/app/public/scripts/extensions/third-party:z"
     restart: unless-stopped
 EOF
     fi
