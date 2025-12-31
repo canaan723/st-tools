@@ -12,11 +12,30 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-# --- [核心] 确保脚本由 Bash 执行 ---
+# --- [核心配置] ---
+# 模式切换: "test" (测试版) 或 "prod" (正式版)
+GUGU_MODE="test"
+
+if [ "$GUGU_MODE" = "prod" ]; then
+    readonly GUGU_COMMAND="gugu"
+    readonly GUGU_URL="https://gugu.qjyg.de/vps"
+else
+    readonly GUGU_COMMAND="gugutest"
+    readonly GUGU_URL="https://gugu.qjyg.de/vpstest"
+fi
+# ------------------
+
+# --- [核心] 确保脚本由 Bash 执行并自动提权 ---
 if [ -z "$BASH_VERSION" ]; then
     echo "错误: 此脚本需要使用 bash 解释器运行。" >&2
-    echo "请尝试使用: bash $0" >&2
+    echo "请尝试使用: bash <(curl -sL $GUGU_URL)" >&2
     exit 1
+fi
+
+# 自动请求 Root 权限
+if [ "$(id -u)" -ne 0 ]; then
+    echo -e "\033[33m[提示] 正在请求 Root 权限以继续...\033[0m"
+    exec sudo bash "$0" "$@"
 fi
 # --- -------------------------- ---
 
@@ -125,6 +144,7 @@ fn_get_current_ip() {
 # set -o pipefail
 
 readonly SCRIPT_VERSION="v2.3test6"
+readonly GUGU_PATH="/usr/local/bin/$GUGU_COMMAND"
 readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[1;33m'
 readonly RED='\033[0;31m'
@@ -150,6 +170,64 @@ log_error() { echo -e "\n${RED}[ERROR] $1${NC}\n"; return 1 2>/dev/null || exit 
 log_action() { echo -e "${YELLOW}[ACTION] $1${NC}"; }
 log_step() { echo -e "\n${BLUE}--- $1: $2 ---${NC}"; }
 log_success() { echo -e "${GREEN}✓ $1${NC}"; }
+
+# --- [核心功能] 自安装、自更新与卸载 ---
+fn_auto_install() {
+    # 如果当前运行路径不是目标路径，则执行安装
+    if [[ "$0" != "$GUGU_PATH" ]]; then
+        log_info "正在将脚本安装到系统路径 ($GUGU_PATH)..."
+        if [[ "$0" == "/dev/fd/"* ]] || [[ "$0" == "-" ]] || [[ ! -f "$0" ]]; then
+            # 处理通过 curl | bash 或进程替换运行的情况
+            if ! curl -sL "$GUGU_URL" -o "$GUGU_PATH"; then
+                log_error "安装失败：无法从网络下载脚本。" || return 1
+            fi
+        else
+            cp -f "$0" "$GUGU_PATH"
+        fi
+        chmod +x "$GUGU_PATH"
+        log_success "安装完成！现在你可以直接使用 '${YELLOW}$GUGU_COMMAND${NC}' 命令调用脚本。"
+    fi
+}
+
+fn_check_update() {
+    # 仅在已安装到系统路径时才在启动时检查更新，避免干扰初次安装
+    [[ "$0" != "$GUGU_PATH" ]] && return
+
+    log_info "正在检查版本更新..."
+    # 获取远程版本号 (匹配 readonly SCRIPT_VERSION="xxx")
+    local remote_version
+    remote_version=$(curl -sL "$GUGU_URL" | grep -oP 'readonly SCRIPT_VERSION="\K[^"]+' | head -n 1)
+    
+    if [ -n "$remote_version" ] && [ "$remote_version" != "$SCRIPT_VERSION" ]; then
+        echo -e "${YELLOW}[更新提示] 发现新版本: ${GREEN}$remote_version${NC} (当前: $SCRIPT_VERSION)"
+        read -rp "是否立即升级到最新版本？[Y/n]: " confirm_update < /dev/tty
+        if [[ "${confirm_update:-y}" =~ ^[Yy]$ ]]; then
+            log_action "正在下载并应用更新..."
+            if curl -sL "$GUGU_URL" -o "$GUGU_PATH"; then
+                log_success "更新成功！正在重启脚本..."
+                sleep 1
+                exec bash "$GUGU_PATH"
+            else
+                log_error "更新失败，请检查网络连接。"
+            fi
+        fi
+    else
+        log_success "当前已是最新版本 ($SCRIPT_VERSION)。"
+    fi
+}
+
+fn_uninstall_gugu() {
+    echo -e "\n${RED}警告：此操作将从系统中移除 '$GUGU_COMMAND' 命令。${NC}"
+    read -rp "确定要继续吗？[y/N]: " confirm_un < /dev/tty
+    if [[ "$confirm_un" =~ ^[Yy]$ ]]; then
+        rm -f "$GUGU_PATH"
+        log_success "脚本已成功从系统中移除。"
+        exit 0
+    else
+        log_info "操作已取消。"
+    fi
+}
+# ------------------------------------
 
 fn_show_main_header() {
     echo -e "${YELLOW}>>${GREEN} 咕咕助手 ${SCRIPT_VERSION}${NC}"
@@ -2038,6 +2116,9 @@ main_menu() {
             echo -e " ${GREEN}[9] 1Panel 运维管理${NC}"
         fi
 
+        echo -e " ${GREEN}[u] 检查脚本更新${NC}"
+        echo -e " ${RED}[x] 卸载本脚本${NC}"
+
         echo -e "${BLUE}===========================================================================${NC}"
         echo -e " ${YELLOW}[q] 退出脚本${NC}\n"
 
@@ -2049,13 +2130,12 @@ main_menu() {
                 options_str="${options_str},9"
             fi
         fi
-        local valid_options="${options_str},q"
+        local valid_options="${options_str},u,x,q"
         read -rp "请输入选项 [${valid_options}]: " choice < /dev/tty
 
         case "$choice" in
             1)
                 if [ "$IS_DEBIAN_LIKE" = true ]; then
-                    check_root || { read -rp "按 Enter 返回..." < /dev/tty; continue; }
                     run_initialization
                 else
                     log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"
@@ -2064,7 +2144,6 @@ main_menu() {
                 ;;
             2)
                 if [ "$IS_DEBIAN_LIKE" = true ]; then
-                    check_root || { read -rp "按 Enter 返回..." < /dev/tty; continue; }
                     install_1panel
                     while read -r -t 0.1; do :; done
                     read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
@@ -2074,7 +2153,6 @@ main_menu() {
                 fi
                 ;;
             3)
-                check_root || { read -rp "按 Enter 返回..." < /dev/tty; continue; }
                 install_sillytavern
                 while read -r -t 0.1; do :; done
                 read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
@@ -2091,7 +2169,6 @@ main_menu() {
                 ;;
             6)
                 if [ "$IS_DEBIAN_LIKE" = true ]; then
-                    check_root || { read -rp "按 Enter 返回..." < /dev/tty; continue; }
                     run_system_cleanup
                     while read -r -t 0.1; do :; done
                     read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
@@ -2124,6 +2201,14 @@ main_menu() {
                     sleep 2
                 fi
                 ;;
+            u|U)
+                fn_check_update
+                read -rp "按 Enter 返回..." < /dev/tty
+                ;;
+            x|X)
+                fn_uninstall_gugu
+                read -rp "按 Enter 返回..." < /dev/tty
+                ;;
             q|Q)
                 echo -e "\n感谢使用，再见！"; exit 0
                 ;;
@@ -2134,4 +2219,7 @@ main_menu() {
     done
 }
 
+# --- [启动逻辑] ---
+fn_auto_install
+fn_check_update
 main_menu
