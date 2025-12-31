@@ -422,12 +422,15 @@ fn_change_ssh_port() {
     log_info "当前生效的 SSH 端口: ${YELLOW}${current_ports}${NC}"
     
     log_info "执行前，请确保已在云服务商控制台放行新端口。"
-    read -rp "请输入新的 SSH 端口号 (1-65535): " NEW_SSH_PORT < /dev/tty
-    
-    if ! [[ "$NEW_SSH_PORT" =~ ^[0-9]+$ ]] || [ "$NEW_SSH_PORT" -lt 1 ] || [ "$NEW_SSH_PORT" -gt 65535 ]; then
-        log_warn "输入无效。端口号必须是 1-65535 之间的数字。"
-        return 1
-    fi
+    while true; do
+        read -rp "请输入新的 SSH 端口号 (1-65535，输入 q 取消): " NEW_SSH_PORT < /dev/tty
+        [[ "$NEW_SSH_PORT" == "q" ]] && return 1
+        if [[ "$NEW_SSH_PORT" =~ ^[0-9]+$ ]] && [ "$NEW_SSH_PORT" -ge 1 ] && [ "$NEW_SSH_PORT" -le 65535 ]; then
+            break
+        else
+            log_warn "输入无效。端口号必须是 1-65535 之间的数字。"
+        fi
+    done
 
     # 检查新端口是否已经在当前生效列表中
     if echo "$current_ports" | grep -qE "(^|,)$NEW_SSH_PORT(,|$)"; then
@@ -589,8 +592,8 @@ fn_ufw_manager() {
         echo -e "  [1] 查看详细规则列表"
         echo -e "  [2] 启用防火墙"
         echo -e "  [3] 禁用防火墙"
-        echo -e "  [4] 放行指定端口 (TCP)"
-        echo -e "  [5] 删除指定端口规则"
+        echo -e "  [4] 放行指定端口 (支持多协议)"
+        echo -e "  [5] 删除指定规则 (连续模式)"
         echo -e "  [6] 查看被 Fail2ban 封禁的 IP"
         echo -e "  [0] 返回主菜单"
         echo -e "------------------------"
@@ -601,24 +604,44 @@ fn_ufw_manager() {
             3) ufw disable; sleep 1 ;;
             4)
                 read -rp "请输入要放行的端口号: " p_allow < /dev/tty
-                if [[ "$p_allow" =~ ^[0-9]+$ ]]; then
-                    ufw allow "$p_allow/tcp"
-                    log_success "端口 $p_allow 已放行。"
+                if [[ "$p_allow" =~ ^[0-9]+$ ]] && [ "$p_allow" -ge 1 ] && [ "$p_allow" -le 65535 ]; then
+                    echo -e "选择协议: [1] TCP (默认)  [2] UDP  [3] TCP & UDP"
+                    read -rp "请输入选项 [1-3]: " p_proto < /dev/tty
+                    case ${p_proto:-1} in
+                        1) ufw allow "$p_allow/tcp"; log_success "端口 $p_allow/tcp 已放行。" ;;
+                        2) ufw allow "$p_allow/udp"; log_success "端口 $p_allow/udp 已放行。" ;;
+                        3) ufw allow "$p_allow"; log_success "端口 $p_allow (TCP/UDP) 已放行。" ;;
+                        *) log_warn "无效协议选项，默认放行 TCP。" ; ufw allow "$p_allow/tcp" ;;
+                    esac
                 else
-                    log_warn "无效输入。"
+                    log_warn "无效端口号，请输入 1-65535 之间的数字。"
                 fi
                 sleep 2
                 ;;
             5)
-                ufw status numbered
-                read -rp "请输入要删除的规则编号 (左侧数字): " r_num < /dev/tty
-                if [[ "$r_num" =~ ^[0-9]+$ ]]; then
-                    ufw --force delete "$r_num"
-                    log_success "规则已删除。"
-                else
-                    log_warn "无效输入。"
-                fi
-                sleep 2
+                while true; do
+                    tput reset
+                    echo -e "${BLUE}=== 删除 UFW 规则 (连续模式) ===${NC}"
+                    ufw status numbered
+                    echo -e "------------------------"
+                    echo -e "请输入要删除的规则编号 (${YELLOW}输入 0 返回${NC}): "
+                    read -rp "> " r_num < /dev/tty
+                    if [[ "$r_num" == "0" ]]; then
+                        break
+                    elif [[ "$r_num" =~ ^[0-9]+$ ]]; then
+                        # 尝试删除并捕获错误输出
+                        local delete_msg
+                        delete_msg=$(ufw --force delete "$r_num" 2>&1)
+                        if [[ $? -eq 0 ]]; then
+                            log_success "规则编号 $r_num 已成功删除。"
+                        else
+                            log_warn "删除失败: ${delete_msg}"
+                        fi
+                    else
+                        log_warn "无效输入，请输入数字编号。"
+                    fi
+                    sleep 1.5
+                done
                 ;;
             6)
                 echo -e "\n${RED}--- 当前被 UFW 拦截的 IP (由 Fail2ban 触发) ---${NC}"
@@ -826,7 +849,7 @@ fn_fail2ban_manager() {
         echo -e "${BLUE}=== Fail2ban 运维管理 ===${NC}"
         echo -e "  [1] 查看详细封禁报告"
         echo -e "  [2] 查看实时拦截日志 (Ctrl+C 退出)"
-        echo -e "  [3] 手动解封被封 IP (列表选择)"
+        echo -e "  [3] 手动解封被封 IP"
         echo -e "  [4] 手动封禁指定 IP"
         echo -e "  [5] 修改封禁时长 (小时)"
         echo -e "  [6] 重启 Fail2ban 服务"
@@ -1468,12 +1491,15 @@ fn_get_public_ip() {
     INSTALL_DIR="${parent_path}/sillytavern"
     log_info "安装路径最终设置为: ${INSTALL_DIR}"
 
-    read -rp "请输入酒馆访问端口 [默认 8000]: " ST_PORT < /dev/tty
-    ST_PORT=${ST_PORT:-8000}
-    if ! [[ "$ST_PORT" =~ ^[0-9]+$ ]] || [ "$ST_PORT" -lt 1 ] || [ "$ST_PORT" -gt 65535 ]; then
-        log_warn "端口无效，将使用默认端口 8000。"
-        ST_PORT=8000
-    fi
+    while true; do
+        read -rp "请输入酒馆访问端口 [默认 8000]: " ST_PORT < /dev/tty
+        ST_PORT=${ST_PORT:-8000}
+        if [[ "$ST_PORT" =~ ^[0-9]+$ ]] && [ "$ST_PORT" -ge 1 ] && [ "$ST_PORT" -le 65535 ]; then
+            break
+        else
+            log_warn "端口无效。请输入 1-65535 之间的数字。"
+        fi
+    done
 
     CONFIG_FILE="$INSTALL_DIR/config.yaml"
     COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
