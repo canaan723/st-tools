@@ -35,7 +35,14 @@ fi
 # 自动请求 Root 权限
 if [ "$(id -u)" -ne 0 ]; then
     echo -e "\033[33m[提示] 正在请求 Root 权限以继续...\033[0m"
-    exec sudo bash "$0" "$@"
+    # 如果是已安装的脚本或本地文件，则直接 sudo 运行
+    if [[ -f "$0" && "$0" != "/dev/fd/"* && "$0" != "bash" && "$0" != "sh" ]]; then
+        exec sudo bash "$0" "$@"
+    else
+        # 如果是通过管道或进程替换运行的，则重新下载并用 sudo 运行
+        # 这样用户就可以直接使用 bash <(curl ...) 而不需要手动加 sudo
+        exec curl -sL "$GUGU_URL" | sudo bash -s -- "$@"
+    fi
 fi
 # --- -------------------------- ---
 
