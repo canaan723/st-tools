@@ -1785,6 +1785,10 @@ EOF
 }
 
 fn_test_scripts_menu() {
+    # 清理输入缓冲区
+    while read -r -t 0.1; do :; done
+    
+    local test_choice
     while true; do
         tput reset
         echo -e "${BLUE}=== 常驻测试脚本 ===${NC}"
@@ -1793,7 +1797,7 @@ fn_test_scripts_menu() {
         echo -e "  [0] 返回主菜单"
         echo -e "------------------------"
         read -rp "请输入选项: " test_choice < /dev/tty
-        case $test_choice in
+        case "$test_choice" in
             1)
                 log_action "正在运行流媒体解锁测试..."
                 bash <(curl -L -s check.unlock.media)
@@ -1862,7 +1866,7 @@ fn_st_docker_manager() {
         echo -e "  [0] 返回主菜单"
         echo -e "------------------------"
         read -rp "请输入选项: " st_choice < /dev/tty
-        case $st_choice in
+        case "$st_choice" in
             1)
                 log_action "正在重启酒馆..."
                 cd "$project_dir" && $compose_cmd restart
@@ -1889,7 +1893,7 @@ fn_st_docker_manager() {
                 ;;
             6)
                 echo -e "\n${CYAN}--- 实时日志 (按 Ctrl+C 退出) ---${NC}"
-                cd "$project_dir" && $compose_cmd logs -f --tail 100
+                cd "$project_dir" && $compose_cmd logs -f --tail 1000
                 ;;
             0) break ;;
             *) log_warn "无效输入"; sleep 1 ;;
@@ -1924,24 +1928,24 @@ main_menu() {
         echo -e "\n${BLUE}============================== [ 部署区域 ] ===============================${NC}"
         
         if [ "$IS_DEBIAN_LIKE" = true ]; then
-            echo -e " ${GREEN}[1] 服务器初始化 (安全加固、系统优化)${NC}"
-            echo -e " ${GREEN}[2] 安装 1Panel 面板 (会自动安装Docker)${NC}"
+            echo -e " ${GREEN}[1] 服务器初始化${NC}"
+            echo -e " ${GREEN}[2] 安装 1Panel 面板${NC}"
         fi
         
-        echo -e " ${GREEN}[3] 部署 SillyTavern (基于Docker)${NC}"
+        echo -e " ${GREEN}[3] 部署 SillyTavern${NC}"
         
         echo -e "\n${BLUE}============================== [ 运维区域 ] ===============================${NC}"
 
-        echo -e " ${GREEN}[4] 测试脚本菜单 (流媒体解锁、综合测试)${NC}"
+        echo -e " ${GREEN}[4] 测试脚本${NC}"
 
         local show_st_manager=false
         if docker ps -a --format '{{.Names}}' | grep -q '^sillytavern$'; then
             show_st_manager=true
-            echo -e " ${GREEN}[5] 酒馆运维管理 (Docker 基础操作)${NC}"
+            echo -e " ${GREEN}[5] 酒馆运维管理${NC}"
         fi
 
         if [ "$IS_DEBIAN_LIKE" = true ]; then
-            echo -e " ${GREEN}[6] 系统安全清理 (清理缓存和无用镜像)${NC}"
+            echo -e " ${GREEN}[6] 系统安全清理${NC}"
         fi
 
         if command -v fail2ban-client &> /dev/null; then
