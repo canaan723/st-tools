@@ -121,7 +121,7 @@ fn_get_current_ip() {
 set -e
 set -o pipefail
 
-readonly SCRIPT_VERSION="v2.3test2"
+readonly SCRIPT_VERSION="v2.3test3"
 readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[1;33m'
 readonly RED='\033[0;31m'
@@ -257,8 +257,23 @@ fn_optimize_docker() {
             fi
             ;;
         2)
-            read -rp "请输入自定义镜像地址 (多个地址请用空格分隔，需带 https://): " custom_mirrors < /dev/tty
-            read -ra best_mirrors <<< "$custom_mirrors"
+            echo -e "\n${CYAN}--- 自定义镜像说明 ---${NC}"
+            echo -e "  1. ${BOLD}注册表镜像 (Registry Mirror)${NC}: 以 ${YELLOW}https://${NC} 开头，写入 daemon.json (系统级加速)。"
+            echo -e "     例如: https://docker.1ms.run"
+            echo -e "  2. ${BOLD}镜像代理 (Proxy Pull)${NC}: 直接输入代理后的完整镜像路径 (临时拉取并自动重打标签)。"
+            echo -e "     例如: dockerproxy.com/ghcr.io/sillytavern/sillytavern:latest"
+            echo -e "------------------------"
+            read -rp "请输入自定义地址 (多个请用空格分隔): " custom_input < /dev/tty
+            read -ra input_items <<< "$custom_input"
+            for item in "${input_items[@]}"; do
+                if [[ "$item" =~ ^https:// ]]; then
+                    best_mirrors+=("$item")
+                else
+                    # 识别为代理镜像路径
+                    CUSTOM_PROXY_IMAGE="$item"
+                    log_info "检测到代理镜像路径: ${YELLOW}${CUSTOM_PROXY_IMAGE}${NC}"
+                fi
+            done
             ;;
         3)
             log_info "仅配置日志限制。"
@@ -812,6 +827,7 @@ fn_fail2ban_manager() {
         echo -e "  [4] 手动封禁指定 IP"
         echo -e "  [5] 修改封禁时长 (小时)"
         echo -e "  [6] 重启 Fail2ban 服务"
+        echo -e "  [7] 白名单管理"
         echo -e "  [0] 返回上一级"
         echo -e "------------------------"
         read -rp "请输入选项: " f2b_choice < /dev/tty
@@ -966,7 +982,8 @@ run_initialization() {
                     log_info "为了确保所有优化（如 BBR 和内核参数）完全生效，建议重启。"
                 fi
                 fn_reboot_system
-                read -rp "按 Enter 返回..." < /dev/tty
+                read -rp "按 Enter 返回主菜单..." < /dev/tty
+                return 0
                 ;;
             2) fn_system_upgrade_optimize; sleep 2 ;;
             3) fn_set_timezone; sleep 1 ;;
