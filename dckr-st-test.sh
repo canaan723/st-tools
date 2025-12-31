@@ -25,18 +25,30 @@ fn_ssh_rollback() {
     echo -e "\033[33m[警告] 检测到新SSH端口连接失败，正在执行回滚操作...\033[0m"
     
     # 1. 恢复配置文件
+    local restored=false
     if [ -f /etc/ssh/sshd_config.bak ]; then
         cp -f /etc/ssh/sshd_config.bak /etc/ssh/sshd_config
-        # 清理可能存在的 .d 配置文件
-        [ -f /etc/ssh/sshd_config.d/99-gugu-ssh.conf ] && rm -f /etc/ssh/sshd_config.d/99-gugu-ssh.conf
+        restored=true
+    fi
+
+    if [ -f /etc/ssh/sshd_config.d/99-gugu-ssh.conf.bak ]; then
+        cp -f /etc/ssh/sshd_config.d/99-gugu-ssh.conf.bak /etc/ssh/sshd_config.d/99-gugu-ssh.conf
+        restored=true
+    elif [ -f /etc/ssh/sshd_config.d/99-gugu-ssh.conf ]; then
+        # 如果没有备份但存在该文件，说明是本次新建的，回滚时应删除
+        rm -f /etc/ssh/sshd_config.d/99-gugu-ssh.conf
+        restored=true
+    fi
+
+    if [ "$restored" = true ]; then
         systemctl restart sshd
         echo -e "\033[32m[成功] SSH 配置文件已恢复到修改前状态。\033[0m"
     else
-        log_warn "未找到备份文件 /etc/ssh/sshd_config.bak，无法自动恢复配置。"
+        log_warn "未找到有效的备份文件，无法自动恢复配置。"
     fi
 
     # 2. 同步清理 UFW 规则
-    if [ -n "$failed_port" ] && systemctl is-active --quiet ufw; then
+    if [ -n "$failed_port" ] && ufw status | grep -q "Status: active"; then
         log_info "正在从 UFW 中移除失败的端口规则 (${failed_port})..."
         ufw delete allow "$failed_port/tcp" 2>/dev/null || true
         ufw --force reload
@@ -379,7 +391,11 @@ fn_change_ssh_port() {
 
     log_action "正在修改 SSH 端口配置并清理冗余定义..."
     # 备份主配置文件
-    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+    cp -f /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+    # 备份可能存在的 .d 配置文件
+    if [ -f /etc/ssh/sshd_config.d/99-gugu-ssh.conf ]; then
+        cp -f /etc/ssh/sshd_config.d/99-gugu-ssh.conf /etc/ssh/sshd_config.d/99-gugu-ssh.conf.bak
+    fi
     
     # 1. 无论哪种模式，先注释掉主文件中的所有 Port 定义
     sed -i 's/^\s*Port /#Port /g' /etc/ssh/sshd_config
@@ -397,15 +413,15 @@ fn_change_ssh_port() {
         sed -i "1iPort $NEW_SSH_PORT" /etc/ssh/sshd_config
     fi
     
-    log_action "正在重启 SSH 服务以应用新端口 ${NEW_SSH_PORT}..."
-    systemctl restart sshd
-
-    # --- 关键修复：在测试前放行 UFW 端口 ---
-    if systemctl is-active --quiet ufw; then
-        log_info "检测到 UFW 活跃，正在临时放行新端口 ${NEW_SSH_PORT} 以供测试..."
+    # --- 关键修复：在重启 SSH 前放行 UFW 端口，防止重启后立即被拦截 ---
+    if ufw status | grep -q "Status: active"; then
+        log_info "检测到 UFW 活跃，正在放行新端口 ${NEW_SSH_PORT}..."
         ufw allow "$NEW_SSH_PORT/tcp"
         ufw --force reload
     fi
+
+    log_action "正在重启 SSH 服务以应用新端口 ${NEW_SSH_PORT}..."
+    systemctl restart sshd
     # ------------------------------------
     
     echo -e "\n${BLUE}╔═══════════════════════ SSH 端口连接测试 ═══════════════════════╗${NC}"
@@ -421,13 +437,13 @@ fn_change_ssh_port() {
         log_success "确认新端口可用。SSH 端口已成功更换为 ${NEW_SSH_PORT}！"
         
         # --- UFW 协同逻辑 ---
-        if systemctl is-active --quiet ufw; then
-            log_info "检测到 UFW 活跃，正在同步更新规则..."
-            ufw allow "$NEW_SSH_PORT/tcp"
+        if ufw status | grep -q "Status: active"; then
+            log_info "检测到 UFW 活跃，正在同步清理旧规则..."
             # 循环关闭旧端口
             IFS=',' read -ra ADDR <<< "$current_ports"
             for old_port in "${ADDR[@]}"; do
                 if [ "$old_port" != "$NEW_SSH_PORT" ]; then
+                    log_info "正在移除旧端口规则: ${old_port}"
                     ufw delete allow "$old_port/tcp" 2>/dev/null || true
                 fi
             done
@@ -452,8 +468,13 @@ fn_change_ssh_port() {
         fi
     else
         fn_ssh_rollback "$NEW_SSH_PORT"
+        # 清理备份文件
+        rm -f /etc/ssh/sshd_config.bak /etc/ssh/sshd_config.d/99-gugu-ssh.conf.bak 2>/dev/null || true
         return 1
     fi
+
+    # 成功后清理备份文件
+    rm -f /etc/ssh/sshd_config.bak /etc/ssh/sshd_config.d/99-gugu-ssh.conf.bak 2>/dev/null || true
 }
 
 fn_install_ufw() {
@@ -475,9 +496,12 @@ fn_install_ufw() {
     ufw default deny incoming
     ufw default allow outgoing
     
-    # 关键：防锁死，先放行当前 SSH 端口
+    # 关键：防锁死，先放行当前 SSH 端口（支持多端口情况）
     log_info "正在放行当前 SSH 端口 (${ssh_port})..."
-    ufw allow "${ssh_port}/tcp"
+    IFS=',' read -ra ADDR <<< "$ssh_port"
+    for port in "${ADDR[@]}"; do
+        ufw allow "${port}/tcp"
+    done
     
     echo -e "\n${YELLOW}[安全提示] 启用 UFW 后，本地防火墙将接管端口管理。${NC}"
     echo -e "脚本已自动放行当前的 SSH 端口，开启后不会导致掉线。"
@@ -596,7 +620,7 @@ EOF
     log_info "配置防护规则: /etc/fail2ban/jail.local"
     
     local f2b_action="iptables-multiport"
-    if systemctl is-active --quiet ufw; then
+    if ufw status | grep -q "Status: active"; then
         log_info "检测到 UFW 活跃，Fail2ban 将使用 UFW 动作。"
         f2b_action="ufw"
     else
@@ -1457,7 +1481,7 @@ EOF
     fn_wait_for_service
 
     # --- UFW 协同逻辑 ---
-    if systemctl is-active --quiet ufw; then
+    if ufw status | grep -q "Status: active"; then
         log_info "检测到 UFW 活跃，正在自动放行 8000 端口..."
         ufw allow 8000/tcp
     fi
