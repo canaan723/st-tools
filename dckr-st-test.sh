@@ -1784,6 +1784,119 @@ EOF
     done
 }
 
+fn_test_scripts_menu() {
+    while true; do
+        tput reset
+        echo -e "${BLUE}=== 常驻测试脚本 ===${NC}"
+        echo -e "  [1] Region 流媒体解锁测试"
+        echo -e "  [2] NodeQuality 综合测试"
+        echo -e "  [0] 返回主菜单"
+        echo -e "------------------------"
+        read -rp "请输入选项: " test_choice < /dev/tty
+        case $test_choice in
+            1)
+                log_action "正在运行流媒体解锁测试..."
+                bash <(curl -L -s check.unlock.media)
+                read -rp "测试完成，按 Enter 继续..." < /dev/tty
+                ;;
+            2)
+                log_action "正在运行 NodeQuality 综合测试..."
+                bash <(curl -sL https://run.NodeQuality.com)
+                read -rp "测试完成，按 Enter 继续..." < /dev/tty
+                ;;
+            0) break ;;
+            *) log_warn "无效输入"; sleep 1 ;;
+        esac
+    done
+}
+
+fn_st_docker_manager() {
+    local container_name="sillytavern"
+    local compose_cmd=""
+    
+    # 自动检测 docker-compose 命令
+    if command -v docker-compose &> /dev/null; then
+        compose_cmd="docker-compose"
+    elif docker compose version &> /dev/null; then
+        compose_cmd="docker compose"
+    else
+        log_error "未检测到 docker-compose 或 docker compose，请确认 Docker 环境是否正常。"
+        sleep 2
+        return 1
+    fi
+
+    # 尝试获取项目目录
+    local project_dir=""
+    # 1. 尝试从容器标签获取 (如果是用 compose 启动的，通常会有这个标签)
+    project_dir=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$container_name" 2>/dev/null)
+    
+    # 2. 如果标签获取失败，回退到脚本默认安装路径
+    if [ -z "$project_dir" ] || [ ! -d "$project_dir" ]; then
+        local target_user="${SUDO_USER:-root}"
+        local user_home
+        if [ "$target_user" = "root" ]; then
+            user_home="/root"
+        else
+            user_home=$(getent passwd "$target_user" | cut -d: -f6)
+        fi
+        project_dir="${user_home}/sillytavern"
+    fi
+
+    if [ ! -d "$project_dir" ] || [ ! -f "$project_dir/docker-compose.yml" ]; then
+        log_error "未能找到酒馆项目目录或 docker-compose.yml 文件 (路径: $project_dir)。"
+        read -rp "按 Enter 继续..." < /dev/tty
+        return 1
+    fi
+
+    while true; do
+        tput reset
+        echo -e "${BLUE}=== 酒馆 Docker 运维管理 ===${NC}"
+        echo -e "项目路径: ${CYAN}${project_dir}${NC}"
+        echo -e "------------------------"
+        echo -e "  [1] 重启酒馆 (restart)"
+        echo -e "  [2] 重建酒馆 (recreate)"
+        echo -e "  [3] 更新酒馆 (pull & up)"
+        echo -e "  [4] 查看运行状态 (ps)"
+        echo -e "  [5] 查看资源占用 (stats)"
+        echo -e "  [6] 查看实时日志 (logs -f)"
+        echo -e "  [0] 返回主菜单"
+        echo -e "------------------------"
+        read -rp "请输入选项: " st_choice < /dev/tty
+        case $st_choice in
+            1)
+                log_action "正在重启酒馆..."
+                cd "$project_dir" && $compose_cmd restart
+                read -rp "操作完成，按 Enter 继续..." < /dev/tty
+                ;;
+            2)
+                log_action "正在强制重建酒馆容器..."
+                cd "$project_dir" && $compose_cmd up -d --force-recreate --remove-orphans
+                read -rp "操作完成，按 Enter 继续..." < /dev/tty
+                ;;
+            3)
+                log_action "正在拉取最新镜像并更新..."
+                cd "$project_dir" && $compose_cmd pull && $compose_cmd up -d --remove-orphans
+                read -rp "操作完成，按 Enter 继续..." < /dev/tty
+                ;;
+            4)
+                echo -e "\n${CYAN}--- 容器状态 ---${NC}"
+                cd "$project_dir" && $compose_cmd ps
+                read -rp "按 Enter 继续..." < /dev/tty
+                ;;
+            5)
+                echo -e "\n${CYAN}--- 资源占用 (按 Ctrl+C 退出) ---${NC}"
+                docker stats "$container_name"
+                ;;
+            6)
+                echo -e "\n${CYAN}--- 实时日志 (按 Ctrl+C 退出) ---${NC}"
+                cd "$project_dir" && $compose_cmd logs -f --tail 100
+                ;;
+            0) break ;;
+            *) log_warn "无效输入"; sleep 1 ;;
+        esac
+    done
+}
+
 main_menu() {
     while true; do
         tput reset
@@ -1819,30 +1932,39 @@ main_menu() {
         
         echo -e "\n${BLUE}============================== [ 运维区域 ] ===============================${NC}"
 
+        echo -e " ${GREEN}[4] 测试脚本菜单 (流媒体解锁、综合测试)${NC}"
+
+        local show_st_manager=false
+        if docker ps -a --format '{{.Names}}' | grep -q '^sillytavern$'; then
+            show_st_manager=true
+            echo -e " ${GREEN}[5] 酒馆运维管理 (Docker 基础操作)${NC}"
+        fi
+
         if [ "$IS_DEBIAN_LIKE" = true ]; then
-            echo -e " ${GREEN}[4] 系统安全清理 (清理缓存和无用镜像)${NC}"
+            echo -e " ${GREEN}[6] 系统安全清理 (清理缓存和无用镜像)${NC}"
         fi
 
         if command -v fail2ban-client &> /dev/null; then
-            echo -e " ${GREEN}[5] Fail2ban 运维管理${NC}"
+            echo -e " ${GREEN}[7] Fail2ban 运维管理${NC}"
         fi
 
         if command -v ufw &> /dev/null; then
-            echo -e " ${GREEN}[6] UFW 防火墙运维管理${NC}"
+            echo -e " ${GREEN}[8] UFW 防火墙运维管理${NC}"
         fi
 
         if command -v 1pctl &> /dev/null; then
-            echo -e " ${GREEN}[7] 1Panel 运维管理${NC}"
+            echo -e " ${GREEN}[9] 1Panel 运维管理${NC}"
         fi
 
         echo -e "${BLUE}===========================================================================${NC}"
         echo -e " ${YELLOW}[q] 退出脚本${NC}\n"
 
-        local options_str="3"
+        local options_str="3,4"
+        [ "$show_st_manager" = true ] && options_str="${options_str},5"
         if [ "$IS_DEBIAN_LIKE" = true ]; then
-            options_str="1,2,3,4,5,6"
+            options_str="1,2,${options_str},6,7,8"
             if command -v 1pctl &> /dev/null; then
-                options_str="${options_str},7"
+                options_str="${options_str},9"
             fi
         fi
         local valid_options="${options_str},q"
@@ -1876,6 +1998,16 @@ main_menu() {
                 read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
                 ;;
             4)
+                fn_test_scripts_menu
+                ;;
+            5)
+                if [ "$show_st_manager" = true ]; then
+                    fn_st_docker_manager
+                else
+                    echo -e "\n${RED}无效输入，请重新选择。${NC}"; sleep 2
+                fi
+                ;;
+            6)
                 if [ "$IS_DEBIAN_LIKE" = true ]; then
                     check_root
                     run_system_cleanup
@@ -1886,7 +2018,7 @@ main_menu() {
                     sleep 2
                 fi
                 ;;
-            5)
+            7)
                 if command -v fail2ban-client &> /dev/null; then
                     fn_fail2ban_manager
                 else
@@ -1894,7 +2026,7 @@ main_menu() {
                     sleep 2
                 fi
                 ;;
-            6)
+            8)
                 if command -v ufw &> /dev/null; then
                     fn_ufw_manager
                 else
@@ -1902,7 +2034,7 @@ main_menu() {
                     sleep 2
                 fi
                 ;;
-            7)
+            9)
                 if command -v 1pctl &> /dev/null; then
                     fn_1panel_manager
                 else
