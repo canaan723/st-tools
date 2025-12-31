@@ -14,7 +14,7 @@
 
 # --- [核心配置] ---
 # 脚本版本号
-readonly SCRIPT_VERSION="v3.0test1"
+readonly SCRIPT_VERSION="v3.0test2"
 # 模式切换: "test" (测试版) 或 "prod" (正式版)
 GUGU_MODE="test"
 
@@ -1388,6 +1388,38 @@ install_1panel() {
     log_warn "若刚才有用户被添加到 docker 组，务必先退出并重新登录SSH！"
 }
 
+fn_get_public_ip() {
+    local ip_services=(
+        "https://ifconfig.me"
+        "https://myip.ipip.net"
+        "https://cip.cc"
+        "https://api.ipify.org"
+    )
+    local ip=""
+
+    log_info "正在尝试自动获取公网IP地址..." >&2
+    
+    for service in "${ip_services[@]}"; do
+        echo -ne "  - 正在尝试: ${YELLOW}${service}${NC}..." >&2
+        ip=$(curl -s -4 --max-time 5 "$service" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1)
+        
+        if [[ -n "$ip" ]]; then
+            echo -e " ${GREEN}成功!${NC}" >&2
+            echo "$ip"
+            return 0
+        else
+            echo -e " ${RED}失败${NC}" >&2
+        fi
+    done
+
+    echo >&2
+    log_warn "未能自动获取到公网IP地址。" >&2
+    log_info "这不影响部署结果，SillyTavern容器已成功在后台运行。" >&2
+    
+    echo "【请手动替换为你的服务器IP】"
+    return 1
+}
+
 install_sillytavern() {
     local DOCKER_VER="-" DOCKER_STATUS="-"
     local COMPOSE_VER="-" COMPOSE_STATUS="-"
@@ -1507,37 +1539,6 @@ install_sillytavern() {
     }
 
 
-fn_get_public_ip() {
-    local ip_services=(
-        "https://ifconfig.me"
-        "https://myip.ipip.net"
-        "https://cip.cc"
-        "https://api.ipify.org"
-    )
-    local ip=""
-
-    log_info "正在尝试自动获取公网IP地址..." >&2
-    
-    for service in "${ip_services[@]}"; do
-        echo -ne "  - 正在尝试: ${YELLOW}${service}${NC}..." >&2
-        ip=$(curl -s -4 --max-time 5 "$service" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1)
-        
-        if [[ -n "$ip" ]]; then
-            echo -e " ${GREEN}成功!${NC}" >&2
-            echo "$ip"
-            return 0
-        else
-            echo -e " ${RED}失败${NC}" >&2
-        fi
-    done
-
-    echo >&2 
-    log_warn "未能自动获取到公网IP地址。" >&2
-    log_info "这不影响部署结果，SillyTavern容器已成功在后台运行。" >&2
-    
-    echo "【请手动替换为你的服务器IP】"
-    return 1
-}
 
 
     
@@ -1750,10 +1751,9 @@ EOF
         echo "选择运行模式："
         echo -e "  [1] ${CYAN}单用户模式${NC} (弹窗认证，适合个人使用)"
         echo -e "  [2] ${CYAN}多用户模式${NC} (独立登录页，适合多人或单人使用)"
-        echo -e "  [3] ${RED}维护者模式${NC} (作者专用，普通用户请勿选择！)"
         read -p "请输入选项数字 [默认为 1]: " run_mode < /dev/tty
         run_mode=${run_mode:-1}
-        [[ "$run_mode" =~ ^[123]$ ]] && break
+        [[ "$run_mode" =~ ^[12]$ ]] && break
         log_warn "无效选项，请重新选择。"
     done
 
@@ -1764,9 +1764,6 @@ EOF
             if [ -z "$single_user" ] || [ -z "$single_pass" ]; then fn_print_error "用户名和密码不能为空！"; fi
             ;;
         2)
-            ;;
-        3)
-            log_warn "已进入维护者模式，此模式需要手动准备特殊文件。"
             ;;
         *)
             fn_print_error "无效输入。" || return 1
@@ -1797,48 +1794,13 @@ EOF
         fn_confirm_and_delete_dir "$INSTALL_DIR" "$CONTAINER_NAME"
     fi
 
-    if [[ "$run_mode" == "3" ]]; then
-        fn_print_info "正在创建开发者模式项目目录结构..."
-        mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/third-party" "$INSTALL_DIR/config" "$INSTALL_DIR/.gugu"
-        mkdir -p "$INSTALL_DIR/custom/images"
-        touch "$INSTALL_DIR/custom/login.html"
-        fn_print_info "正在设置文件所有权..."
-        chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
-        log_success "开发者项目目录创建并授权成功！"
-    else
-        fn_create_project_structure
-    fi
+    fn_create_project_structure
 
     fn_create_git_sync_config
 
     cd "$INSTALL_DIR"
     fn_print_info "工作目录已切换至: $(pwd)"
 
-    if [[ "$run_mode" == "3" ]]; then
-    cat <<EOF > "$COMPOSE_FILE"
-services:
-  sillytavern:
-    container_name: ${CONTAINER_NAME}
-    hostname: ${CONTAINER_NAME}
-    image: ${IMAGE_NAME}
-    security_opt:
-      - apparmor:unconfined
-    environment:
-      - NODE_ENV=production
-      - FORCE_COLOR=1
-      - NODE_OPTIONS=--max-old-space-size=${NODE_MAX_MEM}
-    ports:
-      - "${ST_PORT}:8000"
-    volumes:
-      - "./config:/home/node/app/config:z"
-      - "./data:/home/node/app/data:z"
-      - "./plugins:/home/node/app/plugins:z"
-      - "./third-party:/home/node/app/public/scripts/extensions/third-party:z"
-      - "./custom/login.html:/home/node/app/public/login.html:z"
-      - "./custom/images:/home/node/app/public/images:z"
-    restart: unless-stopped
-EOF
-    else
     cat <<EOF > "$COMPOSE_FILE"
 services:
   sillytavern:
@@ -1860,13 +1822,7 @@ services:
       - "./third-party:/home/node/app/public/scripts/extensions/third-party:z"
     restart: unless-stopped
 EOF
-    fi
     log_success "docker-compose.yml 文件创建成功！"
-
-    if [[ "$run_mode" == "3" ]]; then
-        log_warn "维护者模式：请现在将您的自定义文件 (如 login.html) 放入 '$INSTALL_DIR/custom' 目录。"
-        read -rp "文件放置完毕后，按 Enter 键继续..." < /dev/tty
-    fi
 
     fn_print_step "[ 4/5 ] 初始化与配置"
     fn_print_info "即将拉取 SillyTavern 镜像，下载期间将持续显示预估时间。"
@@ -2003,6 +1959,146 @@ fn_test_scripts_menu() {
     done
 }
 
+# --- [酒馆运维辅助函数] ---
+fn_st_switch_to_single() {
+    local project_dir=$1
+    local config_file=$2
+    local compose_cmd=$3
+    
+    log_action "正在切换为单用户模式..."
+    read -rp "请输入新的用户名: " new_user < /dev/tty
+    read -rp "请输入新的密码: " new_pass < /dev/tty
+    if [ -z "$new_user" ] || [ -z "$new_pass" ]; then
+        log_error "用户名和密码不能为空，操作已取消。"
+        return 1
+    fi
+
+    sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: false # 禁用多用户模式/" "$config_file"
+    sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 启用基础认证/" "$config_file"
+    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$new_user\"/}" "$config_file"
+    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$new_pass\"/}" "$config_file"
+    
+    log_info "正在重启容器以应用更改..."
+    cd "$project_dir" && $compose_cmd up -d --force-recreate
+    log_success "已成功切换为单用户模式！"
+}
+
+fn_st_switch_to_multi() {
+    local project_dir=$1
+    local config_file=$2
+    local compose_cmd=$3
+    local container_name="sillytavern"
+
+    log_action "正在切换为多用户模式..."
+    log_info "正在临时开启基础认证以设置管理员..."
+    sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 临时开启基础认证以设置管理员/" "$config_file"
+    sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # 启用多用户模式/" "$config_file"
+    
+    cd "$project_dir" && $compose_cmd up -d --force-recreate
+    
+    # 复用安装时的引导逻辑
+    local SERVER_IP=$(fn_get_public_ip)
+    local ST_PORT=$(grep -oP 'ports:\s+-\s+"\K[0-9]+(?=:8000")' "$project_dir/docker-compose.yml")
+    
+    MULTI_USER_GUIDE=$(cat <<EOF
+
+${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}
+1. ${CYAN}【访问并登录】${NC}
+   打开浏览器，访问: ${GREEN}http://${SERVER_IP}:${ST_PORT}${NC}
+   使用以下默认凭据登录：
+     ▶ 账号: ${YELLOW}user${NC}
+     ▶ 密码: ${YELLOW}password${NC}
+2. ${CYAN}【设置管理员】${NC}
+   登录后，立即在【用户设置】标签页的【管理员面板】中操作：
+   A. ${GREEN}设置密码${NC}：为默认账户 \`default-user\` 设置一个强大的新密码。
+   B. ${GREEN}创建新账户 (推荐)${NC}：将其身份提升为 Admin (管理员)。
+${YELLOW}>>> 完成以上所有步骤后，回到本窗口按【回车键】继续 <<<${NC}
+EOF
+)
+    echo -e "${MULTI_USER_GUIDE}"
+    read -p "" < /dev/tty
+    
+    log_info "正在切换到多用户登录页模式..."
+    sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false # 关闭基础认证，启用登录页/" "$config_file"
+    sed -i -E "s/^([[:space:]]*)enableDiscreetLogin: .*/\1enableDiscreetLogin: true # 隐藏登录用户列表/" "$config_file"
+    
+    cd "$project_dir" && $compose_cmd up -d --force-recreate
+    log_success "已成功切换为多用户模式！"
+}
+
+fn_st_change_credentials() {
+    local config_file=$1
+    local compose_cmd=$2
+    local project_dir=$3
+
+    local current_user=$(grep -A 2 "basicAuthUser:" "$config_file" | grep "username:" | cut -d'"' -f2)
+    local current_pass=$(grep -A 2 "basicAuthUser:" "$config_file" | grep "password:" | cut -d'"' -f2)
+
+    echo -e "\n${CYAN}--- 更改用户名密码 ---${NC}"
+    echo -e "当前用户名: ${YELLOW}${current_user}${NC}"
+    echo -e "当前密码: ${YELLOW}${current_pass}${NC}"
+    echo -e "------------------------"
+    echo -e "  [1] 修改用户名和密码"
+    echo -e "  [2] 仅修改用户名"
+    echo -e "  [3] 仅修改密码"
+    echo -e "  [0] 取消"
+    read -rp "请选择: " cred_choice < /dev/tty
+
+    local new_user="$current_user"
+    local new_pass="$current_pass"
+
+    case "$cred_choice" in
+        1)
+            read -rp "请输入新用户名: " new_user < /dev/tty
+            read -rp "请输入新密码: " new_pass < /dev/tty
+            ;;
+        2)
+            read -rp "请输入新用户名: " new_user < /dev/tty
+            ;;
+        3)
+            read -rp "请输入新密码: " new_pass < /dev/tty
+            ;;
+        *) return 0 ;;
+    esac
+
+    if [ -z "$new_user" ] || [ -z "$new_pass" ]; then
+        log_error "用户名和密码不能为空！"
+        return 1
+    fi
+
+    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$new_user\"/}" "$config_file"
+    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$new_pass\"/}" "$config_file"
+    
+    log_info "正在重启容器以应用更改..."
+    cd "$project_dir" && $compose_cmd restart
+    log_success "凭据修改成功！"
+}
+
+fn_st_toggle_beautify() {
+    local project_dir=$1
+    local compose_file=$2
+    local compose_cmd=$3
+    local is_beautified=$4
+
+    if [ "$is_beautified" = true ]; then
+        log_action "正在关闭登录页美化..."
+        sed -i '/\.\/custom\/login\.html/d' "$compose_file"
+        sed -i '/\.\/custom\/images/d' "$compose_file"
+        log_success "已从配置中移除美化挂载。"
+    else
+        log_action "正在开启登录页美化..."
+        mkdir -p "$project_dir/custom/images"
+        if ! grep -q "custom/login.html" "$compose_file"; then
+            # 在 volumes 块中插入挂载项
+            sed -i '/volumes:/a \      - "./custom/login.html:/home/node/app/public/login.html:z"\n      - "./custom/images:/home/node/app/public/images:z"' "$compose_file"
+        fi
+        log_success "已添加美化挂载。请确保 $project_dir/custom 目录下已放置 login.html。"
+    fi
+
+    log_info "正在重建容器以应用更改..."
+    cd "$project_dir" && $compose_cmd up -d --force-recreate
+}
+
 fn_st_docker_manager() {
     local container_name="sillytavern"
     local compose_cmd=""
@@ -2033,21 +2129,53 @@ fn_st_docker_manager() {
         project_dir="${user_home}/sillytavern"
     fi
 
-    if [ ! -d "$project_dir" ] || [ ! -f "$project_dir/docker-compose.yml" ]; then
+    local config_file="${project_dir}/config/config.yaml"
+    local compose_file="${project_dir}/docker-compose.yml"
+
+    if [ ! -d "$project_dir" ] || [ ! -f "$compose_file" ]; then
         log_error "未能找到酒馆项目目录或 docker-compose.yml 文件 (路径: $project_dir)。" || return 1
     fi
 
     while true; do
+        # 状态检测
+        local is_multi_user=false
+        if grep -q "enableUserAccounts: true" "$config_file" 2>/dev/null; then
+            is_multi_user=true
+        fi
+
+        local is_beautified=false
+        if grep -q "custom/login.html" "$compose_file" 2>/dev/null; then
+            is_beautified=true
+        fi
+
         tput reset
         echo -e "${BLUE}=== 酒馆 Docker 运维管理 ===${NC}"
         echo -e "项目路径: ${CYAN}${project_dir}${NC}"
+        echo -ne "当前模式: "
+        if [ "$is_multi_user" = true ]; then echo -e "${GREEN}多用户模式${NC}"; else echo -e "${YELLOW}单用户模式${NC}"; fi
+        echo -ne "登录页美化: "
+        if [ "$is_beautified" = true ]; then echo -e "${GREEN}已开启${NC}"; else echo -e "${RED}已关闭${NC}"; fi
         echo -e "------------------------"
         echo -e "  [1] 重启酒馆 (restart)"
         echo -e "  [2] 重建酒馆 (recreate)"
         echo -e "  [3] 更新酒馆 (pull & up)"
-        echo -e "  [4] 查看运行状态 (ps)"
-        echo -e "  [5] 查看资源占用 (stats)"
-        echo -e "  [6] 查看实时日志 (logs -f)"
+        
+        if [ "$is_multi_user" = true ]; then
+            echo -e "  [4] ${CYAN}切换为单用户模式${NC}"
+        else
+            echo -e "  [4] ${CYAN}切换为多用户模式${NC}"
+            echo -e "  [5] ${CYAN}更改用户名密码${NC}"
+        fi
+
+        if [ "$is_beautified" = true ]; then
+            echo -e "  [6] ${CYAN}关闭登录页美化${NC}"
+        else
+            echo -e "  [6] ${CYAN}开启登录页美化${NC}"
+        fi
+
+        echo -e "  [7] 查看运行状态 (ps)"
+        echo -e "  [8] 查看资源占用 (stats)"
+        echo -e "  [9] 查看实时日志 (logs -f)"
         echo -e "  [0] 返回主菜单"
         echo -e "------------------------"
         read -rp "请输入选项: " st_choice < /dev/tty
@@ -2069,15 +2197,36 @@ fn_st_docker_manager() {
                 read -rp "操作完成，按 Enter 继续..." < /dev/tty
                 ;;
             4)
+                if [ "$is_multi_user" = true ]; then
+                    fn_st_switch_to_single "$project_dir" "$config_file" "$compose_cmd"
+                else
+                    fn_st_switch_to_multi "$project_dir" "$config_file" "$compose_cmd"
+                fi
+                read -rp "操作完成，按 Enter 继续..." < /dev/tty
+                ;;
+            5)
+                if [ "$is_multi_user" = false ]; then
+                    fn_st_change_credentials "$config_file" "$compose_cmd" "$project_dir"
+                    read -rp "操作完成，按 Enter 继续..." < /dev/tty
+                else
+                    log_warn "无效选项"
+                    sleep 1
+                fi
+                ;;
+            6)
+                fn_st_toggle_beautify "$project_dir" "$compose_file" "$compose_cmd" "$is_beautified"
+                read -rp "操作完成，按 Enter 继续..." < /dev/tty
+                ;;
+            7)
                 echo -e "\n${CYAN}--- 容器状态 ---${NC}"
                 cd "$project_dir" && $compose_cmd ps
                 read -rp "按 Enter 继续..." < /dev/tty
                 ;;
-            5)
+            8)
                 echo -e "\n${CYAN}--- 资源占用 (按 Ctrl+C 退出) ---${NC}"
                 (trap 'exit 0' INT; docker stats "$container_name")
                 ;;
-            6)
+            9)
                 echo -e "\n${CYAN}--- 实时日志 (按 Ctrl+C 退出) ---${NC}"
                 (trap 'exit 0' INT; cd "$project_dir" && $compose_cmd logs -f --tail 1000)
                 ;;
