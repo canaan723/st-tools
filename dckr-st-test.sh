@@ -1357,10 +1357,8 @@ install_sillytavern() {
         sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # 允许外部访问/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false # 关闭IP白名单模式/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400 # 24小时退出登录/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)numberOfBackups: .*/\1numberOfBackups: 5 # 单文件保留的备份数量/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)maxTotalBackups: .*/\1maxTotalBackups: 30 # 总聊天文件数量上限/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)lazyLoadCharacters: .*/\1lazyLoadCharacters: true # 懒加载、点击角色卡才加载/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)memoryCacheCapacity: .*/\1memoryCacheCapacity: '128mb' # 角色卡内存缓存/" "$CONFIG_FILE"
+        sed -i -E "s/^([[:space:]]*)memoryCacheCapacity: .*/\1memoryCacheCapacity: '${ST_CACHE_MEM}mb' # 角色卡内存缓存/" "$CONFIG_FILE"
         if [[ "$run_mode" == "1" ]]; then
             sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 启用基础认证/" "$CONFIG_FILE"
             sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$single_user\"/}" "$CONFIG_FILE"
@@ -1564,6 +1562,26 @@ fn_get_public_ip() {
     
     SERVER_IP=$(fn_get_public_ip)
 
+    # 稳健型内存配置计算 (带 Min/Max 保护)
+    local mem_total_mb
+    mem_total_mb=$(free -m | awk '/^Mem:/{print $2}')
+    if [ "$mem_total_mb" -le 2048 ]; then
+        NODE_MAX_MEM=$((mem_total_mb * 70 / 100))
+    else
+        NODE_MAX_MEM=$((mem_total_mb * 80 / 100))
+    fi
+
+    # 边界保护：Node 堆内存下限 256MB，上限 4096MB
+    [ "$NODE_MAX_MEM" -lt 256 ] && NODE_MAX_MEM=256
+    [ "$NODE_MAX_MEM" -gt 4096 ] && NODE_MAX_MEM=4096
+
+    # 酒馆内部缓存占堆内存的 1/3
+    ST_CACHE_MEM=$((NODE_MAX_MEM * 33 / 100))
+    
+    # 边界保护：缓存下限 64MB，上限 1024MB
+    [ "$ST_CACHE_MEM" -lt 64 ] && ST_CACHE_MEM=64
+    [ "$ST_CACHE_MEM" -gt 1024 ] && ST_CACHE_MEM=1024
+
     fn_print_step "[ 2/5 ] 选择运行模式与路径"
 
     echo "选择运行模式："
@@ -1640,6 +1658,7 @@ services:
     environment:
       - NODE_ENV=production
       - FORCE_COLOR=1
+      - NODE_OPTIONS=--max-old-space-size=${NODE_MAX_MEM}
     ports:
       - "${ST_PORT}:8000"
     volumes:
@@ -1663,6 +1682,7 @@ services:
     environment:
       - NODE_ENV=production
       - FORCE_COLOR=1
+      - NODE_OPTIONS=--max-old-space-size=${NODE_MAX_MEM}
     ports:
       - "${ST_PORT}:8000"
     volumes:
