@@ -592,8 +592,8 @@ fn_ufw_manager() {
         echo -e "  [1] 查看详细规则列表"
         echo -e "  [2] 启用防火墙"
         echo -e "  [3] 禁用防火墙"
-        echo -e "  [4] 放行指定端口 (支持多协议)"
-        echo -e "  [5] 删除指定规则 (连续模式)"
+        echo -e "  [4] 放行指定端口"
+        echo -e "  [5] 删除指定规则"
         echo -e "  [6] 查看被 Fail2ban 封禁的 IP"
         echo -e "  [0] 返回主菜单"
         echo -e "------------------------"
@@ -648,6 +648,109 @@ fn_ufw_manager() {
                 # Fail2ban 在 UFW 中通常使用 REJECT 动作
                 ufw status | grep -E "DENY|REJECT" | grep "by Fail2Ban" || echo "当前无封禁记录。"
                 read -rp "按 Enter 继续..." < /dev/tty
+                ;;
+            0) break ;;
+        esac
+    done
+}
+
+fn_1panel_manager() {
+    while true; do
+        tput reset
+        echo -e "${BLUE}=== 1Panel 运维管理 ===${NC}"
+        if ! command -v 1pctl &> /dev/null; then
+            log_error "未检测到 1pctl 命令，请确认 1Panel 是否已正确安装。"
+            sleep 2
+            break
+        fi
+        
+        echo -e "  [1] 查看面板状态与版本"
+        echo -e "  [2] 获取面板登录信息 (user-info)"
+        echo -e "  [3] 启动/停止/重启 1Panel 服务"
+        echo -e "  [4] 修改面板端口 (自动同步 UFW)"
+        echo -e "  [5] 修改面板用户/密码"
+        echo -e "  [6] 重置安全设置 (取消域名/入口/IP限制/MFA)"
+        echo -e "  [7] 切换监听 IP (IPv4/IPv6)"
+        echo -e "  [0] 返回主菜单"
+        echo -e "------------------------"
+        read -rp "请输入选项: " 1p_choice < /dev/tty
+        case $1p_choice in
+            1)
+                echo -e "\n${CYAN}--- 服务状态 ---${NC}"
+                1pctl status
+                echo -e "\n${CYAN}--- 版本信息 ---${NC}"
+                1pctl version
+                read -rp "按 Enter 继续..." < /dev/tty
+                ;;
+            2)
+                echo -e "\n${CYAN}--- 面板登录信息 ---${NC}"
+                1pctl user-info
+                read -rp "按 Enter 继续..." < /dev/tty
+                ;;
+            3)
+                echo -e "  [1] 启动服务 (start)"
+                echo -e "  [2] 停止服务 (stop)"
+                echo -e "  [3] 重启服务 (restart)"
+                read -rp "请选择 [1-3]: " srv_choice < /dev/tty
+                case $srv_choice in
+                    1) log_action "正在启动 1Panel 服务..."; 1pctl start all ;;
+                    2) log_action "正在停止 1Panel 服务..."; 1pctl stop all ;;
+                    3) log_action "正在重启 1Panel 服务..."; 1pctl restart all ;;
+                esac
+                sleep 2
+                ;;
+            4)
+                read -rp "请输入新的面板端口号: " new_1p_port < /dev/tty
+                if [[ "$new_1p_port" =~ ^[0-9]+$ ]] && [ "$new_1p_port" -ge 1 ] && [ "$new_1p_port" -le 65535 ]; then
+                    log_action "正在修改面板端口为 ${new_1p_port}..."
+                    1pctl update port "$new_1p_port"
+                    if ufw status | grep -q "Status: active"; then
+                        log_info "检测到 UFW 活跃，正在自动放行新端口 ${new_1p_port}..."
+                        ufw allow "$new_1p_port/tcp"
+                        ufw --force reload
+                        log_success "UFW 规则已更新。"
+                    fi
+                else
+                    log_warn "无效端口号。"
+                fi
+                sleep 2
+                ;;
+            5)
+                echo -e "  [1] 修改用户名"
+                echo -e "  [2] 修改密码"
+                read -rp "请选择 [1-2]: " up_choice < /dev/tty
+                if [[ "$up_choice" == "1" ]]; then
+                    read -rp "请输入新用户名: " new_1p_user < /dev/tty
+                    1pctl update username "$new_1p_user"
+                elif [[ "$up_choice" == "2" ]]; then
+                    read -rp "请输入新密码: " new_1p_pass < /dev/tty
+                    1pctl update password "$new_1p_pass"
+                fi
+                sleep 2
+                ;;
+            6)
+                echo -e "${YELLOW}即将重置安全设置，包括取消域名绑定、安全入口、HTTPS、IP限制和两步验证。${NC}"
+                read -rp "确定要继续吗？[y/N]: " confirm_reset < /dev/tty
+                if [[ "$confirm_reset" =~ ^[Yy]$ ]]; then
+                    1pctl reset domain
+                    1pctl reset entrance
+                    1pctl reset https
+                    1pctl reset ips
+                    1pctl reset mfa
+                    log_success "安全设置已重置。"
+                fi
+                sleep 2
+                ;;
+            7)
+                echo -e "  [1] 监听 IPv4"
+                echo -e "  [2] 监听 IPv6"
+                read -rp "请选择 [1-2]: " ip_choice < /dev/tty
+                if [[ "$ip_choice" == "1" ]]; then
+                    1pctl listen-ip ipv4
+                elif [[ "$ip_choice" == "2" ]]; then
+                    1pctl listen-ip ipv6
+                fi
+                sleep 2
                 ;;
             0) break ;;
         esac
@@ -1163,7 +1266,7 @@ install_sillytavern() {
             log_warn "检测到服务器上已存在一个名为 '${CONTAINER_NAME}' 的 Docker 容器。"
             log_info "这可能来自之前的安装。若要继续，必须先处理现有容器。"
             echo -e "请选择操作："
-            echo -e "  [1] ${YELLOW}停止并移除现有容器，然后继续全新安装 (此操作不删除数据文件)${NC}"
+            echo -e "  [1] ${YELLOW}停止并移除现有容器，然后继续全新安装${NC}"
             echo -e "  [2] ${RED}退出脚本，由我手动处理${NC}"
             
             local choice=""
@@ -1486,7 +1589,7 @@ fn_get_public_ip() {
     esac
 
     local default_parent_path="$USER_HOME"
-    read -rp "安装路径: SillyTavern 将被安装 in <上级目录>/sillytavern 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
+    read -rp "安装路径: SillyTavern 将被安装在 <上级目录>/sillytavern 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
     local parent_path="${custom_parent_path:-$default_parent_path}"
     INSTALL_DIR="${parent_path}/sillytavern"
     log_info "安装路径最终设置为: ${INSTALL_DIR}"
@@ -1661,13 +1764,6 @@ EOF
     fn_verify_container_health "$CONTAINER_NAME"
     fn_wait_for_service
 
-    # --- UFW 协同逻辑 ---
-    if ufw status | grep -q "Status: active"; then
-        log_info "检测到 UFW 活跃，正在自动放行 ${ST_PORT} 端口..."
-        ufw allow ${ST_PORT}/tcp
-    fi
-    # -------------------
-
     fn_display_final_info
 
     while true; do
@@ -1734,12 +1830,19 @@ main_menu() {
             echo -e " ${GREEN}[6] UFW 防火墙运维管理${NC}"
         fi
 
+        if command -v 1pctl &> /dev/null; then
+            echo -e " ${GREEN}[7] 1Panel 运维管理${NC}"
+        fi
+
         echo -e "${BLUE}===========================================================================${NC}"
         echo -e " ${YELLOW}[q] 退出脚本${NC}\n"
 
         local options_str="3"
         if [ "$IS_DEBIAN_LIKE" = true ]; then
             options_str="1,2,3,4,5,6"
+            if command -v 1pctl &> /dev/null; then
+                options_str="${options_str},7"
+            fi
         fi
         local valid_options="${options_str},q"
         read -rp "请输入选项 [${valid_options}]: " choice < /dev/tty
@@ -1795,6 +1898,14 @@ main_menu() {
                     fn_ufw_manager
                 else
                     log_warn "未检测到 UFW，请先在初始化菜单中安装。"
+                    sleep 2
+                fi
+                ;;
+            7)
+                if command -v 1pctl &> /dev/null; then
+                    fn_1panel_manager
+                else
+                    log_warn "未检测到 1Panel，请先执行安装流程。"
                     sleep 2
                 fi
                 ;;
