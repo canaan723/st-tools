@@ -673,8 +673,8 @@ fn_1panel_manager() {
         echo -e "  [7] 切换监听 IP (IPv4/IPv6)"
         echo -e "  [0] 返回主菜单"
         echo -e "------------------------"
-        read -rp "请输入选项: " 1p_choice < /dev/tty
-        case $1p_choice in
+        read -rp "请输入选项: " op_1panel < /dev/tty
+        case "$op_1panel" in
             1)
                 echo -e "\n${CYAN}--- 服务状态 ---${NC}"
                 1pctl status
@@ -691,11 +691,12 @@ fn_1panel_manager() {
                 echo -e "  [1] 启动服务 (start)"
                 echo -e "  [2] 停止服务 (stop)"
                 echo -e "  [3] 重启服务 (restart)"
-                read -rp "请选择 [1-3]: " srv_choice < /dev/tty
-                case $srv_choice in
+                read -rp "请选择 [1-3]: " svc_op < /dev/tty
+                case "$svc_op" in
                     1) log_action "正在启动 1Panel 服务..."; 1pctl start all ;;
                     2) log_action "正在停止 1Panel 服务..."; 1pctl stop all ;;
                     3) log_action "正在重启 1Panel 服务..."; 1pctl restart all ;;
+                    *) log_warn "无效选项" ;;
                 esac
                 sleep 2
                 ;;
