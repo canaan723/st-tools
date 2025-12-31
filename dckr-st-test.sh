@@ -2046,11 +2046,29 @@ fn_st_toggle_beautify() {
     else
         log_action "正在开启登录页美化..."
         mkdir -p "$project_dir/custom/images"
+        
+        echo -e "\n${YELLOW}---【 开启美化前置操作 】---${NC}"
+        echo -e "请确保您已将 ${CYAN}login.html${NC} 文件放置在以下目录："
+        echo -e "路径: ${GREEN}$project_dir/custom/login.html${NC}"
+        echo -e "----------------------------"
+        read -rp "确认已放置文件？按 Enter 继续 (输入 q 取消): " confirm_file < /dev/tty
+        
+        if [[ "$confirm_file" == "q" ]]; then
+            log_info "操作已取消。"
+            return 1
+        fi
+
+        if [ ! -f "$project_dir/custom/login.html" ]; then
+            log_error "未检测到文件: $project_dir/custom/login.html"
+            log_warn "请先放置文件后再开启美化，否则容器将无法启动。"
+            return 1
+        fi
+
         if ! grep -q "custom/login.html" "$compose_file"; then
             # 在 volumes 块中插入挂载项
             sed -i '/volumes:/a \      - "./custom/login.html:/home/node/app/public/login.html:z"\n      - "./custom/images:/home/node/app/public/images:z"' "$compose_file"
         fi
-        log_success "已添加美化挂载。请确保 $project_dir/custom 目录下已放置 login.html。"
+        log_success "已成功添加美化挂载配置。"
     fi
 
     log_info "正在重建容器以应用更改..."
