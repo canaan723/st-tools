@@ -1515,18 +1515,18 @@ main_menu() {
         
         echo -e " ${GREEN}[3] 部署 SillyTavern (基于Docker)${NC}"
         
+        echo -e "---------------------------------------------------------------------------"
+
+        if [ "$IS_DEBIAN_LIKE" = true ]; then
+            echo -e " ${CYAN}[4] 系统安全清理 (清理缓存和无用镜像)${NC}"
+        fi
+
         if command -v fail2ban-client &> /dev/null; then
-            echo -e " ${GREEN}[4] Fail2ban 运维管理${NC}"
+            echo -e " ${GREEN}[5] Fail2ban 运维管理${NC}"
         fi
 
         if command -v ufw &> /dev/null; then
             echo -e " ${GREEN}[6] UFW 防火墙运维管理${NC}"
-        fi
-
-        echo -e "---------------------------------------------------------------------------"
-
-        if [ "$IS_DEBIAN_LIKE" = true ]; then
-            echo -e " ${CYAN}[5] 系统安全清理 (清理缓存和无用镜像)${NC}"
         fi
 
         echo -e "${BLUE}===========================================================================${NC}"
@@ -1534,7 +1534,7 @@ main_menu() {
 
         local options_str="3"
         if [ "$IS_DEBIAN_LIKE" = true ]; then
-            options_str="1,2,3,4,5"
+            options_str="1,2,3,4,5,6"
         fi
         local valid_options="${options_str},q"
         read -rp "请输入选项 [${valid_options}]: " choice < /dev/tty
@@ -1567,6 +1567,17 @@ main_menu() {
                 read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
                 ;;
             4)
+                if [ "$IS_DEBIAN_LIKE" = true ]; then
+                    check_root
+                    run_system_cleanup
+                    while read -r -t 0.1; do :; done
+                    read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
+                else
+                    log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"
+                    sleep 2
+                fi
+                ;;
+            5)
                 if command -v fail2ban-client &> /dev/null; then
                     fn_fail2ban_manager
                 else
@@ -1579,17 +1590,6 @@ main_menu() {
                     fn_ufw_manager
                 else
                     log_warn "未检测到 UFW，请先在初始化菜单中安装。"
-                    sleep 2
-                fi
-                ;;
-            5)
-                if [ "$IS_DEBIAN_LIKE" = true ]; then
-                    check_root
-                    run_system_cleanup
-                    while read -r -t 0.1; do :; done
-                    read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
-                else
-                    log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"
                     sleep 2
                 fi
                 ;;
