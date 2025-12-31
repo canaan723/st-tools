@@ -211,7 +211,7 @@ fn_optimize_docker() {
     local results=""; local official_hub_ok=false
     for mirror in "${mirrors[@]}"; do
         local pull_target="hello-world"; local display_name="$mirror"; local timeout_duration=10
-        if [[ "$mirror" == "docker.io" ]]; then timeout_duration=15; display_name="Official Docker Hub"; else pull_target="${mirror#https://}/library/hello-world"; fi
+        if [[ "$mirror" == "docker.io" ]]; then timeout_duration=15; display_name="官方 Docker Hub"; else pull_target="${mirror#https://}/library/hello-world"; fi
         echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..."
         local start_time; start_time=$(date +%s.%N)
         if (timeout -k 15 "$timeout_duration" docker pull "$pull_target" >/dev/null) 2>/dev/null; then
@@ -456,8 +456,9 @@ fn_change_ssh_port() {
         local ports_to_close=$(echo "$current_ports" | tr ',' '\n' | grep -v "^$NEW_SSH_PORT$" | paste -sd "," -)
         
         if [ -n "$ports_to_close" ]; then
-            echo -e "\n${YELLOW}[提示] 为了系统安全，请务必前往云服务商控制台：${NC}"
-            echo -e "       ${RED}禁用/删除旧端口 (${ports_to_close}) 的防火墙放行规则。${NC}\n"
+            echo -e "\n${YELLOW}[提示] UFW 已自动移除本地旧端口规则。${NC}"
+            echo -e "       如果您使用了云服务商控制台防火墙（如安全组），请务必前往手动禁用旧端口 (${RED}${ports_to_close}${NC})；"
+            echo -e "       若无云端防火墙，则无需操作。\n"
         fi
         
         # 如果安装了 Fail2ban，自动更新其监听端口
@@ -478,6 +479,7 @@ fn_change_ssh_port() {
 }
 
 fn_install_ufw() {
+    local mode=$1
     log_step "安装并配置 UFW 防火墙" "本地安全加固"
     
     if ! command -v ufw &> /dev/null; then
@@ -503,9 +505,15 @@ fn_install_ufw() {
         ufw allow "${port}/tcp"
     done
     
-    echo -e "\n${YELLOW}[安全提示] 启用 UFW 后，本地防火墙将接管端口管理。${NC}"
-    echo -e "脚本已自动放行当前的 SSH 端口，开启后不会导致掉线。"
-    read -rp "确定要立即启用 UFW 本地防火墙吗？[y/N]: " confirm_ufw < /dev/tty
+    local confirm_ufw
+    if [[ "$mode" == "auto" ]]; then
+        confirm_ufw="y"
+    else
+        echo -e "\n${YELLOW}[安全提示] 启用 UFW 后，本地防火墙将接管端口管理。${NC}"
+        echo -e "脚本已自动放行当前的 SSH 端口，开启后不会导致掉线。"
+        read -rp "确定要立即启用 UFW 本地防火墙吗？[y/N]: " confirm_ufw < /dev/tty
+    fi
+
     if [[ "$confirm_ufw" =~ ^[Yy]$ ]]; then
         log_action "正在启用 UFW..."
         ufw --force enable
@@ -519,7 +527,7 @@ fn_ufw_manager() {
     while true; do
         tput reset
         echo -e "${BLUE}=== UFW 防火墙运维管理 ===${NC}"
-        local status=$(ufw status | head -n 1)
+        local status=$(ufw status | head -n 1 | sed 's/Status: active/状态: 已启用/g' | sed 's/Status: inactive/状态: 已禁用/g')
         echo -e "当前状态: ${CYAN}${status}${NC}"
         echo -e "------------------------"
         echo -e "  [1] 查看详细规则列表"
@@ -558,7 +566,8 @@ fn_ufw_manager() {
                 ;;
             6)
                 echo -e "\n${RED}--- 当前被 UFW 拦截的 IP (由 Fail2ban 触发) ---${NC}"
-                ufw status | grep "DENY" || echo "当前无封禁记录。"
+                # Fail2ban 在 UFW 中通常使用 REJECT 动作
+                ufw status | grep -E "DENY|REJECT" | grep "by Fail2Ban" || echo "当前无封禁记录。"
                 read -rp "按 Enter 继续..." < /dev/tty
                 ;;
             0) break ;;
@@ -903,7 +912,7 @@ run_initialization() {
                 echo -e "若已有云厂商面板（如阿里云安全组），则无需重复开启。"
                 read -rp "是否需要安装并启用 UFW 本地防火墙？[y/N]: " confirm_ufw_all < /dev/tty
                 if [[ "$confirm_ufw_all" =~ ^[Yy]$ ]]; then
-                    fn_install_ufw
+                    fn_install_ufw auto
                 fi
 
                 if ! fn_change_ssh_port; then
@@ -1029,10 +1038,10 @@ install_sillytavern() {
         fn_print_info "--- Docker 环境诊断摘要 ---"
         printf "${BOLD}%-18s %-20s %-20s${NC}\n" "工具" "检测到的版本" "状态"
         printf "${CYAN}%-18s %-20s %-20s${NC}\n" "------------------" "--------------------" "--------------------"
-        print_status_line() { 
+        print_status_line() {
             local name="$1" version="$2" status="$3"
             local color="$GREEN"
-            if [[ "$status" == "Not Found" ]]; then color="$RED"; fi
+            if [[ "$status" == "未安装" ]]; then color="$RED"; fi
             printf "%-18s %-20s ${color}%-20s${NC}\n" "$name" "$version" "$status"
         }
         print_status_line "Docker" "$DOCKER_VER" "$DOCKER_STATUS"
@@ -1048,19 +1057,19 @@ install_sillytavern() {
         local docker_check_needed=true
         while $docker_check_needed; do
             if ! command -v docker &> /dev/null; then
-                DOCKER_STATUS="Not Found"
+                DOCKER_STATUS="未安装"
             else
-                DOCKER_VER=$(fn_get_cleaned_version_num "$(docker --version)"); DOCKER_STATUS="OK"
+                DOCKER_VER=$(fn_get_cleaned_version_num "$(docker --version)"); DOCKER_STATUS="正常"
             fi
             if command -v docker-compose &> /dev/null; then
-                DOCKER_COMPOSE_CMD="docker-compose"; COMPOSE_VER="v$(fn_get_cleaned_version_num "$($DOCKER_COMPOSE_CMD version)")"; COMPOSE_STATUS="OK (v1)"
+                DOCKER_COMPOSE_CMD="docker-compose"; COMPOSE_VER="v$(fn_get_cleaned_version_num "$($DOCKER_COMPOSE_CMD version)")"; COMPOSE_STATUS="正常 (v1)"
             elif docker compose version &> /dev/null; then
-                DOCKER_COMPOSE_CMD="docker compose"; COMPOSE_VER=$(docker compose version | grep -oE 'v[0-9]+(\.[0-9]+)+' | head -n 1); COMPOSE_STATUS="OK (v2)"
+                DOCKER_COMPOSE_CMD="docker compose"; COMPOSE_VER=$(docker compose version | grep -oE 'v[0-9]+(\.[0-9]+)+' | head -n 1); COMPOSE_STATUS="正常 (v2)"
             else
-                DOCKER_COMPOSE_CMD=""; COMPOSE_STATUS="Not Found"
+                DOCKER_COMPOSE_CMD=""; COMPOSE_STATUS="未安装"
             fi
 
-            if [[ "$DOCKER_STATUS" == "Not Found" || "$COMPOSE_STATUS" == "Not Found" ]]; then
+            if [[ "$DOCKER_STATUS" == "未安装" || "$COMPOSE_STATUS" == "未安装" ]]; then
                 if [ "$IS_DEBIAN_LIKE" = true ]; then
                     log_warn "未检测到 Docker 或 Docker-Compose。"
                     read -rp "是否立即尝试自动安装 Docker? [Y/n]: " confirm_install_docker < /dev/tty
@@ -1215,7 +1224,7 @@ fn_get_public_ip() {
         echo -n "  "
         for i in $(seq 1 $retries); do
             local status
-            status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || echo "error")
+            status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || echo "错误")
             if [[ "$status" == "running" ]]; then
                 echo -e "\r  ${GREEN}✓${NC} 容器已成功进入运行状态！"
                 return 0
@@ -1246,13 +1255,13 @@ fn_get_public_ip() {
         echo -e "\n${YELLOW}--- 容器当前状态 ---${NC}"
         docker ps -a --filter "name=${container_name}"
         local status
-        status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || echo "notfound")
+        status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || echo "未找到")
         echo -e "\n${CYAN}--- 状态解读 ---${NC}"
         case "$status" in
             running) log_success "状态正常：容器正在健康运行。";;
             restarting) log_warn "状态异常：容器正在无限重启。"; fn_print_info "通常意味着程序内部崩溃。请使用 [2] 查看日志定位错误。";;
             exited) echo -e "${RED}状态错误：容器已停止运行。${NC}"; fn_print_info "通常是由于启动时发生致命错误。请使用 [2] 查看日志获取错误信息。";;
-            notfound) echo -e "${RED}未能找到名为 '${container_name}' 的容器。${NC}";;
+            未找到) echo -e "${RED}未能找到名为 '${container_name}' 的容器。${NC}";;
             *) log_warn "状态未知：容器处于 '${status}' 状态。"; fn_print_info "建议使用 [2] 查看日志进行诊断。";;
         esac
     }
