@@ -27,7 +27,10 @@ else
 fi
 # ------------------
 
-# --- [核心] 确保脚本由 Bash 执行并自动提权 ---
+# --- [核心] 信号捕获与环境检查 ---
+# 捕获 Ctrl+C (SIGINT)，确保在进程替换模式下也能优雅退出而不报语法错误
+trap 'exit 0' INT
+
 if [ -z "$BASH_VERSION" ]; then
     echo "错误: 此脚本需要使用 bash 解释器运行。" >&2
     echo "请尝试使用: bash <(curl -sL $GUGU_URL)" >&2
@@ -278,6 +281,108 @@ fn_check_base_deps() {
     fi
 }
 
+# --- [通用 Docker 环境检查与辅助函数] ---
+fn_print_step() { echo -e "\n${CYAN}═══ $1 ═══${NC}"; }
+fn_print_info() { echo -e "  $1"; }
+fn_print_error() { echo -e "\n${RED}✗ 错误: $1${NC}\n" >&2; return 1 2>/dev/null || exit 1; }
+
+fn_get_cleaned_version_num() { echo "$1" | grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1; }
+
+fn_report_dependencies() {
+    fn_print_info "--- Docker 环境诊断摘要 ---"
+    printf "${BOLD}%-18s %-20s %-20s${NC}\n" "工具" "检测到的版本" "状态"
+    printf "${CYAN}%-18s %-20s %-20s${NC}\n" "------------------" "--------------------" "--------------------"
+    print_status_line() {
+        local name="$1" version="$2" status="$3"
+        local color="$GREEN"
+        if [[ "$status" == "未安装" ]]; then color="$RED"; fi
+        printf "%-18s %-20s ${color}%-20s${NC}\n" "$name" "$version" "$status"
+    }
+    print_status_line "Docker" "$DOCKER_VER" "$DOCKER_STATUS"
+    print_status_line "Docker Compose" "$COMPOSE_VER" "$COMPOSE_STATUS"
+    echo ""
+}
+
+fn_check_dependencies() {
+    fn_print_info "--- Docker 环境诊断开始 ---"
+    
+    local docker_check_needed=true
+    while $docker_check_needed; do
+        if ! command -v docker &> /dev/null; then
+            DOCKER_STATUS="未安装"
+        else
+            DOCKER_VER=$(fn_get_cleaned_version_num "$(docker --version)"); DOCKER_STATUS="正常"
+        fi
+        if command -v docker-compose &> /dev/null; then
+            DOCKER_COMPOSE_CMD="docker-compose"; COMPOSE_VER="v$(fn_get_cleaned_version_num "$($DOCKER_COMPOSE_CMD version)")"; COMPOSE_STATUS="正常 (v1)"
+        elif docker compose version &> /dev/null; then
+            DOCKER_COMPOSE_CMD="docker compose"; COMPOSE_VER=$(docker compose version | grep -oE 'v[0-9]+(\.[0-9]+)+' | head -n 1); COMPOSE_STATUS="正常 (v2)"
+        else
+            DOCKER_COMPOSE_CMD=""; COMPOSE_STATUS="未安装"
+        fi
+
+        if [[ "$DOCKER_STATUS" == "未安装" || "$COMPOSE_STATUS" == "未安装" ]]; then
+            if [ "$IS_DEBIAN_LIKE" = true ]; then
+                log_warn "未检测到 Docker 或 Docker-Compose。"
+                read -rp "是否立即尝试自动安装 Docker? [Y/n]: " confirm_install_docker < /dev/tty
+                if [[ "${confirm_install_docker:-y}" =~ ^[Yy]$ ]]; then
+                    log_action "正在使用官方推荐脚本安装 Docker..."
+                    bash <(curl -sSL https://linuxmirrors.cn/docker.sh)
+                    continue
+                else
+                    fn_print_error "用户选择不安装 Docker，脚本无法继续。" || return 1
+                fi
+            else
+                fn_print_error "未检测到 Docker 或 Docker-Compose。请在您的系统 (${DETECTED_OS}) 上手动安装它们后重试。" || return 1
+            fi
+        else
+            docker_check_needed=false
+        fi
+    done
+
+    fn_report_dependencies
+
+    local current_user="${SUDO_USER:-$(whoami)}"
+    if ! groups "$current_user" | grep -q '\bdocker\b' && [ "$(id -u)" -ne 0 ]; then
+        fn_print_error "当前用户不在 docker 用户组。请执行【步骤2】或手动添加后，【重新登录SSH】再试。" || return 1
+    fi
+    log_success "Docker 环境检查通过！"
+}
+
+fn_verify_container_health() {
+    local container_name="$1"
+    local retries=10
+    local interval=3
+    local spinner="/-\|"
+    fn_print_info "正在确认容器健康状态..."
+    echo -n "  "
+    for i in $(seq 1 $retries); do
+        local status
+        status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || echo "错误")
+        if [[ "$status" == "running" ]]; then
+            echo -e "\r  ${GREEN}✓${NC} 容器已成功进入运行状态！"
+            return 0
+        fi
+        echo -ne "${spinner:i%4:1}\r"
+        sleep $interval
+    done
+    echo -e "\r  ${RED}✗${NC} 容器未能进入健康运行状态！"
+    fn_print_info "以下是容器的最新日志，以帮助诊断问题："
+    echo -e "${YELLOW}--- 容器日志开始 ---${NC}"
+    docker logs "$container_name" --tail 50 || echo "无法获取容器日志。"
+    echo -e "${YELLOW}--- 容器日志结束 ---${NC}"
+    fn_print_error "部署失败。请检查以上日志以确定问题原因。"
+}
+
+fn_wait_for_service() {
+    local seconds="${1:-10}"
+    while [ $seconds -gt 0 ]; do
+        printf "  服务正在后台稳定，请稍候... ${YELLOW}%2d 秒${NC}  \r" "$seconds"
+        sleep 1
+        ((seconds--))
+    done
+    echo -e "                                           \r"
+}
 
 fn_check_in_china() {
     log_info "正在判断服务器地理位置..."
@@ -868,9 +973,7 @@ fn_install_fail2ban() {
     log_info "检测到当前 SSH 端口: ${YELLOW}${ssh_port}${NC}"
     
     if [ -z "$current_ip" ]; then
-        log_warn "未能自动识别您的连接 IP。"
-        read -rp "为了防止误伤，请输入您的常用 IP 或 CIDR（直接回车则跳过）: " manual_ip < /dev/tty
-        current_ip="$manual_ip"
+        log_warn "未能自动识别您的连接 IP，将仅添加本地回环到白名单。"
     fi
 
     local ignore_ips="127.0.0.1/8 ::1"
@@ -1273,6 +1376,7 @@ fn_reboot_system() {
     if [[ "$confirm_reboot" =~ ^[Yy]$ ]]; then
         log_action "正在重启系统..."
         reboot
+        exit 0
     else
         log_info "已取消重启。请记得稍后手动重启以使所有配置（如 BBR/内核更新）生效。"
     fi
@@ -1426,14 +1530,12 @@ fn_generate_password() {
 }
 
 install_sillytavern() {
+    # 初始化变量供全局检查函数使用
     local DOCKER_VER="-" DOCKER_STATUS="-"
     local COMPOSE_VER="-" COMPOSE_STATUS="-"
+    local DOCKER_COMPOSE_CMD=""
     local CONTAINER_NAME="sillytavern"
     local IMAGE_NAME="ghcr.io/sillytavern/sillytavern:latest"
-
-    fn_print_step() { echo -e "\n${CYAN}═══ $1 ═══${NC}"; }
-    fn_print_info() { echo -e "  $1"; }
-    fn_print_error() { echo -e "\n${RED}✗ 错误: $1${NC}\n" >&2; return 1 2>/dev/null || exit 1; }
 
     fn_check_existing_container() {
         if docker ps -a -q -f "name=^${CONTAINER_NAME}$" | grep -q .; then
@@ -1463,68 +1565,6 @@ install_sillytavern() {
         fi
     }
 
-    fn_report_dependencies() {
-        fn_print_info "--- Docker 环境诊断摘要 ---"
-        printf "${BOLD}%-18s %-20s %-20s${NC}\n" "工具" "检测到的版本" "状态"
-        printf "${CYAN}%-18s %-20s %-20s${NC}\n" "------------------" "--------------------" "--------------------"
-        print_status_line() {
-            local name="$1" version="$2" status="$3"
-            local color="$GREEN"
-            if [[ "$status" == "未安装" ]]; then color="$RED"; fi
-            printf "%-18s %-20s ${color}%-20s${NC}\n" "$name" "$version" "$status"
-        }
-        print_status_line "Docker" "$DOCKER_VER" "$DOCKER_STATUS"
-        print_status_line "Docker Compose" "$COMPOSE_VER" "$COMPOSE_STATUS"
-        echo ""
-    }
-
-    fn_get_cleaned_version_num() { echo "$1" | grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1; }
-
-    fn_check_dependencies() {
-        fn_print_info "--- Docker 环境诊断开始 ---"
-        
-        local docker_check_needed=true
-        while $docker_check_needed; do
-            if ! command -v docker &> /dev/null; then
-                DOCKER_STATUS="未安装"
-            else
-                DOCKER_VER=$(fn_get_cleaned_version_num "$(docker --version)"); DOCKER_STATUS="正常"
-            fi
-            if command -v docker-compose &> /dev/null; then
-                DOCKER_COMPOSE_CMD="docker-compose"; COMPOSE_VER="v$(fn_get_cleaned_version_num "$($DOCKER_COMPOSE_CMD version)")"; COMPOSE_STATUS="正常 (v1)"
-            elif docker compose version &> /dev/null; then
-                DOCKER_COMPOSE_CMD="docker compose"; COMPOSE_VER=$(docker compose version | grep -oE 'v[0-9]+(\.[0-9]+)+' | head -n 1); COMPOSE_STATUS="正常 (v2)"
-            else
-                DOCKER_COMPOSE_CMD=""; COMPOSE_STATUS="未安装"
-            fi
-
-            if [[ "$DOCKER_STATUS" == "未安装" || "$COMPOSE_STATUS" == "未安装" ]]; then
-                if [ "$IS_DEBIAN_LIKE" = true ]; then
-                    log_warn "未检测到 Docker 或 Docker-Compose。"
-                    read -rp "是否立即尝试自动安装 Docker? [Y/n]: " confirm_install_docker < /dev/tty
-                    if [[ "${confirm_install_docker:-y}" =~ ^[Yy]$ ]]; then
-                        log_action "正在使用官方推荐脚本安装 Docker..."
-                        bash <(curl -sSL https://linuxmirrors.cn/docker.sh)
-                        continue
-                    else
-                        fn_print_error "用户选择不安装 Docker，脚本无法继续。" || return 1
-                    fi
-                else
-                    fn_print_error "未检测到 Docker 或 Docker-Compose。请在您的系统 (${DETECTED_OS}) 上手动安装它们后重试。" || return 1
-                fi
-            else
-                docker_check_needed=false
-            fi
-        done
-
-        fn_report_dependencies
-
-        local current_user="${SUDO_USER:-$(whoami)}"
-        if ! groups "$current_user" | grep -q '\bdocker\b' && [ "$(id -u)" -ne 0 ]; then
-            fn_print_error "当前用户不在 docker 用户组。请执行【步骤2】或手动添加后，【重新登录SSH】再试。" || return 1
-        fi
-        log_success "Docker 环境检查通过！"
-    }
 
     fn_apply_config_changes() {
         sed -i '1i# ✦ 咕咕助手 · 作者：清绝 | 官网：https://blog.qjyg.de' "$CONFIG_FILE"
@@ -1605,40 +1645,6 @@ EOF
         fi
     }
 
-    fn_verify_container_health() {
-        local container_name="$1"
-        local retries=10
-        local interval=3
-        local spinner="/-\|"
-        fn_print_info "正在确认容器健康状态..."
-        echo -n "  "
-        for i in $(seq 1 $retries); do
-            local status
-            status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || echo "错误")
-            if [[ "$status" == "running" ]]; then
-                echo -e "\r  ${GREEN}✓${NC} 容器已成功进入运行状态！"
-                return 0
-            fi
-            echo -ne "${spinner:i%4:1}\r"
-            sleep $interval
-        done
-        echo -e "\r  ${RED}✗${NC} 容器未能进入健康运行状态！"
-        fn_print_info "以下是容器的最新日志，以帮助诊断问题："
-        echo -e "${YELLOW}--- 容器日志开始 ---${NC}"
-        docker logs "$container_name" --tail 50 || echo "无法获取容器日志。"
-        echo -e "${YELLOW}--- 容器日志结束 ---${NC}"
-        fn_print_error "部署失败。请检查以上日志以确定问题原因。"
-    }
-
-    fn_wait_for_service() {
-        local seconds="${1:-10}"
-        while [ $seconds -gt 0 ]; do
-            printf "  服务正在后台稳定，请稍候... ${YELLOW}%2d 秒${NC}  \r" "$seconds"
-            sleep 1
-            ((seconds--))
-        done
-        echo -e "                                           \r"
-    }
 
     fn_check_and_explain_status() {
         local container_name="$1"
@@ -1808,7 +1814,7 @@ EOF
     fi
 
     fn_print_info "正在进行首次启动以生成官方配置文件..."
-    if ! $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null 2>&1; then
+    if ! $DOCKER_COMPOSE_CMD --progress plain -f "$COMPOSE_FILE" up -d > /dev/null 2>&1; then
         fn_print_error "首次启动容器失败！请检查以下日志：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)" || return 1
     fi
     local timeout=60
@@ -1827,7 +1833,7 @@ EOF
         log_success "单用户模式配置写入完成！"
     else
         fn_print_info "正在临时启动服务以设置管理员..."
-        if ! $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null 2>&1; then
+        if ! $DOCKER_COMPOSE_CMD --progress plain -f "$COMPOSE_FILE" up -d > /dev/null 2>&1; then
             fn_print_error "临时启动容器以设置管理员失败！请检查以下日志：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)" || return 1
         fi
         fn_verify_container_health "$CONTAINER_NAME"
@@ -1862,7 +1868,7 @@ EOF
 
     fn_print_step "[ 5/5 ] 启动并验证服务"
     fn_print_info "正在应用最终配置并重启服务..."
-    if ! $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate > /dev/null 2>&1; then
+    if ! $DOCKER_COMPOSE_CMD --progress plain -f "$COMPOSE_FILE" up -d --force-recreate > /dev/null 2>&1; then
         fn_print_error "应用最终配置并启动服务失败！请检查以下日志：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)" || return 1
     fi
     fn_verify_container_health "$CONTAINER_NAME"
@@ -1889,6 +1895,10 @@ EOF
 }
 
 install_gcli2api() {
+    # 初始化变量供全局检查函数使用
+    local DOCKER_VER="-" DOCKER_STATUS="-"
+    local COMPOSE_VER="-" COMPOSE_STATUS="-"
+    local DOCKER_COMPOSE_CMD=""
     local CONTAINER_NAME="gcli2api"
     local IMAGE_NAME="ghcr.io/su-kaka/gcli2api:latest"
     
@@ -1955,7 +1965,7 @@ services:
 EOF
 
     log_action "正在启动服务..."
-    cd "$INSTALL_DIR" && docker compose up -d
+    cd "$INSTALL_DIR" && docker compose --progress plain up -d
     
     fn_verify_container_health "$CONTAINER_NAME"
     
@@ -1966,11 +1976,13 @@ EOF
     echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:${GCLI_PORT}${NC}"
     echo -e "  ${CYAN}管理密码:${NC} ${YELLOW}${GCLI_PWD}${NC}"
     echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
-    
-    read -rp $'\n部署完成，按 Enter 键继续...' < /dev/tty
 }
 
 install_ais2api() {
+    # 初始化变量供全局检查函数使用
+    local DOCKER_VER="-" DOCKER_STATUS="-"
+    local COMPOSE_VER="-" COMPOSE_STATUS="-"
+    local DOCKER_COMPOSE_CMD=""
     local CONTAINER_NAME="ais2api"
     local IMAGE_NAME="ellinalopez/cloud-studio:latest"
     
@@ -2014,6 +2026,24 @@ install_ais2api() {
 
     log_action "正在创建目录结构..."
     mkdir -p "$INSTALL_DIR/auth"
+
+    while true; do
+        if [ "$(ls -A "$INSTALL_DIR/auth" 2>/dev/null)" ]; then
+            log_success "检测到认证文件，继续安装..."
+            break
+        else
+            echo -e "\n${YELLOW}---【 重要：请放入认证文件 】---${NC}"
+            echo -e "ais2api 需要至少一个认证文件才能启动。"
+            echo -e "请将您的认证文件（如 ${CYAN}auth-1${NC}、${CYAN}auth-2${NC} ……）放入以下目录："
+            echo -e "路径: ${GREEN}$INSTALL_DIR/auth${NC}"
+            echo -e "--------------------------------"
+            read -rp "放入完成后按【回车键】重新检测，或输入 [q] 退出安装: " auth_check < /dev/tty
+            if [[ "$auth_check" == "q" ]]; then
+                log_info "操作已取消。"
+                return 1
+            fi
+        fi
+    done
     
     log_action "正在生成 app.env..."
     cat <<EOF > "$INSTALL_DIR/app.env"
@@ -2060,7 +2090,7 @@ services:
 EOF
 
     log_action "正在启动服务..."
-    cd "$INSTALL_DIR" && docker compose up -d
+    cd "$INSTALL_DIR" && docker compose --progress plain up -d
     
     fn_verify_container_health "$CONTAINER_NAME"
     
@@ -2071,8 +2101,6 @@ EOF
     echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:${AIS_PORT}${NC}"
     echo -e "  ${CYAN}API Key:${NC} ${YELLOW}${AIS_KEY}${NC}"
     echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
-    
-    read -rp $'\n部署完成，按 Enter 键继续...' < /dev/tty
 }
 
 fn_test_scripts_menu() {
@@ -2125,7 +2153,7 @@ fn_st_switch_to_single() {
     sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$new_pass\"/}" "$config_file"
     
     log_info "正在重启容器以应用更改..."
-    cd "$project_dir" && $compose_cmd up -d --force-recreate
+    cd "$project_dir" && $compose_cmd --progress plain up -d --force-recreate
     log_success "已成功切换为单用户模式！"
 }
 
@@ -2144,7 +2172,7 @@ fn_st_switch_to_multi() {
     log_info "正在开启多用户模式并重启服务..."
     sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # 启用多用户模式/" "$config_file"
     
-    cd "$project_dir" && $compose_cmd up -d --force-recreate
+    cd "$project_dir" && $compose_cmd --progress plain up -d --force-recreate
     
     # 获取公网IP和端口
     local SERVER_IP=$(fn_get_public_ip)
@@ -2172,7 +2200,7 @@ EOF
     sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false # 关闭基础认证，启用登录页/" "$config_file"
     sed -i -E "s/^([[:space:]]*)enableDiscreetLogin: .*/\1enableDiscreetLogin: true # 隐藏登录用户列表/" "$config_file"
     
-    cd "$project_dir" && $compose_cmd up -d --force-recreate
+    cd "$project_dir" && $compose_cmd --progress plain up -d --force-recreate
     log_success "已成功切换为多用户模式！"
 }
 
@@ -2264,7 +2292,7 @@ fn_st_toggle_beautify() {
     fi
 
     log_info "正在重建容器以应用更改..."
-    cd "$project_dir" && $compose_cmd up -d --force-recreate
+    cd "$project_dir" && $compose_cmd --progress plain up -d --force-recreate
 }
 
 fn_st_docker_manager() {
@@ -2355,12 +2383,12 @@ fn_st_docker_manager() {
                 ;;
             2)
                 log_action "正在强制重建酒馆容器..."
-                cd "$project_dir" && $compose_cmd up -d --force-recreate --remove-orphans
+                cd "$project_dir" && $compose_cmd --progress plain up -d --force-recreate --remove-orphans
                 read -rp "操作完成，按 Enter 继续..." < /dev/tty
                 ;;
             3)
                 log_action "正在拉取最新镜像并更新..."
-                cd "$project_dir" && $compose_cmd pull && $compose_cmd up -d --remove-orphans
+                cd "$project_dir" && $compose_cmd pull && $compose_cmd --progress plain up -d --remove-orphans
                 read -rp "操作完成，按 Enter 继续..." < /dev/tty
                 ;;
             4)
@@ -2433,8 +2461,8 @@ fn_api_docker_manager() {
         [[ -z "$api_choice" ]] && continue
         case "$api_choice" in
             1) cd "$project_dir" && $compose_cmd restart; read -rp "按 Enter 继续..." < /dev/tty ;;
-            2) cd "$project_dir" && $compose_cmd up -d --force-recreate; read -rp "按 Enter 继续..." < /dev/tty ;;
-            3) cd "$project_dir" && $compose_cmd pull && $compose_cmd up -d; read -rp "按 Enter 继续..." < /dev/tty ;;
+            2) cd "$project_dir" && $compose_cmd --progress plain up -d --force-recreate; read -rp "按 Enter 继续..." < /dev/tty ;;
+            3) cd "$project_dir" && $compose_cmd pull && $compose_cmd --progress plain up -d; read -rp "按 Enter 继续..." < /dev/tty ;;
             4) echo -e "\n${CYAN}--- 状态 ---${NC}"; cd "$project_dir" && $compose_cmd ps; read -rp "按 Enter 继续..." < /dev/tty ;;
             5) echo -e "\n${CYAN}--- 日志 (Ctrl+C 退出) ---${NC}"; (trap 'exit 0' INT; cd "$project_dir" && $compose_cmd logs -f --tail 100);;
             0) break ;;
