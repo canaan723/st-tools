@@ -1159,7 +1159,11 @@ fn_fail2ban_manager() {
         [[ -z "$f2b_choice" ]] && continue
         case $f2b_choice in
             1) /usr/local/bin/fail2ban-status.sh; read -rp "按 Enter 继续..." < /dev/tty ;;
-            2) (trap 'exit 0' INT; tail -f /var/log/fail2ban.log) ;;
+            2)
+                trap '' INT
+                tail -f /var/log/fail2ban.log
+                trap 'exit 0' INT
+                ;;
             3)
                 echo -e "\n${CYAN}--- 正在获取被封禁的 IP 列表 ---${NC}"
                 # 兼容不同版本的 fail2ban-client 输出格式 (处理空格或制表符)
@@ -1814,7 +1818,7 @@ EOF
     fi
 
     fn_print_info "正在进行首次启动以生成官方配置文件..."
-    if ! $DOCKER_COMPOSE_CMD --progress plain -f "$COMPOSE_FILE" up -d > /dev/null 2>&1; then
+    if ! $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null 2>&1; then
         fn_print_error "首次启动容器失败！请检查以下日志：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)" || return 1
     fi
     local timeout=60
@@ -1833,7 +1837,7 @@ EOF
         log_success "单用户模式配置写入完成！"
     else
         fn_print_info "正在临时启动服务以设置管理员..."
-        if ! $DOCKER_COMPOSE_CMD --progress plain -f "$COMPOSE_FILE" up -d > /dev/null 2>&1; then
+        if ! $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null 2>&1; then
             fn_print_error "临时启动容器以设置管理员失败！请检查以下日志：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)" || return 1
         fi
         fn_verify_container_health "$CONTAINER_NAME"
@@ -1868,7 +1872,7 @@ EOF
 
     fn_print_step "[ 5/5 ] 启动并验证服务"
     fn_print_info "正在应用最终配置并重启服务..."
-    if ! $DOCKER_COMPOSE_CMD --progress plain -f "$COMPOSE_FILE" up -d --force-recreate > /dev/null 2>&1; then
+    if ! $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate > /dev/null 2>&1; then
         fn_print_error "应用最终配置并启动服务失败！请检查以下日志：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)" || return 1
     fi
     fn_verify_container_health "$CONTAINER_NAME"
@@ -1886,7 +1890,12 @@ EOF
         [[ -z "$choice" ]] && continue
         case "$choice" in
             1) fn_check_and_explain_status "$CONTAINER_NAME";;
-            2) echo -e "\n${YELLOW}--- 实时日志 (按 Ctrl+C 停止) ---${NC}"; (trap 'exit 0' INT; docker logs -f "$CONTAINER_NAME" || true);;
+            2)
+                echo -e "\n${YELLOW}--- 实时日志 (按 Ctrl+C 停止) ---${NC}"
+                trap '' INT
+                docker logs -f "$CONTAINER_NAME" || true
+                trap 'exit 0' INT
+                ;;
             3) fn_display_final_info;;
             q|Q) echo -e "\n已退出部署后菜单。"; break;;
             *) log_warn "无效输入，请输入 1, 2, 3 或 q。";;
@@ -1965,7 +1974,7 @@ services:
 EOF
 
     log_action "正在启动服务..."
-    cd "$INSTALL_DIR" && docker compose --progress plain up -d
+    cd "$INSTALL_DIR" && docker compose up -d
     
     fn_verify_container_health "$CONTAINER_NAME"
     
@@ -2090,7 +2099,7 @@ services:
 EOF
 
     log_action "正在启动服务..."
-    cd "$INSTALL_DIR" && docker compose --progress plain up -d
+    cd "$INSTALL_DIR" && docker compose up -d
     
     fn_verify_container_health "$CONTAINER_NAME"
     
@@ -2153,7 +2162,7 @@ fn_st_switch_to_single() {
     sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$new_pass\"/}" "$config_file"
     
     log_info "正在重启容器以应用更改..."
-    cd "$project_dir" && $compose_cmd --progress plain up -d --force-recreate
+    cd "$project_dir" && $compose_cmd up -d --force-recreate
     log_success "已成功切换为单用户模式！"
 }
 
@@ -2172,7 +2181,7 @@ fn_st_switch_to_multi() {
     log_info "正在开启多用户模式并重启服务..."
     sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # 启用多用户模式/" "$config_file"
     
-    cd "$project_dir" && $compose_cmd --progress plain up -d --force-recreate
+    cd "$project_dir" && $compose_cmd up -d --force-recreate
     
     # 获取公网IP和端口
     local SERVER_IP=$(fn_get_public_ip)
@@ -2200,7 +2209,7 @@ EOF
     sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false # 关闭基础认证，启用登录页/" "$config_file"
     sed -i -E "s/^([[:space:]]*)enableDiscreetLogin: .*/\1enableDiscreetLogin: true # 隐藏登录用户列表/" "$config_file"
     
-    cd "$project_dir" && $compose_cmd --progress plain up -d --force-recreate
+    cd "$project_dir" && $compose_cmd up -d --force-recreate
     log_success "已成功切换为多用户模式！"
 }
 
@@ -2292,7 +2301,7 @@ fn_st_toggle_beautify() {
     fi
 
     log_info "正在重建容器以应用更改..."
-    cd "$project_dir" && $compose_cmd --progress plain up -d --force-recreate
+    cd "$project_dir" && $compose_cmd up -d --force-recreate
 }
 
 fn_st_docker_manager() {
@@ -2328,8 +2337,13 @@ fn_st_docker_manager() {
     local config_file="${project_dir}/config/config.yaml"
     local compose_file="${project_dir}/docker-compose.yml"
 
-    if [ ! -d "$project_dir" ] || [ ! -f "$compose_file" ]; then
-        log_error "未能找到酒馆项目目录或 docker-compose.yml 文件 (路径: $project_dir)。" || return 1
+    # 适配挂载目录不同的情况：如果 config/config.yaml 不存在，但根目录下存在 config.yaml
+    if [ ! -f "$config_file" ] && [ -f "${project_dir}/config.yaml" ]; then
+        config_file="${project_dir}/config.yaml"
+    fi
+
+    if [ ! -d "$project_dir" ] || [ ! -f "$compose_file" ] || [ ! -f "$config_file" ]; then
+        log_error "未能找到酒馆项目目录、docker-compose.yml 或 config.yaml 文件 (路径: $project_dir)。" || return 1
     fi
 
     while true; do
@@ -2383,12 +2397,12 @@ fn_st_docker_manager() {
                 ;;
             2)
                 log_action "正在强制重建酒馆容器..."
-                cd "$project_dir" && $compose_cmd --progress plain up -d --force-recreate --remove-orphans
+                cd "$project_dir" && $compose_cmd up -d --force-recreate --remove-orphans
                 read -rp "操作完成，按 Enter 继续..." < /dev/tty
                 ;;
             3)
                 log_action "正在拉取最新镜像并更新..."
-                cd "$project_dir" && $compose_cmd pull && $compose_cmd --progress plain up -d --remove-orphans
+                cd "$project_dir" && $compose_cmd pull && $compose_cmd up -d --remove-orphans
                 read -rp "操作完成，按 Enter 继续..." < /dev/tty
                 ;;
             4)
@@ -2414,11 +2428,15 @@ fn_st_docker_manager() {
                 ;;
             7)
                 echo -e "\n${CYAN}--- 资源占用 (按 Ctrl+C 退出) ---${NC}"
-                (trap 'exit 0' INT; docker stats "$container_name")
+                trap '' INT
+                docker stats "$container_name"
+                trap 'exit 0' INT
                 ;;
             8)
                 echo -e "\n${CYAN}--- 实时日志 (按 Ctrl+C 退出) ---${NC}"
-                (trap 'exit 0' INT; cd "$project_dir" && $compose_cmd logs -f --tail 1000)
+                trap '' INT
+                cd "$project_dir" && $compose_cmd logs -f --tail 1000
+                trap 'exit 0' INT
                 ;;
             0) break ;;
             *) log_warn "无效输入"; sleep 1 ;;
@@ -2461,10 +2479,15 @@ fn_api_docker_manager() {
         [[ -z "$api_choice" ]] && continue
         case "$api_choice" in
             1) cd "$project_dir" && $compose_cmd restart; read -rp "按 Enter 继续..." < /dev/tty ;;
-            2) cd "$project_dir" && $compose_cmd --progress plain up -d --force-recreate; read -rp "按 Enter 继续..." < /dev/tty ;;
-            3) cd "$project_dir" && $compose_cmd pull && $compose_cmd --progress plain up -d; read -rp "按 Enter 继续..." < /dev/tty ;;
+            2) cd "$project_dir" && $compose_cmd up -d --force-recreate; read -rp "按 Enter 继续..." < /dev/tty ;;
+            3) cd "$project_dir" && $compose_cmd pull && $compose_cmd up -d; read -rp "按 Enter 继续..." < /dev/tty ;;
             4) echo -e "\n${CYAN}--- 状态 ---${NC}"; cd "$project_dir" && $compose_cmd ps; read -rp "按 Enter 继续..." < /dev/tty ;;
-            5) echo -e "\n${CYAN}--- 日志 (Ctrl+C 退出) ---${NC}"; (trap 'exit 0' INT; cd "$project_dir" && $compose_cmd logs -f --tail 100);;
+            5)
+                echo -e "\n${CYAN}--- 日志 (Ctrl+C 退出) ---${NC}"
+                trap '' INT
+                cd "$project_dir" && $compose_cmd logs -f --tail 100
+                trap 'exit 0' INT
+                ;;
             0) break ;;
             *) log_warn "无效输入"; sleep 1 ;;
         esac
