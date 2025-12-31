@@ -1420,6 +1420,11 @@ fn_get_public_ip() {
     return 1
 }
 
+fn_generate_password() {
+    local length=${1:-34}
+    tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "$length"
+}
+
 install_sillytavern() {
     local DOCKER_VER="-" DOCKER_STATUS="-"
     local COMPOSE_VER="-" COMPOSE_STATUS="-"
@@ -1883,6 +1888,193 @@ EOF
     done
 }
 
+install_gcli2api() {
+    local CONTAINER_NAME="gcli2api"
+    local IMAGE_NAME="ghcr.io/su-kaka/gcli2api:latest"
+    
+    tput reset
+    echo -e "${CYAN}gcli2api Docker 自动化安装流程${NC}"
+    
+    fn_check_base_deps
+    fn_check_dependencies
+    
+    if docker ps -a -q -f "name=^${CONTAINER_NAME}$" | grep -q .; then
+        log_warn "检测到已存在名为 '${CONTAINER_NAME}' 的容器。"
+        read -rp "是否停止并移除现有容器？[y/N]: " confirm_rm < /dev/tty
+        if [[ "$confirm_rm" =~ ^[Yy]$ ]]; then
+            docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
+            docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
+        else
+            log_info "操作已取消。"
+            return 1
+        fi
+    fi
+
+    local default_parent_path="${USER_HOME}"
+    read -rp "安装路径: gcli2api 将被安装在 <上级目录>/gcli2api 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
+    local parent_path="${custom_parent_path:-$default_parent_path}"
+    local INSTALL_DIR="${parent_path}/gcli2api"
+    
+    while true; do
+        read -rp "请输入访问端口 [默认 7861]: " GCLI_PORT < /dev/tty
+        GCLI_PORT=${GCLI_PORT:-7861}
+        if [[ "$GCLI_PORT" =~ ^[0-9]+$ ]] && [ "$GCLI_PORT" -ge 1 ] && [ "$GCLI_PORT" -le 65535 ]; then
+            break
+        else
+            log_warn "端口无效。"
+        fi
+    done
+
+    local random_pwd=$(fn_generate_password 34)
+    read -rp "请输入管理密码 [直接回车=随机生成]: " GCLI_PWD < /dev/tty
+    GCLI_PWD=${GCLI_PWD:-$random_pwd}
+
+    log_action "正在创建目录结构..."
+    mkdir -p "$INSTALL_DIR/data/creds"
+    
+    log_action "正在生成 docker-compose.yml..."
+    cat <<EOF > "$INSTALL_DIR/docker-compose.yml"
+services:
+  gcli2api:
+    image: ${IMAGE_NAME}
+    container_name: ${CONTAINER_NAME}
+    restart: unless-stopped
+    ports:
+      - "${GCLI_PORT}:7861"
+    environment:
+      - PASSWORD=${GCLI_PWD}
+      - PORT=7861
+    volumes:
+      - ./data/creds:/app/creds
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import sys, urllib.request, os; port = os.environ.get('PORT', '7861'); req = urllib.request.Request(f'http://localhost:{port}/v1/models', headers={'Authorization': 'Bearer ' + os.environ.get('PASSWORD', 'pwd')}); sys.exit(0 if urllib.request.urlopen(req, timeout=5).getcode() == 200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+EOF
+
+    log_action "正在启动服务..."
+    cd "$INSTALL_DIR" && docker compose up -d
+    
+    fn_verify_container_health "$CONTAINER_NAME"
+    
+    local SERVER_IP=$(fn_get_public_ip)
+    echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "║                   ${BOLD}gcli2api 部署成功！${NC}                      ║"
+    echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:${GCLI_PORT}${NC}"
+    echo -e "  ${CYAN}管理密码:${NC} ${YELLOW}${GCLI_PWD}${NC}"
+    echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
+    
+    read -rp $'\n部署完成，按 Enter 键继续...' < /dev/tty
+}
+
+install_ais2api() {
+    local CONTAINER_NAME="ais2api"
+    local IMAGE_NAME="ellinalopez/cloud-studio:latest"
+    
+    tput reset
+    echo -e "${CYAN}ais2api Docker 自动化安装流程${NC}"
+    log_warn "注意：此镜像仅支持 x86 架构。"
+    
+    fn_check_base_deps
+    fn_check_dependencies
+    
+    if docker ps -a -q -f "name=^${CONTAINER_NAME}$" | grep -q .; then
+        log_warn "检测到已存在名为 '${CONTAINER_NAME}' 的容器。"
+        read -rp "是否停止并移除现有容器？[y/N]: " confirm_rm < /dev/tty
+        if [[ "$confirm_rm" =~ ^[Yy]$ ]]; then
+            docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
+            docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
+        else
+            log_info "操作已取消。"
+            return 1
+        fi
+    fi
+
+    local default_parent_path="${USER_HOME}"
+    read -rp "安装路径: ais2api 将被安装在 <上级目录>/ais2api 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
+    local parent_path="${custom_parent_path:-$default_parent_path}"
+    local INSTALL_DIR="${parent_path}/ais2api"
+    
+    while true; do
+        read -rp "请输入访问端口 [默认 8889]: " AIS_PORT < /dev/tty
+        AIS_PORT=${AIS_PORT:-8889}
+        if [[ "$AIS_PORT" =~ ^[0-9]+$ ]] && [ "$AIS_PORT" -ge 1 ] && [ "$AIS_PORT" -le 65535 ]; then
+            break
+        else
+            log_warn "端口无效。"
+        fi
+    done
+
+    local random_key=$(fn_generate_password 34)
+    read -rp "请输入 API Key [直接回车=随机生成]: " AIS_KEY < /dev/tty
+    AIS_KEY=${AIS_KEY:-$random_key}
+
+    log_action "正在创建目录结构..."
+    mkdir -p "$INSTALL_DIR/auth"
+    
+    log_action "正在生成 app.env..."
+    cat <<EOF > "$INSTALL_DIR/app.env"
+# 自定义密钥
+API_KEYS=${AIS_KEY}
+
+# 如果你需要使用【app.env】加载认证信息，删除下面的 # 以去除注释，并填入之前获取的认证文件auth_single里的全部内容！
+# AUTH_JSON_1=
+# 如果还需要添加更多账号，依此类推增加 AUTH_JSON_2、AUTH_JSON_3
+
+# 以下为可选参数
+# （选填）账号使用40次后切换到下一个账号（建议用50或以下，太高导致内存占用高，然后卡顿）
+SWITCH_ON_USES=40
+
+# （选填）服务器端重试次数1次
+MAX_RETRIES=1
+
+# （选填）失败3次后重试
+FAILURE_THRESHOLD=3
+
+# （选填）遇到429和503报错立刻切换账号
+IMMEDIATE_SWITCH_STATUS_CODES=429,503
+
+# （选填）起始账号，默认是第一个
+INITIAL_AUTH_INDEX=null
+
+# 使用假流式
+STREAMING_MODE=real
+EOF
+
+    log_action "正在生成 docker-compose.yml..."
+    cat <<EOF > "$INSTALL_DIR/docker-compose.yml"
+services:
+  ais2api:
+    container_name: ${CONTAINER_NAME}
+    image: ${IMAGE_NAME}
+    ports:
+      - "${AIS_PORT}:7860"
+    env_file:
+      - app.env
+    volumes:
+      - ./auth:/app/auth
+    restart: unless-stopped
+EOF
+
+    log_action "正在启动服务..."
+    cd "$INSTALL_DIR" && docker compose up -d
+    
+    fn_verify_container_health "$CONTAINER_NAME"
+    
+    local SERVER_IP=$(fn_get_public_ip)
+    echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "║                   ${BOLD}ais2api 部署成功！${NC}                       ║"
+    echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:${AIS_PORT}${NC}"
+    echo -e "  ${CYAN}API Key:${NC} ${YELLOW}${AIS_KEY}${NC}"
+    echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
+    
+    read -rp $'\n部署完成，按 Enter 键继续...' < /dev/tty
+}
+
 fn_test_scripts_menu() {
     # 清理输入缓冲区
     while read -r -t 0.1; do :; done
@@ -2206,6 +2398,51 @@ fn_st_docker_manager() {
     done
 }
 
+fn_api_docker_manager() {
+    local container_name=$1
+    local display_name=$2
+    local compose_cmd=""
+    
+    if command -v docker-compose &> /dev/null; then
+        compose_cmd="docker-compose"
+    elif docker compose version &> /dev/null; then
+        compose_cmd="docker compose"
+    else
+        log_error "未检测到 Docker Compose。" || return 1
+    fi
+
+    local project_dir=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$container_name" 2>/dev/null)
+    
+    if [ -z "$project_dir" ] || [ ! -d "$project_dir" ]; then
+        log_error "未能找到项目目录。" || return 1
+    fi
+
+    while true; do
+        tput reset
+        echo -e "${BLUE}=== ${display_name} 运维管理 ===${NC}"
+        echo -e "项目路径: ${CYAN}${project_dir}${NC}"
+        echo -e "------------------------"
+        echo -e "  [1] 重启服务 (restart)"
+        echo -e "  [2] 重建服务 (recreate)"
+        echo -e "  [3] 更新镜像 (pull & up)"
+        echo -e "  [4] 查看运行状态 (ps)"
+        echo -e "  [5] 查看实时日志 (logs -f)"
+        echo -e "  [0] 返回主菜单"
+        echo -e "------------------------"
+        read -rp "请输入选项: " api_choice < /dev/tty
+        [[ -z "$api_choice" ]] && continue
+        case "$api_choice" in
+            1) cd "$project_dir" && $compose_cmd restart; read -rp "按 Enter 继续..." < /dev/tty ;;
+            2) cd "$project_dir" && $compose_cmd up -d --force-recreate; read -rp "按 Enter 继续..." < /dev/tty ;;
+            3) cd "$project_dir" && $compose_cmd pull && $compose_cmd up -d; read -rp "按 Enter 继续..." < /dev/tty ;;
+            4) echo -e "\n${CYAN}--- 状态 ---${NC}"; cd "$project_dir" && $compose_cmd ps; read -rp "按 Enter 继续..." < /dev/tty ;;
+            5) echo -e "\n${CYAN}--- 日志 (Ctrl+C 退出) ---${NC}"; (trap 'exit 0' INT; cd "$project_dir" && $compose_cmd logs -f --tail 100);;
+            0) break ;;
+            *) log_warn "无效输入"; sleep 1 ;;
+        esac
+    done
+}
+
 main_menu() {
     while true; do
         tput reset
@@ -2238,6 +2475,8 @@ main_menu() {
         fi
         
         echo -e " ${GREEN}[3] 部署 SillyTavern${NC}"
+        echo -e " ${GREEN}[31] 部署 gcli2api${NC}"
+        echo -e " ${GREEN}[32] 部署 ais2api${NC}"
         
         echo -e "\n${BLUE}============================== [ 运维区域 ] ===============================${NC}"
 
@@ -2247,6 +2486,18 @@ main_menu() {
         if docker ps -a --format '{{.Names}}' | grep -q '^sillytavern$'; then
             show_st_manager=true
             echo -e " ${GREEN}[5] 酒馆运维管理${NC}"
+        fi
+
+        local show_gcli_manager=false
+        if docker ps -a --format '{{.Names}}' | grep -q '^gcli2api$'; then
+            show_gcli_manager=true
+            echo -e " ${GREEN}[51] gcli2api 运维管理${NC}"
+        fi
+
+        local show_ais_manager=false
+        if docker ps -a --format '{{.Names}}' | grep -q '^ais2api$'; then
+            show_ais_manager=true
+            echo -e " ${GREEN}[52] ais2api 运维管理${NC}"
         fi
 
         if [ "$IS_DEBIAN_LIKE" = true ]; then
@@ -2271,8 +2522,10 @@ main_menu() {
         echo -e "${BLUE}===========================================================================${NC}"
         echo -e " ${YELLOW}[q] 退出脚本${NC}\n"
 
-        local options_str="3,4"
+        local options_str="3,31,32,4"
         [ "$show_st_manager" = true ] && options_str="${options_str},5"
+        [ "$show_gcli_manager" = true ] && options_str="${options_str},51"
+        [ "$show_ais_manager" = true ] && options_str="${options_str},52"
         if [ "$IS_DEBIAN_LIKE" = true ]; then
             options_str="1,2,${options_str},6,7,8"
             if command -v 1pctl &> /dev/null; then
@@ -2306,12 +2559,36 @@ main_menu() {
                 while read -r -t 0.1; do :; done
                 read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
                 ;;
+            31)
+                install_gcli2api
+                while read -r -t 0.1; do :; done
+                read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
+                ;;
+            32)
+                install_ais2api
+                while read -r -t 0.1; do :; done
+                read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
+                ;;
             4)
                 fn_test_scripts_menu
                 ;;
             5)
                 if [ "$show_st_manager" = true ]; then
                     fn_st_docker_manager
+                else
+                    echo -e "\n${RED}无效输入，请重新选择。${NC}"; sleep 2
+                fi
+                ;;
+            51)
+                if [ "$show_gcli_manager" = true ]; then
+                    fn_api_docker_manager "gcli2api" "gcli2api"
+                else
+                    echo -e "\n${RED}无效输入，请重新选择。${NC}"; sleep 2
+                fi
+                ;;
+            52)
+                if [ "$show_ais_manager" = true ]; then
+                    fn_api_docker_manager "ais2api" "ais2api"
                 else
                     echo -e "\n${RED}无效输入，请重新选择。${NC}"; sleep 2
                 fi
