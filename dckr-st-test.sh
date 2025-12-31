@@ -14,7 +14,7 @@
 
 # --- [核心配置] ---
 # 脚本版本号
-readonly SCRIPT_VERSION="v3.0test2"
+readonly SCRIPT_VERSION="v3.0test3"
 # 模式切换: "test" (测试版) 或 "prod" (正式版)
 GUGU_MODE="test"
 
@@ -1591,45 +1591,12 @@ EOF
 
     fn_pull_with_progress_bar() {
         local target_image="$1"
-        local time_estimate_table="$2"
-        local PULL_LOG
-        PULL_LOG=$(mktemp)
-        # 使用局部变量保存旧的 trap，或者在函数结束时清理
-        local old_trap=$(trap -p EXIT)
-        trap 'rm -f "$PULL_LOG"' EXIT
         
         log_info "正在拉取镜像: ${target_image} ..."
-        docker pull "$target_image" > "$PULL_LOG" 2>&1 &
-        local pid=$!
-        
-        # 允许用户通过 Ctrl+C 取消拉取
-        (
-            trap 'kill $pid 2>/dev/null; exit 1' INT
-            while kill -0 $pid 2>/dev/null; do
-                clear || true
-                echo -e "${time_estimate_table}"
-                echo -e "\n${CYAN}--- 实时拉取进度 (下方为最新日志) ---${NC}"
-                grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists|Status: Downloaded' "$PULL_LOG" | tail -n 5 || true
-                sleep 1
-            done
-        )
-        
-        wait $pid
-        local exit_code=$?
-        eval "$old_trap" # 恢复旧的 trap
-
-        clear || true
-
-        if [ $exit_code -ne 0 ]; then
-            echo -e "${RED}Docker 镜像拉取失败或被取消！${NC}" >&2
-            echo "--------------------------------------------------" >&2
-            cat "$PULL_LOG" >&2
-            echo "--------------------------------------------------" >&2
-            rm -f "$PULL_LOG"
-            fn_print_error "镜像拉取未完成。请检查网络或镜像源。" || return 1
-        else
-            rm -f "$PULL_LOG"
+        if docker pull "$target_image"; then
             log_success "镜像拉取成功！"
+        else
+            fn_print_error "镜像拉取失败。请检查网络或镜像源。" || return 1
         fi
     }
 
@@ -1825,27 +1792,14 @@ EOF
     log_success "docker-compose.yml 文件创建成功！"
 
     fn_print_step "[ 4/5 ] 初始化与配置"
-    fn_print_info "即将拉取 SillyTavern 镜像，下载期间将持续显示预估时间。"
-    TIME_ESTIMATE_TABLE=$(cat <<EOF
-  下载速度取决于网络带宽，以下为预估时间参考：
-  ${YELLOW}┌──────────────────────────────────────────────────┐${NC}
-  ${YELLOW}│${NC} ${CYAN}带宽${NC}      ${BOLD}|${NC} ${CYAN}下载速度${NC}    ${BOLD}|${NC} ${CYAN}预估最快时间${NC}           ${YELLOW}│${NC}
-  ${YELLOW}├──────────────────────────────────────────────────┤${NC}
-  ${YELLOW}│${NC} 1M 带宽   ${BOLD}|${NC} ~0.125 MB/s ${BOLD}|${NC} 约 1 小时 14 分 31 秒 ${YELLOW}│${NC}
-  ${YELLOW}│${NC} 2M 带宽   ${BOLD}|${NC} ~0.25 MB/s  ${BOLD}|${NC} 约 37 分 15 秒        ${YELLOW}│${NC}
-  ${YELLOW}│${NC} 10M 带宽  ${BOLD}|${NC} ~1.25 MB/s  ${BOLD}|${NC} 约 7 分 27 秒         ${YELLOW}│${NC}
-  ${YELLOW}│${NC} 100M 带宽 ${BOLD}|${NC} ~12.5 MB/s  ${BOLD}|${NC} 约 45 秒              ${YELLOW}│${NC}
-  ${YELLOW}└──────────────────────────────────────────────────┘${NC}
-EOF
-)
     if [ -n "$CUSTOM_PROXY_IMAGE" ]; then
         log_action "检测到代理镜像，正在执行 Pull & Tag 流程..."
-        fn_pull_with_progress_bar "$CUSTOM_PROXY_IMAGE" "$TIME_ESTIMATE_TABLE"
+        fn_pull_with_progress_bar "$CUSTOM_PROXY_IMAGE"
         log_info "正在重打标签: ${CUSTOM_PROXY_IMAGE} -> ${IMAGE_NAME}"
         docker tag "$CUSTOM_PROXY_IMAGE" "$IMAGE_NAME"
         log_success "代理镜像已就绪。"
     else
-        fn_pull_with_progress_bar "$IMAGE_NAME" "$TIME_ESTIMATE_TABLE"
+        fn_pull_with_progress_bar "$IMAGE_NAME"
     fi
 
     fn_print_info "正在进行首次启动以生成官方配置文件..."
@@ -1990,24 +1944,28 @@ fn_st_switch_to_multi() {
     local container_name="sillytavern"
 
     log_action "正在切换为多用户模式..."
-    log_info "正在临时开启基础认证以设置管理员..."
-    sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 临时开启基础认证以设置管理员/" "$config_file"
+    
+    # 获取当前单用户凭据用于引导
+    local current_user=$(grep -A 2 "basicAuthUser:" "$config_file" | grep "username:" | cut -d'"' -f2)
+    local current_pass=$(grep -A 2 "basicAuthUser:" "$config_file" | grep "password:" | cut -d'"' -f2)
+    
+    log_info "正在开启多用户模式并重启服务..."
     sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # 启用多用户模式/" "$config_file"
     
     cd "$project_dir" && $compose_cmd up -d --force-recreate
     
-    # 复用安装时的引导逻辑
+    # 获取公网IP和端口
     local SERVER_IP=$(fn_get_public_ip)
-    local ST_PORT=$(grep -oP 'ports:\s+-\s+"\K[0-9]+(?=:8000")' "$project_dir/docker-compose.yml")
+    local ST_PORT=$(grep -E '^\s+-\s+"[0-9]+:8000"' "$project_dir/docker-compose.yml" | grep -oE '[0-9]+' | head -n 1)
     
     MULTI_USER_GUIDE=$(cat <<EOF
 
 ${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}
 1. ${CYAN}【访问并登录】${NC}
    打开浏览器，访问: ${GREEN}http://${SERVER_IP}:${ST_PORT}${NC}
-   使用以下默认凭据登录：
-     ▶ 账号: ${YELLOW}user${NC}
-     ▶ 密码: ${YELLOW}password${NC}
+   使用您当前的凭据登录：
+     ▶ 账号: ${YELLOW}${current_user:-user}${NC}
+     ▶ 密码: ${YELLOW}${current_pass:-password}${NC}
 2. ${CYAN}【设置管理员】${NC}
    登录后，立即在【用户设置】标签页的【管理员面板】中操作：
    A. ${GREEN}设置密码${NC}：为默认账户 \`default-user\` 设置一个强大的新密码。
@@ -2162,20 +2120,19 @@ fn_st_docker_manager() {
         
         if [ "$is_multi_user" = true ]; then
             echo -e "  [4] ${CYAN}切换为单用户模式${NC}"
+            if [ "$is_beautified" = true ]; then
+                echo -e "  [5] ${CYAN}关闭登录页美化${NC}"
+            else
+                echo -e "  [5] ${CYAN}开启登录页美化${NC}"
+            fi
         else
             echo -e "  [4] ${CYAN}切换为多用户模式${NC}"
             echo -e "  [5] ${CYAN}更改用户名密码${NC}"
         fi
 
-        if [ "$is_beautified" = true ]; then
-            echo -e "  [6] ${CYAN}关闭登录页美化${NC}"
-        else
-            echo -e "  [6] ${CYAN}开启登录页美化${NC}"
-        fi
-
-        echo -e "  [7] 查看运行状态 (ps)"
-        echo -e "  [8] 查看资源占用 (stats)"
-        echo -e "  [9] 查看实时日志 (logs -f)"
+        echo -e "  [6] 查看运行状态 (ps)"
+        echo -e "  [7] 查看资源占用 (stats)"
+        echo -e "  [8] 查看实时日志 (logs -f)"
         echo -e "  [0] 返回主菜单"
         echo -e "------------------------"
         read -rp "请输入选项: " st_choice < /dev/tty
@@ -2205,28 +2162,23 @@ fn_st_docker_manager() {
                 read -rp "操作完成，按 Enter 继续..." < /dev/tty
                 ;;
             5)
-                if [ "$is_multi_user" = false ]; then
-                    fn_st_change_credentials "$config_file" "$compose_cmd" "$project_dir"
-                    read -rp "操作完成，按 Enter 继续..." < /dev/tty
+                if [ "$is_multi_user" = true ]; then
+                    fn_st_toggle_beautify "$project_dir" "$compose_file" "$compose_cmd" "$is_beautified"
                 else
-                    log_warn "无效选项"
-                    sleep 1
+                    fn_st_change_credentials "$config_file" "$compose_cmd" "$project_dir"
                 fi
-                ;;
-            6)
-                fn_st_toggle_beautify "$project_dir" "$compose_file" "$compose_cmd" "$is_beautified"
                 read -rp "操作完成，按 Enter 继续..." < /dev/tty
                 ;;
-            7)
+            6)
                 echo -e "\n${CYAN}--- 容器状态 ---${NC}"
                 cd "$project_dir" && $compose_cmd ps
                 read -rp "按 Enter 继续..." < /dev/tty
                 ;;
-            8)
+            7)
                 echo -e "\n${CYAN}--- 资源占用 (按 Ctrl+C 退出) ---${NC}"
                 (trap 'exit 0' INT; docker stats "$container_name")
                 ;;
-            9)
+            8)
                 echo -e "\n${CYAN}--- 实时日志 (按 Ctrl+C 退出) ---${NC}"
                 (trap 'exit 0' INT; cd "$project_dir" && $compose_cmd logs -f --tail 1000)
                 ;;
