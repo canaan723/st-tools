@@ -1058,41 +1058,82 @@ fn_fail2ban_manager() {
                 echo -e "------------------------"
                 echo -e "  [1] 将当前登录 IP 加入白名单"
                 echo -e "  [2] 手动输入 IP 或 CIDR 加入白名单"
+                echo -e "  [3] 从白名单中移除 IP"
                 echo -e "  [0] 返回"
                 read -rp "请选择: " wl_choice < /dev/tty
                 
-                local add_ip=""
                 case $wl_choice in
                     1)
+                        local add_ip=""
                         if [ -n "$current_ip" ]; then
                             add_ip="$current_ip"
                         else
                             log_warn "无法自动获取当前 IP，请手动输入。"
+                            read -rp "请输入 IP: " add_ip < /dev/tty
                         fi
+                        
+                        if [ -n "$add_ip" ]; then
+                            if [ ! -f /etc/fail2ban/jail.local ]; then
+                                log_error "未找到 /etc/fail2ban/jail.local 配置文件。" || return 1
+                            fi
+                            local current_ignore=$(grep "^ignoreip =" /etc/fail2ban/jail.local | cut -d= -f2- | xargs)
+                            if echo "$current_ignore" | grep -q "$add_ip"; then
+                                log_info "IP $add_ip 已在白名单中。"
+                            else
+                                local new_ignore="$current_ignore $add_ip"
+                                sed -i "s|^ignoreip =.*|ignoreip = $new_ignore|" /etc/fail2ban/jail.local
+                                systemctl restart fail2ban
+                                log_success "IP $add_ip 已成功加入白名单并重启服务。"
+                            fi
+                        fi
+                        sleep 2
                         ;;
                     2)
-                        read -rp "请输入 IP 或 CIDR (如 1.2.3.4 或 1.2.3.0/24): " add_ip < /dev/tty
-                        ;;
-                esac
-
-                if [ -n "$add_ip" ]; then
-                    # 确保配置文件存在
-                    if [ ! -f /etc/fail2ban/jail.local ]; then
-                        log_error "未找到 /etc/fail2ban/jail.local 配置文件。" || return 1
-                    else
-                        # 获取当前 ignoreip
-                        local current_ignore=$(grep "^ignoreip =" /etc/fail2ban/jail.local | cut -d= -f2- | xargs)
-                        if echo "$current_ignore" | grep -q "$add_ip"; then
-                            log_info "IP $add_ip 已在白名单中。"
-                        else
+                        read -rp "请输入要加入的 IP 或 CIDR: " add_ip < /dev/tty
+                        if [ -n "$add_ip" ]; then
+                            if [ ! -f /etc/fail2ban/jail.local ]; then
+                                log_error "未找到 /etc/fail2ban/jail.local 配置文件。" || return 1
+                            fi
+                            local current_ignore=$(grep "^ignoreip =" /etc/fail2ban/jail.local | cut -d= -f2- | xargs)
                             local new_ignore="$current_ignore $add_ip"
                             sed -i "s|^ignoreip =.*|ignoreip = $new_ignore|" /etc/fail2ban/jail.local
                             systemctl restart fail2ban
                             log_success "IP $add_ip 已成功加入白名单并重启服务。"
                         fi
-                    fi
-                    sleep 2
-                fi
+                        sleep 2
+                        ;;
+                    3)
+                        if [ ! -f /etc/fail2ban/jail.local ]; then
+                            log_error "未找到 /etc/fail2ban/jail.local 配置文件。" || return 1
+                        fi
+                        local current_ignore=$(grep "^ignoreip =" /etc/fail2ban/jail.local | cut -d= -f2- | xargs)
+                        read -ra ignore_list <<< "$current_ignore"
+                        if [ ${#ignore_list[@]} -eq 0 ]; then
+                            log_info "当前白名单为空。"
+                        else
+                            echo -e "\n${CYAN}--- 当前白名单列表 ---${NC}"
+                            for i in "${!ignore_list[@]}"; do
+                                echo -e "  [$((i+1))] ${YELLOW}${ignore_list[$i]}${NC}"
+                            done
+                            read -rp "请选择要移除的编号 (直接回车取消): " del_num < /dev/tty
+                            if [[ "$del_num" =~ ^[0-9]+$ ]] && [ "$del_num" -le ${#ignore_list[@]} ] && [ "$del_num" -gt 0 ]; then
+                                local target_ip=${ignore_list[$((del_num-1))]}
+                                local new_ignore=""
+                                for ip in "${ignore_list[@]}"; do
+                                    [[ "$ip" == "$target_ip" ]] && continue
+                                    new_ignore="$new_ignore $ip"
+                                done
+                                new_ignore=$(echo "$new_ignore" | xargs)
+                                sed -i "s|^ignoreip =.*|ignoreip = $new_ignore|" /etc/fail2ban/jail.local
+                                systemctl restart fail2ban
+                                log_success "IP $target_ip 已从白名单中移除并重启服务。"
+                            else
+                                log_info "操作已取消。"
+                            fi
+                        fi
+                        sleep 2
+                        ;;
+                esac
                 ;;
             0) break ;;
         esac
@@ -1136,8 +1177,11 @@ EOF
 }
 
 fn_reboot_system() {
+    local current_ssh_port=$(fn_get_ssh_port)
     echo -e "\n${RED}================================================================${NC}"
     log_warn "系统即将重启，您的 SSH 连接将会断开。"
+    echo -e "重启完成后，请等待 1-2 分钟，使用新端口 ${GREEN}${current_ssh_port}${NC} 重新连接。"
+    echo -e "如果长时间无法连接，请前往云服务器控制台手动执行重启。"
     echo -e "${RED}================================================================${NC}"
     read -rp "确定要立即重启吗？[y/N]: " confirm_reboot < /dev/tty
     if [[ "$confirm_reboot" =~ ^[Yy]$ ]]; then
@@ -1190,7 +1234,6 @@ run_initialization() {
                     log_info "为了确保所有优化（如 BBR 和内核参数）完全生效，建议重启。"
                 fi
                 fn_reboot_system
-                read -rp "按 Enter 返回主菜单..." < /dev/tty
                 return 0
                 ;;
             2) fn_system_upgrade_optimize; sleep 2 ;;
@@ -1361,8 +1404,7 @@ install_sillytavern() {
     }
 
     fn_apply_config_changes() {
-        # 注入作者署名
-        sed -i '1i# 清绝：https://blog.qjyg.de' "$CONFIG_FILE"
+        sed -i '1i# ✦ 咕咕助手 · 作者：清绝 | 官网：https://blog.qjyg.de' "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # 允许外部访问/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false # 关闭IP白名单模式/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400 # 24小时退出登录/" "$CONFIG_FILE"
