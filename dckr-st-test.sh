@@ -14,7 +14,7 @@
 
 # --- [核心配置] ---
 # 脚本版本号
-readonly SCRIPT_VERSION="v3.0test1"
+readonly SCRIPT_VERSION="v3.0test4"
 # 模式切换: "test" (测试版) 或 "prod" (正式版)
 GUGU_MODE="test"
 
