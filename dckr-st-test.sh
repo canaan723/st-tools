@@ -20,6 +20,9 @@ if [ -z "$BASH_VERSION" ]; then
 fi
 # --- -------------------------- ---
 
+# 全局变量初始化
+CUSTOM_PROXY_IMAGE=""
+
 fn_ssh_rollback() {
     local failed_port=$1
     echo -e "\033[33m[警告] 检测到新SSH端口连接失败，正在执行回滚操作...\033[0m"
@@ -121,7 +124,7 @@ fn_get_current_ip() {
 set -e
 set -o pipefail
 
-readonly SCRIPT_VERSION="v2.3test3"
+readonly SCRIPT_VERSION="v2.3test6"
 readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[1;33m'
 readonly RED='\033[0;31m'
@@ -823,7 +826,7 @@ fn_fail2ban_manager() {
         echo -e "${BLUE}=== Fail2ban 运维管理 ===${NC}"
         echo -e "  [1] 查看详细封禁报告"
         echo -e "  [2] 查看实时拦截日志 (Ctrl+C 退出)"
-        echo -e "  [3] 手动解封指定 IP"
+        echo -e "  [3] 手动解封被封 IP (列表选择)"
         echo -e "  [4] 手动封禁指定 IP"
         echo -e "  [5] 修改封禁时长 (小时)"
         echo -e "  [6] 重启 Fail2ban 服务"
@@ -835,11 +838,38 @@ fn_fail2ban_manager() {
             1) /usr/local/bin/fail2ban-status.sh; read -rp "按 Enter 继续..." < /dev/tty ;;
             2) (trap 'exit 0' INT; tail -f /var/log/fail2ban.log) ;;
             3)
-                read -rp "请输入要解封的 IP: " unban_ip < /dev/tty
-                fail2ban-client set sshd unbanip $unban_ip
-                fail2ban-client set sshd-aggressive unbanip $unban_ip
-                log_success "解封指令已发送。"
-                sleep 2
+                echo -e "\n${CYAN}--- 正在获取被封禁的 IP 列表 ---${NC}"
+                # 兼容不同版本的 fail2ban-client 输出格式 (处理空格或制表符)
+                local jails=$(fail2ban-client status | grep "Jail list:" | sed -E 's/.*Jail list:[[:space:]]+//' | tr ',' ' ')
+                local banned_list=()
+                local i=1
+                for jail in $jails; do
+                    jail=$(echo "$jail" | xargs) # 移除首尾空格
+                    [ -z "$jail" ] && continue
+                    local ips=$(fail2ban-client get "$jail" banip)
+                    for ip in $ips; do
+                        banned_list+=("$jail|$ip")
+                        echo -e "  [$i] ${RED}$ip${NC} (来自 Jail: $jail)"
+                        i=$((i+1))
+                    done
+                done
+
+                if [ ${#banned_list[@]} -eq 0 ]; then
+                    log_info "当前没有任何被封禁的 IP。"
+                    read -rp "按 Enter 继续..." < /dev/tty
+                else
+                    read -rp "请选择要解封的编号 (直接回车取消): " unban_num < /dev/tty
+                    if [[ "$unban_num" =~ ^[0-9]+$ ]] && [ "$unban_num" -le ${#banned_list[@]} ] && [ "$unban_num" -gt 0 ]; then
+                        local target=${banned_list[$((unban_num-1))]}
+                        local t_jail=${target%|*}
+                        local t_ip=${target#*|}
+                        fail2ban-client set "$t_jail" unbanip "$t_ip"
+                        log_success "IP $t_ip 已从 $t_jail 中解封。"
+                    else
+                        log_info "操作已取消。"
+                    fi
+                    sleep 2
+                fi
                 ;;
             4)
                 read -rp "请输入要封禁的 IP: " ban_ip < /dev/tty
@@ -886,6 +916,50 @@ fn_fail2ban_manager() {
                 sleep 2
                 ;;
             6) systemctl restart fail2ban; log_success "服务已重启"; sleep 1 ;;
+            7)
+                log_action "正在进入白名单管理模块..."
+                local current_ip=$(fn_get_current_ip)
+                echo -e "\n${CYAN}--- Fail2ban 白名单管理 ---${NC}"
+                echo -e "当前登录 IP: ${YELLOW}${current_ip:-未知}${NC}"
+                echo -e "------------------------"
+                echo -e "  [1] 将当前登录 IP 加入白名单"
+                echo -e "  [2] 手动输入 IP 或 CIDR 加入白名单"
+                echo -e "  [0] 返回"
+                read -rp "请选择: " wl_choice < /dev/tty
+                
+                local add_ip=""
+                case $wl_choice in
+                    1)
+                        if [ -n "$current_ip" ]; then
+                            add_ip="$current_ip"
+                        else
+                            log_warn "无法自动获取当前 IP，请手动输入。"
+                        fi
+                        ;;
+                    2)
+                        read -rp "请输入 IP 或 CIDR (如 1.2.3.4 或 1.2.3.0/24): " add_ip < /dev/tty
+                        ;;
+                esac
+
+                if [ -n "$add_ip" ]; then
+                    # 确保配置文件存在
+                    if [ ! -f /etc/fail2ban/jail.local ]; then
+                        log_error "未找到 /etc/fail2ban/jail.local 配置文件。"
+                    else
+                        # 获取当前 ignoreip
+                        local current_ignore=$(grep "^ignoreip =" /etc/fail2ban/jail.local | cut -d= -f2- | xargs)
+                        if echo "$current_ignore" | grep -q "$add_ip"; then
+                            log_info "IP $add_ip 已在白名单中。"
+                        else
+                            local new_ignore="$current_ignore $add_ip"
+                            sed -i "s|^ignoreip =.*|ignoreip = $new_ignore|" /etc/fail2ban/jail.local
+                            systemctl restart fail2ban
+                            log_success "IP $add_ip 已成功加入白名单并重启服务。"
+                        fi
+                    fi
+                    sleep 2
+                fi
+                ;;
             0) break ;;
         esac
     done
@@ -1020,7 +1094,7 @@ install_1panel() {
         bash <(curl -sSL https://linuxmirrors.cn/docker.sh)
         
         if ! command -v docker &> /dev/null; then
-            log_error "备用脚本也未能成功安装 Docker。请检查网络或手动安装 Docker 后再继续。"
+            log_error "备用脚本也未能成功安装 Docker. 请检查网络或手动安装 Docker 后再继续。"
         else
             log_success "备用脚本成功安装 Docker！"
         fi
@@ -1437,7 +1511,7 @@ services:
       - NODE_ENV=production
       - FORCE_COLOR=1
     ports:
-      - "8000:8000"
+      - "${ST_PORT}:8000"
     volumes:
       - "./:/home/node/app/config:Z"
       - "./data:/home/node/app/data:Z"
@@ -1460,7 +1534,7 @@ services:
       - NODE_ENV=production
       - FORCE_COLOR=1
     ports:
-      - "8000:8000"
+      - "${ST_PORT}:8000"
     volumes:
       - "./:/home/node/app/config:Z"
       - "./data:/home/node/app/data:Z"
@@ -1490,7 +1564,16 @@ EOF
   ${YELLOW}└──────────────────────────────────────────────────┘${NC}
 EOF
 )
-    fn_pull_with_progress_bar "$COMPOSE_FILE" "$DOCKER_COMPOSE_CMD" "$TIME_ESTIMATE_TABLE"
+    if [ -n "$CUSTOM_PROXY_IMAGE" ]; then
+        log_action "检测到代理镜像，正在执行 Pull & Tag 流程..."
+        fn_pull_with_progress_bar "$CUSTOM_PROXY_IMAGE" "$TIME_ESTIMATE_TABLE"
+        log_info "正在重打标签: ${CUSTOM_PROXY_IMAGE} -> ${IMAGE_NAME}"
+        docker tag "$CUSTOM_PROXY_IMAGE" "$IMAGE_NAME"
+        log_success "代理镜像已就绪。"
+    else
+        fn_pull_with_progress_bar "$IMAGE_NAME" "$TIME_ESTIMATE_TABLE"
+    fi
+
     fn_print_info "正在进行首次启动以生成官方配置文件..."
     if ! $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null 2>&1; then
         fn_print_error "首次启动容器失败！请检查以下日志：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)"
@@ -1520,9 +1603,9 @@ EOF
 
 ${YELLOW}---【 重要：请按以下步骤设置管理员 】---${NC}
 1. ${CYAN}【开放端口】${NC}
-   需确保服务器后台（如阿里云/腾讯云安全组）已开放 ${GREEN}8000${NC} 端口。
+   需确保服务器后台（如阿里云/腾讯云安全组）已开放 ${GREEN}${ST_PORT}${NC} 端口。
 2. ${CYAN}【访问并登录】${NC}
-   打开浏览器，访问: ${GREEN}http://${SERVER_IP}:8000${NC}
+   打开浏览器，访问: ${GREEN}http://${SERVER_IP}:${ST_PORT}${NC}
    使用以下默认凭据登录：
      ▶ 账号: ${YELLOW}user${NC}
      ▶ 密码: ${YELLOW}password${NC}
@@ -1554,8 +1637,8 @@ EOF
 
     # --- UFW 协同逻辑 ---
     if ufw status | grep -q "Status: active"; then
-        log_info "检测到 UFW 活跃，正在自动放行 8000 端口..."
-        ufw allow 8000/tcp
+        log_info "检测到 UFW 活跃，正在自动放行 ${ST_PORT} 端口..."
+        ufw allow ${ST_PORT}/tcp
     fi
     # -------------------
 
