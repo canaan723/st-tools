@@ -14,7 +14,7 @@
 
 # --- [核心配置] ---
 # 脚本版本号
-readonly SCRIPT_VERSION="v3.0test"
+readonly SCRIPT_VERSION="v3.0test1"
 # 模式切换: "test" (测试版) 或 "prod" (正式版)
 GUGU_MODE="test"
 
@@ -1562,16 +1562,16 @@ fn_get_public_ip() {
 
     fn_create_project_structure() {
         fn_print_info "正在创建项目目录结构..."
-        mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/third-party" "$INSTALL_DIR/config" "$INSTALL_DIR/.config"
+        mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/third-party" "$INSTALL_DIR/config" "$INSTALL_DIR/.gugu"
         fn_print_info "正在设置文件所有权..."
         chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
         log_success "项目目录创建并授权成功！"
     }
 
     fn_create_git_sync_config() {
-        fn_print_info "正在创建 Git 同步配置文件 (.config/git_sync.conf)..."
-        mkdir -p "$INSTALL_DIR/.config"
-        cat <<EOF > "$INSTALL_DIR/.config/git_sync.conf"
+        fn_print_info "正在创建 Git 同步配置文件 (.gugu/git_sync.conf)..."
+        mkdir -p "$INSTALL_DIR/.gugu"
+        cat <<EOF > "$INSTALL_DIR/.gugu/git_sync.conf"
 REPO_URL="仓库"
 REPO_TOKEN="令牌"
 GIT_USER_NAME="用户名"
@@ -1584,7 +1584,7 @@ SYNC_CONFIG_YAML=""
 # 用户数据映射规则 ("本地用户名:云端用户名"，使用英文冒号分隔，默认用户名是 default-user)
 USER_MAP=""
 EOF
-        chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR/.config"
+        chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR/.gugu"
         log_success "Git 同步配置文件创建成功！"
     }
 
@@ -1715,7 +1715,7 @@ EOF
         if [ -z "$USER_HOME" ]; then fn_print_error "无法找到用户 '$TARGET_USER' 的家目录。"; fi
     fi
     INSTALL_DIR="$USER_HOME/sillytavern"
-    CONFIG_FILE="$INSTALL_DIR/config.yaml"
+    CONFIG_FILE="$INSTALL_DIR/config/config.yaml"
     COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
     
     fn_check_dependencies
@@ -1789,7 +1789,7 @@ EOF
         fi
     done
 
-    CONFIG_FILE="$INSTALL_DIR/config.yaml"
+    CONFIG_FILE="$INSTALL_DIR/config/config.yaml"
     COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 
     fn_print_step "[ 3/5 ] 创建项目文件"
@@ -1799,7 +1799,7 @@ EOF
 
     if [[ "$run_mode" == "3" ]]; then
         fn_print_info "正在创建开发者模式项目目录结构..."
-        mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/third-party" "$INSTALL_DIR/config" "$INSTALL_DIR/.config"
+        mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/third-party" "$INSTALL_DIR/config" "$INSTALL_DIR/.gugu"
         mkdir -p "$INSTALL_DIR/custom/images"
         touch "$INSTALL_DIR/custom/login.html"
         fn_print_info "正在设置文件所有权..."
