@@ -121,8 +121,8 @@ fn_get_current_ip() {
     echo "$current_ip"
 }
 
-set -e
-set -o pipefail
+# set -e  # 已移除全局退出设置，改为逻辑容错
+# set -o pipefail
 
 readonly SCRIPT_VERSION="v2.3test6"
 readonly GREEN='\033[0;32m'
@@ -146,7 +146,7 @@ fi
 
 log_info() { echo -e "${GREEN}[INFO] $1${NC}"; }
 log_warn() { echo -e "${YELLOW}[WARN] $1${NC}"; }
-log_error() { echo -e "\n${RED}[ERROR] $1${NC}\n"; exit 1; }
+log_error() { echo -e "\n${RED}[ERROR] $1${NC}\n"; return 1 2>/dev/null || exit 1; }
 log_action() { echo -e "${YELLOW}[ACTION] $1${NC}"; }
 log_step() { echo -e "\n${BLUE}--- $1: $2 ---${NC}"; }
 log_success() { echo -e "${GREEN}✓ $1${NC}"; }
@@ -160,8 +160,9 @@ check_root() {
     if [ "$(id -u)" -ne 0 ]; then
        echo -e "\n${RED}错误: 此脚本需要 root 权限执行。${NC}"
        echo -e "请尝试使用 ${YELLOW}sudo bash $0${NC} 来运行。\n"
-       exit 1
+       return 1
     fi
+    return 0
 }
 
 fn_check_base_deps() {
@@ -180,11 +181,11 @@ fn_check_base_deps() {
         if [ "$IS_DEBIAN_LIKE" = true ]; then
             apt-get update > /dev/null 2>&1
             if ! apt-get install -y "${missing_pkgs[@]}"; then
-                log_error "部分基础依赖自动安装失败，请手动执行 'apt-get install -y ${missing_pkgs[*]}' 后重试。"
+                log_error "部分基础依赖自动安装失败，请手动执行 'apt-get install -y ${missing_pkgs[*]}' 后重试。" || return 1
             fi
             log_success "所有缺失的基础依赖已安装成功。"
         else
-            log_error "您的系统 (${DETECTED_OS}) 不支持自动安装。请手动安装缺失的工具: ${missing_pkgs[*]}"
+            log_error "您的系统 (${DETECTED_OS}) 不支持自动安装。请手动安装缺失的工具: ${missing_pkgs[*]}" || return 1
         fi
     else
         log_success "基础依赖完整。"
@@ -208,13 +209,18 @@ fn_optimize_docker() {
     log_action "是否需要进行 Docker 优化（配置日志限制与镜像加速）？"
     log_info "此操作将：1. 限制日志大小防止磁盘占满。 2. 自动测速或手动配置镜像源。"
     
-    echo -e "\n${CYAN}--- Docker 优化选项 ---${NC}"
-    echo -e "  [1] 自动模式 (推荐: 自动判断地理位置并配置最快镜像)"
-    echo -e "  [2] 手动模式 (手动输入自定义镜像地址)"
-    echo -e "  [3] 仅限制日志 (不配置镜像加速)"
-    echo -e "  [n] 跳过所有优化"
-    read -rp "请选择 [1/2/3/n, 默认 1]: " opt_choice < /dev/tty
-    opt_choice=${opt_choice:-1}
+    while true; do
+        echo -e "\n${CYAN}--- Docker 优化选项 ---${NC}"
+        echo -e "  [1] 自动模式 (推荐: 自动判断地理位置并配置最快镜像)"
+        echo -e "  [2] 手动模式 (手动输入自定义镜像地址)"
+        echo -e "  [3] 仅限制日志 (不配置镜像加速)"
+        echo -e "  [n] 跳过所有优化"
+        read -rp "请选择 [1/2/3/n, 默认 1]: " opt_choice < /dev/tty
+        opt_choice=${opt_choice:-1}
+
+        [[ "$opt_choice" =~ ^[123Nn]$ ]] && break
+        log_warn "无效选项，请重新选择。"
+    done
 
     if [[ "$opt_choice" =~ ^[Nn]$ ]]; then
         log_info "已跳过 Docker 优化。"
@@ -308,7 +314,7 @@ EOF
     if sudo systemctl restart docker; then
         log_success "Docker 服务已重启，优化配置已生效！"
     else
-        log_error "Docker 服务重启失败！请检查 ${DAEMON_JSON} 格式。"
+        log_error "Docker 服务重启失败！请检查 ${DAEMON_JSON} 格式。" || return 1
     fi
 }
 
@@ -598,6 +604,7 @@ fn_ufw_manager() {
         echo -e "  [0] 返回主菜单"
         echo -e "------------------------"
         read -rp "请输入选项: " ufw_choice < /dev/tty
+        [[ -z "$ufw_choice" ]] && continue
         case $ufw_choice in
             1) ufw status numbered; read -rp "按 Enter 继续..." < /dev/tty ;;
             2) ufw --force enable; sleep 1 ;;
@@ -659,9 +666,7 @@ fn_1panel_manager() {
         tput reset
         echo -e "${BLUE}=== 1Panel 运维管理 ===${NC}"
         if ! command -v 1pctl &> /dev/null; then
-            log_error "未检测到 1pctl 命令，请确认 1Panel 是否已正确安装。"
-            sleep 2
-            break
+            log_error "未检测到 1pctl 命令，请确认 1Panel 是否已正确安装。" || return 1
         fi
         
         echo -e "  [1] 查看面板状态与版本"
@@ -674,6 +679,7 @@ fn_1panel_manager() {
         echo -e "  [0] 返回主菜单"
         echo -e "------------------------"
         read -rp "请输入选项: " op_1panel < /dev/tty
+        [[ -z "$op_1panel" ]] && continue
         case "$op_1panel" in
             1)
                 echo -e "\n${CYAN}--- 服务状态 ---${NC}"
@@ -961,6 +967,7 @@ fn_fail2ban_manager() {
         echo -e "  [0] 返回上一级"
         echo -e "------------------------"
         read -rp "请输入选项: " f2b_choice < /dev/tty
+        [[ -z "$f2b_choice" ]] && continue
         case $f2b_choice in
             1) /usr/local/bin/fail2ban-status.sh; read -rp "按 Enter 继续..." < /dev/tty ;;
             2) (trap 'exit 0' INT; tail -f /var/log/fail2ban.log) ;;
@@ -1071,7 +1078,7 @@ fn_fail2ban_manager() {
                 if [ -n "$add_ip" ]; then
                     # 确保配置文件存在
                     if [ ! -f /etc/fail2ban/jail.local ]; then
-                        log_error "未找到 /etc/fail2ban/jail.local 配置文件。"
+                        log_error "未找到 /etc/fail2ban/jail.local 配置文件。" || return 1
                     else
                         # 获取当前 ignoreip
                         local current_ignore=$(grep "^ignoreip =" /etc/fail2ban/jail.local | cut -d= -f2- | xargs)
@@ -1171,7 +1178,7 @@ run_initialization() {
                 fi
 
                 if ! fn_change_ssh_port; then
-                    log_error "SSH 端口修改失败并已回滚。为确保安全，一键优化流程已中止。"
+                    log_error "SSH 端口修改失败并已回滚。为确保安全，一键优化流程已中止。" || return 1
                 fi
 
                 fn_install_fail2ban
@@ -1206,7 +1213,7 @@ install_1panel() {
         log_info "未检测到 curl，正在尝试安装..."
         apt-get update && apt-get install -y curl
         if ! command -v curl &> /dev/null; then
-            log_error "curl 安装失败，请手动安装后再试。"
+            log_error "curl 安装失败，请手动安装后再试。" || return 1
         fi
     fi
 
@@ -1221,7 +1228,7 @@ install_1panel() {
         bash <(curl -sSL https://linuxmirrors.cn/docker.sh)
         
         if ! command -v docker &> /dev/null; then
-            log_error "备用脚本也未能成功安装 Docker. 请检查网络或手动安装 Docker 后再继续。"
+            log_error "备用脚本也未能成功安装 Docker. 请检查网络或手动安装 Docker 后再继续。" || return 1
         else
             log_success "备用脚本成功安装 Docker！"
         fi
@@ -1260,7 +1267,7 @@ install_sillytavern() {
 
     fn_print_step() { echo -e "\n${CYAN}═══ $1 ═══${NC}"; }
     fn_print_info() { echo -e "  $1"; }
-    fn_print_error() { echo -e "\n${RED}✗ 错误: $1${NC}\n" >&2; exit 1; }
+    fn_print_error() { echo -e "\n${RED}✗ 错误: $1${NC}\n" >&2; return 1 2>/dev/null || exit 1; }
 
     fn_check_existing_container() {
         if docker ps -a -q -f "name=^${CONTAINER_NAME}$" | grep -q .; then
@@ -1283,8 +1290,8 @@ install_sillytavern() {
                     log_success "现有容器已成功移除。"
                     ;;
                 2)
-                    log_info "脚本已退出。请手动执行 'docker ps -a' 查看容器状态。"
-                    exit 0
+                    log_info "操作已取消。请手动执行 'docker ps -a' 查看容器状态。"
+                    return 1
                     ;;
             esac
         fi
@@ -1334,10 +1341,10 @@ install_sillytavern() {
                         bash <(curl -sSL https://linuxmirrors.cn/docker.sh)
                         continue
                     else
-                        fn_print_error "用户选择不安装 Docker，脚本无法继续。"
+                        fn_print_error "用户选择不安装 Docker，脚本无法继续。" || return 1
                     fi
                 else
-                    fn_print_error "未检测到 Docker 或 Docker-Compose。请在您的系统 (${DETECTED_OS}) 上手动安装它们后重试。"
+                    fn_print_error "未检测到 Docker 或 Docker-Compose。请在您的系统 (${DETECTED_OS}) 上手动安装它们后重试。" || return 1
                 fi
             else
                 docker_check_needed=false
@@ -1348,12 +1355,14 @@ install_sillytavern() {
 
         local current_user="${SUDO_USER:-$(whoami)}"
         if ! groups "$current_user" | grep -q '\bdocker\b' && [ "$(id -u)" -ne 0 ]; then
-            fn_print_error "当前用户不在 docker 用户组。请执行【步骤2】或手动添加后，【重新登录SSH】再试。"
+            fn_print_error "当前用户不在 docker 用户组。请执行【步骤2】或手动添加后，【重新登录SSH】再试。" || return 1
         fi
         log_success "Docker 环境检查通过！"
     }
 
     fn_apply_config_changes() {
+        # 注入作者署名
+        sed -i '1i# 清绝：https://blog.qjyg.de' "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # 允许外部访问/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false # 关闭IP白名单模式/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400 # 24小时退出登录/" "$CONFIG_FILE"
@@ -1409,11 +1418,11 @@ fn_get_public_ip() {
         local container_name="$2"
         log_warn "目录 '$dir_to_delete' 已存在，可能包含之前的聊天记录和角色卡。"
         read -r -p "确定要【彻底清理】并继续安装吗？此操作会停止并删除旧容器。[Y/n]: " c1 < /dev/tty
-        if [[ ! "${c1:-y}" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。"; fi
+        if [[ ! "${c1:-y}" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。" || return 1; fi
         read -r -p "$(echo -e "${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 [Y/n]: ${NC}")" c2 < /dev/tty
-        if [[ ! "${c2:-y}" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。"; fi
+        if [[ ! "${c2:-y}" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。" || return 1; fi
         read -r -p "$(echo -e "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}")" c3 < /dev/tty
-        if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。"; fi
+        if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。" || return 1; fi
         fn_print_info "正在停止并移除旧容器: $container_name..."
         docker stop "$container_name" > /dev/null 2>&1 || true
         docker rm "$container_name" > /dev/null 2>&1 || true
@@ -1436,34 +1445,39 @@ fn_get_public_ip() {
         local time_estimate_table="$2"
         local PULL_LOG
         PULL_LOG=$(mktemp)
+        # 使用局部变量保存旧的 trap，或者在函数结束时清理
+        local old_trap=$(trap -p EXIT)
         trap 'rm -f "$PULL_LOG"' EXIT
         
         log_info "正在拉取镜像: ${target_image} ..."
         docker pull "$target_image" > "$PULL_LOG" 2>&1 &
         local pid=$!
-        while kill -0 $pid 2>/dev/null; do
-            clear || true
-            echo -e "${time_estimate_table}"
-            echo -e "\n${CYAN}--- 实时拉取进度 (下方为最新日志) ---${NC}"
-            # 提取 Docker pull 的进度信息
-            grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists|Status: Downloaded' "$PULL_LOG" | tail -n 5 || true
-            sleep 1
-        done
+        
+        # 允许用户通过 Ctrl+C 取消拉取
+        (
+            trap 'kill $pid 2>/dev/null; exit 1' INT
+            while kill -0 $pid 2>/dev/null; do
+                clear || true
+                echo -e "${time_estimate_table}"
+                echo -e "\n${CYAN}--- 实时拉取进度 (下方为最新日志) ---${NC}"
+                grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists|Status: Downloaded' "$PULL_LOG" | tail -n 5 || true
+                sleep 1
+            done
+        )
         
         wait $pid
         local exit_code=$?
-        trap - EXIT
+        eval "$old_trap" # 恢复旧的 trap
 
         clear || true
 
         if [ $exit_code -ne 0 ]; then
-            echo -e "${RED}Docker 镜像拉取失败！${NC}" >&2
-            echo -e "${YELLOW}以下是来自 Docker 的原始错误日志：${NC}" >&2
+            echo -e "${RED}Docker 镜像拉取失败或被取消！${NC}" >&2
             echo "--------------------------------------------------" >&2
             cat "$PULL_LOG" >&2
             echo "--------------------------------------------------" >&2
             rm -f "$PULL_LOG"
-            fn_print_error "请根据以上日志排查问题，可能原因包括网络不通、镜像源失效或 Docker 服务异常。"
+            fn_print_error "镜像拉取未完成。请检查网络或镜像源。" || return 1
         else
             rm -f "$PULL_LOG"
             log_success "镜像拉取成功！"
@@ -1584,12 +1598,16 @@ fn_get_public_ip() {
 
     fn_print_step "[ 2/5 ] 选择运行模式与路径"
 
-    echo "选择运行模式："
-    echo -e "  [1] ${CYAN}单用户模式${NC} (弹窗认证，适合个人使用)"
-    echo -e "  [2] ${CYAN}多用户模式${NC} (独立登录页，适合多人或单人使用)"
-    echo -e "  [3] ${RED}维护者模式${NC} (作者专用，普通用户请勿选择！)"
-    read -p "请输入选项数字 [默认为 1]: " run_mode < /dev/tty
-    run_mode=${run_mode:-1}
+    while true; do
+        echo "选择运行模式："
+        echo -e "  [1] ${CYAN}单用户模式${NC} (弹窗认证，适合个人使用)"
+        echo -e "  [2] ${CYAN}多用户模式${NC} (独立登录页，适合多人或单人使用)"
+        echo -e "  [3] ${RED}维护者模式${NC} (作者专用，普通用户请勿选择！)"
+        read -p "请输入选项数字 [默认为 1]: " run_mode < /dev/tty
+        run_mode=${run_mode:-1}
+        [[ "$run_mode" =~ ^[123]$ ]] && break
+        log_warn "无效选项，请重新选择。"
+    done
 
     case "$run_mode" in
         1)
@@ -1603,7 +1621,7 @@ fn_get_public_ip() {
             log_warn "已进入维护者模式，此模式需要手动准备特殊文件。"
             ;;
         *)
-            fn_print_error "无效输入，脚本已终止."
+            fn_print_error "无效输入。" || return 1
             ;;
     esac
 
@@ -1726,12 +1744,12 @@ EOF
 
     fn_print_info "正在进行首次启动以生成官方配置文件..."
     if ! $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null 2>&1; then
-        fn_print_error "首次启动容器失败！请检查以下日志：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)"
+        fn_print_error "首次启动容器失败！请检查以下日志：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)" || return 1
     fi
     local timeout=60
     while [ ! -f "$CONFIG_FILE" ]; do
         if [ $timeout -eq 0 ]; then
-            fn_print_error "等待配置文件生成超时！请检查日志输出：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)"
+            fn_print_error "等待配置文件生成超时！请检查日志输出：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)" || return 1
         fi
         sleep 1
         ((timeout--))
@@ -1745,7 +1763,7 @@ EOF
     else
         fn_print_info "正在临时启动服务以设置管理员..."
         if ! $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d > /dev/null 2>&1; then
-            fn_print_error "临时启动容器以设置管理员失败！请检查以下日志：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)"
+            fn_print_error "临时启动容器以设置管理员失败！请检查以下日志：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)" || return 1
         fi
         fn_verify_container_health "$CONTAINER_NAME"
         fn_wait_for_service
@@ -1780,7 +1798,7 @@ EOF
     fn_print_step "[ 5/5 ] 启动并验证服务"
     fn_print_info "正在应用最终配置并重启服务..."
     if ! $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate > /dev/null 2>&1; then
-        fn_print_error "应用最终配置并启动服务失败！请检查以下日志：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)"
+        fn_print_error "应用最终配置并启动服务失败！请检查以下日志：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)" || return 1
     fi
     fn_verify_container_health "$CONTAINER_NAME"
     fn_wait_for_service
@@ -1794,6 +1812,7 @@ EOF
         echo -e "  [3] 重新显示访问信息"
         echo -e "  [q] 退出此菜单"
         read -p "请输入选项: " choice < /dev/tty
+        [[ -z "$choice" ]] && continue
         case "$choice" in
             1) fn_check_and_explain_status "$CONTAINER_NAME";;
             2) echo -e "\n${YELLOW}--- 实时日志 (按 Ctrl+C 停止) ---${NC}"; (trap 'exit 0' INT; docker logs -f "$CONTAINER_NAME" || true);;
@@ -1844,9 +1863,7 @@ fn_st_docker_manager() {
     elif docker compose version &> /dev/null; then
         compose_cmd="docker compose"
     else
-        log_error "未检测到 docker-compose 或 docker compose，请确认 Docker 环境是否正常。"
-        sleep 2
-        return 1
+        log_error "未检测到 docker-compose 或 docker compose，请确认 Docker 环境是否正常。" || return 1
     fi
 
     # 尝试获取项目目录
@@ -1867,9 +1884,7 @@ fn_st_docker_manager() {
     fi
 
     if [ ! -d "$project_dir" ] || [ ! -f "$project_dir/docker-compose.yml" ]; then
-        log_error "未能找到酒馆项目目录或 docker-compose.yml 文件 (路径: $project_dir)。"
-        read -rp "按 Enter 继续..." < /dev/tty
-        return 1
+        log_error "未能找到酒馆项目目录或 docker-compose.yml 文件 (路径: $project_dir)。" || return 1
     fi
 
     while true; do
@@ -1886,6 +1901,7 @@ fn_st_docker_manager() {
         echo -e "  [0] 返回主菜单"
         echo -e "------------------------"
         read -rp "请输入选项: " st_choice < /dev/tty
+        [[ -z "$st_choice" ]] && continue
         case "$st_choice" in
             1)
                 log_action "正在重启酒馆..."
@@ -1909,11 +1925,11 @@ fn_st_docker_manager() {
                 ;;
             5)
                 echo -e "\n${CYAN}--- 资源占用 (按 Ctrl+C 退出) ---${NC}"
-                docker stats "$container_name"
+                (trap 'exit 0' INT; docker stats "$container_name")
                 ;;
             6)
                 echo -e "\n${CYAN}--- 实时日志 (按 Ctrl+C 退出) ---${NC}"
-                cd "$project_dir" && $compose_cmd logs -f --tail 1000
+                (trap 'exit 0' INT; cd "$project_dir" && $compose_cmd logs -f --tail 1000)
                 ;;
             0) break ;;
             *) log_warn "无效输入"; sleep 1 ;;
@@ -1997,7 +2013,7 @@ main_menu() {
         case "$choice" in
             1)
                 if [ "$IS_DEBIAN_LIKE" = true ]; then
-                    check_root
+                    check_root || { read -rp "按 Enter 返回..." < /dev/tty; continue; }
                     run_initialization
                 else
                     log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"
@@ -2006,7 +2022,7 @@ main_menu() {
                 ;;
             2)
                 if [ "$IS_DEBIAN_LIKE" = true ]; then
-                    check_root
+                    check_root || { read -rp "按 Enter 返回..." < /dev/tty; continue; }
                     install_1panel
                     while read -r -t 0.1; do :; done
                     read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
@@ -2016,7 +2032,7 @@ main_menu() {
                 fi
                 ;;
             3)
-                check_root
+                check_root || { read -rp "按 Enter 返回..." < /dev/tty; continue; }
                 install_sillytavern
                 while read -r -t 0.1; do :; done
                 read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
@@ -2033,7 +2049,7 @@ main_menu() {
                 ;;
             6)
                 if [ "$IS_DEBIAN_LIKE" = true ]; then
-                    check_root
+                    check_root || { read -rp "按 Enter 返回..." < /dev/tty; continue; }
                     run_system_cleanup
                     while read -r -t 0.1; do :; done
                     read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
