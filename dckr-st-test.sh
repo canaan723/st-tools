@@ -189,67 +189,104 @@ fn_check_base_deps() {
 }
 
 
+fn_check_in_china() {
+    log_info "正在判断服务器地理位置..."
+    # 通过测试 google.com 的连通性来判断是否在大陆
+    if curl -s --connect-timeout 3 https://www.google.com > /dev/null; then
+        log_success "检测到服务器位于海外，将直接使用官方 Docker 源。"
+        return 1 # 不在大陆
+    else
+        log_warn "检测到服务器位于中国大陆，建议配置镜像加速。"
+        return 0 # 在大陆
+    fi
+}
+
 fn_optimize_docker() {
     log_action "是否需要进行 Docker 优化（配置日志限制与镜像加速）？"
-    log_info "此操作将：1. 限制日志大小防止磁盘占满。 2. 测试并配置最快的镜像源。"
-    read -rp "强烈推荐执行，是否继续？[Y/n]: " confirm_optimize < /dev/tty
-    if [[ ! "${confirm_optimize:-y}" =~ ^[Yy]$ ]]; then
+    log_info "此操作将：1. 限制日志大小防止磁盘占满。 2. 自动测速或手动配置镜像源。"
+    
+    echo -e "\n${CYAN}--- Docker 优化选项 ---${NC}"
+    echo -e "  [1] 自动模式 (推荐: 自动判断地理位置并配置最快镜像)"
+    echo -e "  [2] 手动模式 (手动输入自定义镜像地址)"
+    echo -e "  [3] 仅限制日志 (不配置镜像加速)"
+    echo -e "  [n] 跳过所有优化"
+    read -rp "请选择 [1/2/3/n, 默认 1]: " opt_choice < /dev/tty
+    opt_choice=${opt_choice:-1}
+
+    if [[ "$opt_choice" =~ ^[Nn]$ ]]; then
         log_info "已跳过 Docker 优化。"
         return
     fi
 
     local DAEMON_JSON="/etc/docker/daemon.json"
+    local best_mirrors=()
     
-    log_info "正在检测 Docker 镜像源可用性..."
-    local mirrors=(
-        "docker.io" "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live" 
-        "https://dockerproxy.1panel.live" "https://hub.rat.dev" "https://docker.m.ixdev.cn" 
-        "https://hub2.nat.tf" "https://docker.1panel.dev" "https://docker.amingg.com" "https://docker.xuanyuan.me" 
-        "https://dytt.online" "https://lispy.org" "https://docker.xiaogenban1993.com" 
-        "https://docker-0.unsee.tech" "https://666860.xyz" "https://hubproxy-advj.onrender.com"
-    )
-    docker rmi hello-world > /dev/null 2>&1 || true
-    local results=""; local official_hub_ok=false
-    for mirror in "${mirrors[@]}"; do
-        local pull_target="hello-world"; local display_name="$mirror"; local timeout_duration=10
-        if [[ "$mirror" == "docker.io" ]]; then timeout_duration=15; display_name="官方 Docker Hub"; else pull_target="${mirror#https://}/library/hello-world"; fi
-        echo -ne "  - 正在测试: ${YELLOW}${display_name}${NC}..."
-        local start_time; start_time=$(date +%s.%N)
-        if (timeout -k 15 "$timeout_duration" docker pull "$pull_target" >/dev/null) 2>/dev/null; then
-            local end_time; end_time=$(date +%s.%N); local duration; duration=$(echo "$end_time - $start_time" | bc)
-            printf " ${GREEN}%.2f 秒${NC}\n" "$duration"
-            if [[ "$mirror" != "docker.io" ]]; then results+="${duration}|${mirror}|${display_name}\n"; fi
-            docker rmi "$pull_target" > /dev/null 2>&1 || true
-            if [[ "$mirror" == "docker.io" ]]; then official_hub_ok=true; break; fi
-        else
-            echo -e " ${RED}超时或失败${NC}"
-        fi
-    done
+    case "$opt_choice" in
+        1)
+            if fn_check_in_china; then
+                log_info "正在检测内置 Docker 镜像源可用性..."
+                local mirrors=(
+                    "https://docker.1ms.run" "https://hub1.nat.tf" "https://docker.1panel.live"
+                    "https://dockerproxy.1panel.live" "https://hub.rat.dev" "https://docker.m.ixdev.cn"
+                    "https://hub2.nat.tf" "https://docker.1panel.dev" "https://docker.amingg.com" "https://docker.xuanyuan.me"
+                    "https://dytt.online" "https://lispy.org" "https://docker.xiaogenban1993.com"
+                    "https://docker-0.unsee.tech" "https://666860.xyz" "https://hubproxy-advj.onrender.com"
+                )
+                docker rmi hello-world > /dev/null 2>&1 || true
+                local results=""
+                for mirror in "${mirrors[@]}"; do
+                    local pull_target="${mirror#https://}/library/hello-world"
+                    echo -ne "  - 正在测试: ${YELLOW}${mirror}${NC}..."
+                    local start_time; start_time=$(date +%s.%N)
+                    if (timeout -k 12 10 docker pull "$pull_target" >/dev/null) 2>/dev/null; then
+                        local end_time; end_time=$(date +%s.%N); local duration; duration=$(echo "$end_time - $start_time" | bc)
+                        printf " ${GREEN}%.2f 秒${NC}\n" "$duration"
+                        results+="${duration}|${mirror}\n"
+                        docker rmi "$pull_target" > /dev/null 2>&1 || true
+                    else
+                        echo -e " ${RED}超时或失败${NC}"
+                    fi
+                done
+                
+                if [ -n "$results" ]; then
+                    best_mirrors=($(echo -e "$results" | grep '.' | LC_ALL=C sort -n | head -n 3 | cut -d'|' -f2))
+                    log_success "已选取最快的 ${#best_mirrors[@]} 个镜像源。"
+                else
+                    log_warn "所有内置镜像均测试失败！"
+                fi
+            fi
+            ;;
+        2)
+            read -rp "请输入自定义镜像地址 (多个地址请用空格分隔，需带 https://): " custom_mirrors < /dev/tty
+            read -ra best_mirrors <<< "$custom_mirrors"
+            ;;
+        3)
+            log_info "仅配置日志限制。"
+            ;;
+    esac
 
-    local log_config_part='"log-driver": "json-file", "log-opts": {"max-size": "50m", "max-file": "3"}'
-    local mirrors_config_part=""
-
-    if [ "$official_hub_ok" = true ]; then
-        log_success "官方 Docker Hub 可用，将直接使用官方源，不配置镜像加速。"
-    else
-        log_warn "官方 Docker Hub 连接失败，将自动从可用备用镜像中配置最快的源。"
-        if [ -n "$results" ]; then
-            local best_mirrors; best_mirrors=($(echo -e "$results" | grep '.' | LC_ALL=C sort -n | head -n 5 | cut -d'|' -f2))
-            log_success "将配置最快的 ${#best_mirrors[@]} 个镜像源。"
-            local mirrors_json_array; mirrors_json_array=$(printf '"%s",' "${best_mirrors[@]}" | sed 's/,$//')
-            mirrors_config_part="\"registry-mirrors\": [${mirrors_json_array}]"
-        else
-            log_warn "所有备用镜像均测试失败！将不配置镜像加速。"
-        fi
+    log_action "正在应用 Docker 优化配置..."
+    
+    # 构建镜像列表 JSON 数组
+    local mirrors_json="[]"
+    if [ ${#best_mirrors[@]} -gt 0 ]; then
+        mirrors_json=$(printf '"%s", ' "${best_mirrors[@]}" | sed 's/, $//')
+        mirrors_json="[ $mirrors_json ]"
     fi
 
-    local final_json_content="$log_config_part"
-    if [ -n "$mirrors_config_part" ]; then
-        final_json_content="$final_json_content, $mirrors_config_part"
-    fi
+    # 使用人类易读的格式编写 daemon.json
+    sudo mkdir -p /etc/docker
+    cat <<EOF | sudo tee "$DAEMON_JSON" > /dev/null
+{
+    "log-driver": "json-file",
+    "log-opts": {
+        "max-size": "50m",
+        "max-file": "3"
+    }$( [ "$mirrors_json" != "[]" ] && echo ",
+    \"registry-mirrors\": $mirrors_json" )
+}
+EOF
 
-    log_action "正在应用所有优化配置..."
-    echo "{ ${final_json_content} }" | sudo tee "$DAEMON_JSON" > /dev/null
     if sudo systemctl restart docker; then
         log_success "Docker 服务已重启，优化配置已生效！"
     else
@@ -427,7 +464,7 @@ fn_change_ssh_port() {
     
     echo -e "\n${BLUE}╔═══════════════════════ SSH 端口连接测试 ═══════════════════════╗${NC}"
     echo -e "║                                                                ║"
-    echo -e "║  ${YELLOW}[重要] 请立即打开一个新的终端窗口，尝试连接新端口：${NC}${BOLD}${GREEN}${NEW_SSH_PORT}${NC}      ║"
+    echo -e "║  ${YELLOW}[重要] 请立即打开一个新的终端窗口，尝试连接新端口：${NC}${BOLD}${GREEN}${NEW_SSH_PORT}${NC}       ║"
     echo -e "║                                                                ║"
     echo -e "║  ${CYAN}注意：在确认连接成功前，请勿关闭当前窗口！${NC}                    ║"
     echo -e "║                                                                ║"
@@ -1179,20 +1216,21 @@ fn_get_public_ip() {
     }
 
     fn_pull_with_progress_bar() {
-        local compose_file="$1"
-        local docker_compose_cmd="$2"
-        local time_estimate_table="$3"
+        local target_image="$1"
+        local time_estimate_table="$2"
         local PULL_LOG
         PULL_LOG=$(mktemp)
         trap 'rm -f "$PULL_LOG"' EXIT
         
-        $docker_compose_cmd -f "$compose_file" pull > "$PULL_LOG" 2>&1 &
+        log_info "正在拉取镜像: ${target_image} ..."
+        docker pull "$target_image" > "$PULL_LOG" 2>&1 &
         local pid=$!
         while kill -0 $pid 2>/dev/null; do
-            clear || true 
+            clear || true
             echo -e "${time_estimate_table}"
             echo -e "\n${CYAN}--- 实时拉取进度 (下方为最新日志) ---${NC}"
-            grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists' "$PULL_LOG" | tail -n 5 || true
+            # 提取 Docker pull 的进度信息
+            grep -E 'Downloading|Extracting|Pull complete|Verifying Checksum|Already exists|Status: Downloaded' "$PULL_LOG" | tail -n 5 || true
             sleep 1
         done
         
@@ -1271,13 +1309,13 @@ fn_get_public_ip() {
         echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
         echo -e "║                   ${BOLD}部署成功！尽情享受吧！${NC}                   ║"
         echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
-        echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:8000${NC}"
+        echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:${ST_PORT}${NC}"
         
         if [[ "$run_mode" == "1" ]]; then
             echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"
             echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"
         elif [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
-            echo -e "  ${YELLOW}登录页面:${NC} ${GREEN}http://${SERVER_IP}:8000/login${NC}"
+            echo -e "  ${YELLOW}登录页面:${NC} ${GREEN}http://${SERVER_IP}:${ST_PORT}/login${NC}"
         fi
         
         echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
@@ -1338,6 +1376,13 @@ fn_get_public_ip() {
     local parent_path="${custom_parent_path:-$default_parent_path}"
     INSTALL_DIR="${parent_path}/sillytavern"
     log_info "安装路径最终设置为: ${INSTALL_DIR}"
+
+    read -rp "请输入酒馆访问端口 [默认 8000]: " ST_PORT < /dev/tty
+    ST_PORT=${ST_PORT:-8000}
+    if ! [[ "$ST_PORT" =~ ^[0-9]+$ ]] || [ "$ST_PORT" -lt 1 ] || [ "$ST_PORT" -gt 65535 ]; then
+        log_warn "端口无效，将使用默认端口 8000。"
+        ST_PORT=8000
+    fi
 
     CONFIG_FILE="$INSTALL_DIR/config.yaml"
     COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
