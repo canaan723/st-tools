@@ -14,7 +14,7 @@
 
 # --- [核心配置] ---
 # 脚本版本号
-readonly SCRIPT_VERSION="v3.0test5"
+readonly SCRIPT_VERSION="v3.0test6"
 # 模式切换: "test" (测试版) 或 "prod" (正式版)
 GUGU_MODE="test"
 
@@ -397,6 +397,53 @@ fn_wait_for_service() {
         ((seconds--))
     done
     echo -e "                                           \r"
+}
+
+# 通用 Docker 应用卸载函数
+fn_uninstall_docker_app() {
+    local container_name=$1
+    local display_name=$2
+    local project_dir=$3
+    local image_name=$4
+
+    echo -e "\n${RED}警告：此操作将彻底卸载 ${display_name}！${NC}"
+    echo -e "此操作将执行以下步骤："
+    echo -e "  1. 停止并移除容器: ${YELLOW}${container_name}${NC}"
+    echo -e "  2. 移除 Docker 镜像: ${YELLOW}${image_name}${NC}"
+    echo -e "  3. ${BOLD}${RED}永久删除项目目录及其所有数据: ${project_dir}${NC}"
+    
+    read -rp "确定要继续吗？[y/N]: " confirm1 < /dev/tty
+    if [[ ! "$confirm1" =~ ^[Yy]$ ]]; then
+        log_info "操作已取消。"
+        return 1
+    fi
+
+    read -rp "请再次确认，输入 'yes' 以执行卸载: " confirm2 < /dev/tty
+    if [[ "$confirm2" != "yes" ]]; then
+        log_info "输入不匹配，操作已取消。"
+        return 1
+    fi
+
+    log_action "正在卸载 ${display_name}..."
+
+    if docker ps -a --format '{{.Names}}' | grep -q "^${container_name}$"; then
+        log_info "正在停止并移除容器..."
+        docker stop "$container_name" >/dev/null 2>&1 || true
+        docker rm "$container_name" >/dev/null 2>&1 || true
+    fi
+
+    if [ -n "$image_name" ]; then
+        log_info "正在移除镜像 ${image_name}..."
+        docker rmi "$image_name" >/dev/null 2>&1 || true
+    fi
+
+    if [ -d "$project_dir" ]; then
+        log_info "正在删除项目目录: ${project_dir}..."
+        rm -rf "$project_dir"
+    fi
+
+    log_success "${display_name} 已成功卸载。"
+    return 0
 }
 
 fn_check_in_china() {
@@ -807,7 +854,7 @@ fn_ufw_manager() {
         echo -e "  [4] 放行指定端口"
         echo -e "  [5] 删除指定规则"
         echo -e "  [6] 查看被 Fail2ban 封禁的 IP"
-        echo -e "  [0] 返回主菜单"
+        echo -e "  [0] 返回上一级"
         echo -e "------------------------"
         read -rp "请输入选项: " ufw_choice < /dev/tty
         [[ -z "$ufw_choice" ]] && continue
@@ -882,7 +929,7 @@ fn_1panel_manager() {
         echo -e "  [5] 修改面板用户/密码"
         echo -e "  [6] 重置安全设置 (取消域名/入口/IP限制/MFA)"
         echo -e "  [7] 切换监听 IP (IPv4/IPv6)"
-        echo -e "  [0] 返回主菜单"
+        echo -e "  [0] 返回上一级"
         echo -e "------------------------"
         read -rp "请输入选项: " op_1panel < /dev/tty
         [[ -z "$op_1panel" ]] && continue
@@ -1412,7 +1459,7 @@ run_initialization() {
         echo -e "  [5] 修改 SSH 端口 (支持 1-65535)"
         echo -e "  [6] 安装进阶 Fail2ban (双重防护 + 自动白名单)"
         echo -e "  [7] ${RED}立即重启服务器${NC}"
-        echo -e "  [0] 返回主菜单"
+        echo -e "  [0] 返回上一级"
         echo -e "------------------------------"
         read -rp "请输入选项 [0-7]: " init_choice < /dev/tty
         
@@ -2133,7 +2180,7 @@ fn_test_scripts_menu() {
         echo -e "${BLUE}=== 常驻测试脚本 ===${NC}"
         echo -e "  [1] Region 流媒体解锁测试"
         echo -e "  [2] NodeQuality 综合测试"
-        echo -e "  [0] 返回主菜单"
+        echo -e "  [0] 返回上一级"
         echo -e "------------------------"
         read -rp "请输入选项: " test_choice < /dev/tty
         case "$test_choice" in
@@ -2396,7 +2443,8 @@ fn_st_docker_manager() {
         echo -e "  [6] 查看运行状态 (ps)"
         echo -e "  [7] 查看资源占用 (stats)"
         echo -e "  [8] 查看实时日志 (logs -f)"
-        echo -e "  [0] 返回主菜单"
+        echo -e "  [x] 彻底卸载酒馆"
+        echo -e "  [0] 返回上一级"
         echo -e "------------------------"
         read -rp "请输入选项: " st_choice < /dev/tty
         [[ -z "$st_choice" ]] && continue
@@ -2449,6 +2497,12 @@ fn_st_docker_manager() {
                 cd "$project_dir" && $compose_cmd logs -f --tail 1000
                 trap 'exit 0' INT
                 ;;
+            x|X)
+                if fn_uninstall_docker_app "sillytavern" "SillyTavern" "$project_dir" "ghcr.io/sillytavern/sillytavern:latest"; then
+                    sleep 2
+                    break
+                fi
+                ;;
             0) break ;;
             *) log_warn "无效输入"; sleep 1 ;;
         esac
@@ -2484,7 +2538,8 @@ fn_api_docker_manager() {
         echo -e "  [3] 更新镜像 (pull & up)"
         echo -e "  [4] 查看运行状态 (ps)"
         echo -e "  [5] 查看实时日志 (logs -f)"
-        echo -e "  [0] 返回主菜单"
+        echo -e "  [x] 彻底卸载服务"
+        echo -e "  [0] 返回上一级"
         echo -e "------------------------"
         read -rp "请输入选项: " api_choice < /dev/tty
         [[ -z "$api_choice" ]] && continue
@@ -2499,6 +2554,119 @@ fn_api_docker_manager() {
                 cd "$project_dir" && $compose_cmd logs -f --tail 100
                 trap 'exit 0' INT
                 ;;
+            x|X)
+                local image_to_remove=$(docker inspect --format '{{.Config.Image}}' "$container_name" 2>/dev/null)
+                if fn_uninstall_docker_app "$container_name" "$display_name" "$project_dir" "$image_to_remove"; then
+                    sleep 2
+                    break
+                fi
+                ;;
+            0) break ;;
+            *) log_warn "无效输入"; sleep 1 ;;
+        esac
+    done
+}
+
+# --- [二级菜单: 应用部署中心] ---
+fn_deploy_menu() {
+    while true; do
+        tput reset
+        fn_show_main_header
+        echo -e "\n${BLUE}==================== [ 应用部署中心 ] ====================${NC}"
+        if [ "$IS_DEBIAN_LIKE" = true ]; then
+            echo -e "  [1] 安装 1Panel 面板"
+        fi
+        echo -e "  [2] 部署 SillyTavern (酒馆)"
+        echo -e "  [3] 部署 gcli2api"
+        echo -e "  [4] 部署 ais2api"
+        echo -e "------------------------------------------------------"
+        echo -e "  [0] 返回上一级"
+        echo -e "${BLUE}======================================================${NC}"
+        read -rp "请输入选项 [0-4]: " deploy_choice < /dev/tty
+        case "$deploy_choice" in
+            1) [ "$IS_DEBIAN_LIKE" = true ] && install_1panel || log_warn "系统不支持" ;;
+            2) install_sillytavern; read -rp $'\n操作完成，按 Enter 键返回...' < /dev/tty ;;
+            3) install_gcli2api; read -rp $'\n操作完成，按 Enter 键返回...' < /dev/tty ;;
+            4) install_ais2api; read -rp $'\n操作完成，按 Enter 键返回...' < /dev/tty ;;
+            0) break ;;
+            *) log_warn "无效输入"; sleep 1 ;;
+        esac
+    done
+}
+
+# --- [二级菜单: 应用运维管理] ---
+fn_manage_menu() {
+    while true; do
+        tput reset
+        fn_show_main_header
+        echo -e "\n${BLUE}==================== [ 应用运维管理 ] ====================${NC}"
+        
+        local has_app=false
+        # 1. 酒馆管理
+        if docker ps -a --format '{{.Names}}' | grep -q '^sillytavern$'; then
+            echo -e "  [1] ${GREEN}酒馆运维管理${NC}"
+            has_app=true
+        fi
+        # 2. gcli2api 管理
+        if docker ps -a --format '{{.Names}}' | grep -q '^gcli2api$'; then
+            echo -e "  [2] ${GREEN}gcli2api 运维管理${NC}"
+            has_app=true
+        fi
+        # 3. ais2api 管理
+        if docker ps -a --format '{{.Names}}' | grep -q '^ais2api$'; then
+            echo -e "  [3] ${GREEN}ais2api 运维管理${NC}"
+            has_app=true
+        fi
+        # 4. 1Panel 管理
+        if command -v 1pctl &> /dev/null; then
+            echo -e "  [4] ${GREEN}1Panel 运维管理${NC}"
+            has_app=true
+        fi
+
+        if [ "$has_app" = false ]; then
+            echo -e "  ${YELLOW}(未检测到已安装的应用)${NC}"
+        fi
+
+        echo -e "------------------------------------------------------"
+        echo -e "  [0] 返回上一级"
+        echo -e "${BLUE}======================================================${NC}"
+        read -rp "请输入选项: " manage_choice < /dev/tty
+        case "$manage_choice" in
+            1) docker ps -a --format '{{.Names}}' | grep -q '^sillytavern$' && fn_st_docker_manager || log_warn "未安装" ;;
+            2) docker ps -a --format '{{.Names}}' | grep -q '^gcli2api$' && fn_api_docker_manager "gcli2api" "gcli2api" || log_warn "未安装" ;;
+            3) docker ps -a --format '{{.Names}}' | grep -q '^ais2api$' && fn_api_docker_manager "ais2api" "ais2api" || log_warn "未安装" ;;
+            4) command -v 1pctl &> /dev/null && fn_1panel_manager || log_warn "未安装" ;;
+            0) break ;;
+            *) log_warn "无效输入"; sleep 1 ;;
+        esac
+    done
+}
+
+# --- [二级菜单: 系统安全与工具] ---
+fn_tools_menu() {
+    while true; do
+        tput reset
+        fn_show_main_header
+        echo -e "\n${BLUE}==================== [ 系统安全与工具 ] ====================${NC}"
+        echo -e "  [1] 测试脚本 (流媒体/综合测试)"
+        if [ "$IS_DEBIAN_LIKE" = true ]; then
+            echo -e "  [2] 系统安全清理"
+        fi
+        if command -v fail2ban-client &> /dev/null; then
+            echo -e "  [3] Fail2ban 运维管理"
+        fi
+        if command -v ufw &> /dev/null; then
+            echo -e "  [4] UFW 防火墙运维管理"
+        fi
+        echo -e "------------------------------------------------------"
+        echo -e "  [0] 返回上一级"
+        echo -e "${BLUE}======================================================${NC}"
+        read -rp "请输入选项 [0-4]: " tools_choice < /dev/tty
+        case "$tools_choice" in
+            1) fn_test_scripts_menu ;;
+            2) [ "$IS_DEBIAN_LIKE" = true ] && run_system_cleanup || log_warn "系统不支持" ;;
+            3) command -v fail2ban-client &> /dev/null && fn_fail2ban_manager || log_warn "未安装" ;;
+            4) command -v ufw &> /dev/null && fn_ufw_manager || log_warn "未安装" ;;
             0) break ;;
             *) log_warn "无效输入"; sleep 1 ;;
         esac
@@ -2509,93 +2677,22 @@ main_menu() {
     while true; do
         tput reset
         fn_show_main_header
-        echo
-
+        
+        # 系统兼容性提示 (仅在非 Debian 系且在主菜单时显示一次)
         if [ "$IS_DEBIAN_LIKE" = false ]; then
-            echo -e "\n${YELLOW}╔═════════════════════════════════════════════════════════════════════════════╗${NC}"
-            echo -e "${YELLOW}║                        【 系统兼容性提示 】                            ║${NC}"
-            echo -e "${YELLOW}╠═════════════════════════════════════════════════════════════════════════════╣${NC}"
-            echo -e "${YELLOW}║${NC} 检测到您的系统为: ${CYAN}${DETECTED_OS}${NC}"
-            echo -e "${YELLOW}║${NC} 本脚本专为 Debian/Ubuntu 优化，因此部分功能在您的系统上不可用。         ${YELLOW}║${NC}"
-            echo -e "${YELLOW}║─────────────────────────────────────────────────────────────────────────────║${NC}"
-            echo -e "${YELLOW}║ ${RED}不可用功能:${NC} [1] 服务器初始化, [2] 安装1Panel, [4] 系统清理        ${YELLOW}║${NC}"
-            echo -e "${YELLOW}║ ${GREEN}可 用 功 能:${NC} [3] 部署 SillyTavern (内置Docker优化)               ${YELLOW}║${NC}"
-            echo -e "${YELLOW}║─────────────────────────────────────────────────────────────────────────────║${NC}"
-            echo -e "${YELLOW}║ ${BOLD}请注意：要使用可用功能，您必须先手动安装好 Docker 和 Docker-Compose。${NC}   ${YELLOW}║${NC}"
-            echo -e "${YELLOW}╚═════════════════════════════════════════════════════════════════════════════╝${NC}"
-        else
-            echo -e "\n${BOLD}使用说明 (Debian/Ubuntu):${NC}"
-            echo -e "  • ${YELLOW}部署流程${NC}: 请按 ${GREEN}1 -> 2 -> 3${NC} 的顺序分步执行。"
-            echo -e "  • ${YELLOW}运维管理${NC}: 部署完成后，使用 ${GREEN}4, 5, 6${NC} 进行日常维护。"
+            echo -e "\n${YELLOW}提示: 检测到系统为 ${DETECTED_OS}，部分功能受限。${NC}"
         fi
 
-        echo -e "\n${BLUE}============================== [ 部署区域 ] ===============================${NC}"
+        echo -e "\n${BLUE}==================== [ 核心功能 ] ====================${NC}"
+        echo -e "  [1] 服务器初始化与安全加固 (BBR/Swap/SSH)"
+        echo -e "  [2] 应用部署中心 (1Panel/酒馆/API工具)"
+        echo -e "  [3] 应用运维管理 (重启/更新/卸载)"
+        echo -e "  [4] 系统安全与工具 (防火墙/清理/测试)"
+        echo -e "${BLUE}==================== [ 脚本设置 ] ====================${NC}"
+        echo -e "  [u] 检查更新    [x] 卸载脚本    [q] 退出脚本"
+        echo -e "${BLUE}======================================================${NC}"
         
-        if [ "$IS_DEBIAN_LIKE" = true ]; then
-            echo -e " ${GREEN}[1] 服务器初始化${NC}"
-            echo -e " ${GREEN}[2] 安装 1Panel 面板${NC}"
-        fi
-        
-        echo -e " ${GREEN}[3] 部署 SillyTavern${NC}"
-        echo -e " ${GREEN}[31] 部署 gcli2api${NC}"
-        echo -e " ${GREEN}[32] 部署 ais2api${NC}"
-        
-        echo -e "\n${BLUE}============================== [ 运维区域 ] ===============================${NC}"
-
-        echo -e " ${GREEN}[4] 测试脚本${NC}"
-
-        local show_st_manager=false
-        if docker ps -a --format '{{.Names}}' | grep -q '^sillytavern$'; then
-            show_st_manager=true
-            echo -e " ${GREEN}[5] 酒馆运维管理${NC}"
-        fi
-
-        local show_gcli_manager=false
-        if docker ps -a --format '{{.Names}}' | grep -q '^gcli2api$'; then
-            show_gcli_manager=true
-            echo -e " ${GREEN}[51] gcli2api 运维管理${NC}"
-        fi
-
-        local show_ais_manager=false
-        if docker ps -a --format '{{.Names}}' | grep -q '^ais2api$'; then
-            show_ais_manager=true
-            echo -e " ${GREEN}[52] ais2api 运维管理${NC}"
-        fi
-
-        if [ "$IS_DEBIAN_LIKE" = true ]; then
-            echo -e " ${GREEN}[6] 系统安全清理${NC}"
-        fi
-
-        if command -v fail2ban-client &> /dev/null; then
-            echo -e " ${GREEN}[7] Fail2ban 运维管理${NC}"
-        fi
-
-        if command -v ufw &> /dev/null; then
-            echo -e " ${GREEN}[8] UFW 防火墙运维管理${NC}"
-        fi
-
-        if command -v 1pctl &> /dev/null; then
-            echo -e " ${GREEN}[9] 1Panel 运维管理${NC}"
-        fi
-
-        echo -e " ${GREEN}[u] 检查脚本更新${NC}"
-        echo -e " ${RED}[x] 卸载本脚本${NC}"
-
-        echo -e "${BLUE}===========================================================================${NC}"
-        echo -e " ${YELLOW}[q] 退出脚本${NC}\n"
-
-        local options_str="3,31,32,4"
-        [ "$show_st_manager" = true ] && options_str="${options_str},5"
-        [ "$show_gcli_manager" = true ] && options_str="${options_str},51"
-        [ "$show_ais_manager" = true ] && options_str="${options_str},52"
-        if [ "$IS_DEBIAN_LIKE" = true ]; then
-            options_str="1,2,${options_str},6,7,8"
-            if command -v 1pctl &> /dev/null; then
-                options_str="${options_str},9"
-            fi
-        fi
-        local valid_options="${options_str},u,x,q"
-        read -rp "请输入选项 [${valid_options}]: " choice < /dev/tty
+        read -rp "请输入选项 [1-4, u, x, q]: " choice < /dev/tty
 
         case "$choice" in
             1)
@@ -2606,89 +2703,9 @@ main_menu() {
                     sleep 2
                 fi
                 ;;
-            2)
-                if [ "$IS_DEBIAN_LIKE" = true ]; then
-                    install_1panel
-                    while read -r -t 0.1; do :; done
-                    read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
-                else
-                    log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"
-                    sleep 2
-                fi
-                ;;
-            3)
-                install_sillytavern
-                while read -r -t 0.1; do :; done
-                read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
-                ;;
-            31)
-                install_gcli2api
-                while read -r -t 0.1; do :; done
-                read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
-                ;;
-            32)
-                install_ais2api
-                while read -r -t 0.1; do :; done
-                read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
-                ;;
-            4)
-                fn_test_scripts_menu
-                ;;
-            5)
-                if [ "$show_st_manager" = true ]; then
-                    fn_st_docker_manager
-                else
-                    echo -e "\n${RED}无效输入，请重新选择。${NC}"; sleep 2
-                fi
-                ;;
-            51)
-                if [ "$show_gcli_manager" = true ]; then
-                    fn_api_docker_manager "gcli2api" "gcli2api"
-                else
-                    echo -e "\n${RED}无效输入，请重新选择。${NC}"; sleep 2
-                fi
-                ;;
-            52)
-                if [ "$show_ais_manager" = true ]; then
-                    fn_api_docker_manager "ais2api" "ais2api"
-                else
-                    echo -e "\n${RED}无效输入，请重新选择。${NC}"; sleep 2
-                fi
-                ;;
-            6)
-                if [ "$IS_DEBIAN_LIKE" = true ]; then
-                    run_system_cleanup
-                    while read -r -t 0.1; do :; done
-                    read -rp $'\n操作完成，按 Enter 键返回主菜单...' < /dev/tty
-                else
-                    log_warn "您的系统 (${DETECTED_OS}) 不支持此功能。"
-                    sleep 2
-                fi
-                ;;
-            7)
-                if command -v fail2ban-client &> /dev/null; then
-                    fn_fail2ban_manager
-                else
-                    log_warn "未检测到 Fail2ban，请先在初始化菜单中安装。"
-                    sleep 2
-                fi
-                ;;
-            8)
-                if command -v ufw &> /dev/null; then
-                    fn_ufw_manager
-                else
-                    log_warn "未检测到 UFW，请先在初始化菜单中安装。"
-                    sleep 2
-                fi
-                ;;
-            9)
-                if command -v 1pctl &> /dev/null; then
-                    fn_1panel_manager
-                else
-                    log_warn "未检测到 1Panel，请先执行安装流程。"
-                    sleep 2
-                fi
-                ;;
+            2) fn_deploy_menu ;;
+            3) fn_manage_menu ;;
+            4) fn_tools_menu ;;
             u|U)
                 fn_check_update
                 read -rp "按 Enter 返回..." < /dev/tty
@@ -2701,7 +2718,7 @@ main_menu() {
                 echo -e "\n感谢使用，再见！"; exit 0
                 ;;
             *)
-                echo -e "\n${RED}无效输入，请重新选择。${NC}"; sleep 2
+                echo -e "\n${RED}无效输入，请重新选择。${NC}"; sleep 1
                 ;;
         esac
     done
@@ -2710,5 +2727,6 @@ main_menu() {
 # --- [启动逻辑] ---
 fn_init_user_home
 fn_auto_install
-fn_check_update
+# 仅在已安装模式下启动时检查更新，避免干扰初次运行
+[[ "$0" == "$GUGU_PATH" ]] && fn_check_update
 main_menu
