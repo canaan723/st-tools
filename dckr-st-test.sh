@@ -14,7 +14,7 @@
 
 # --- [核心配置] ---
 # 脚本版本号
-readonly SCRIPT_VERSION="v3.0test4"
+readonly SCRIPT_VERSION="v3.0test5"
 # 模式切换: "test" (测试版) 或 "prod" (正式版)
 GUGU_MODE="test"
 
@@ -53,6 +53,21 @@ fi
 
 # 全局变量初始化
 CUSTOM_PROXY_IMAGE=""
+USER_HOME=""
+
+# 初始化用户家目录变量
+fn_init_user_home() {
+    local target_user="${SUDO_USER:-root}"
+    if [ "$target_user" = "root" ]; then
+        USER_HOME="/root"
+    else
+        USER_HOME=$(getent passwd "$target_user" | cut -d: -f6)
+        if [ -z "$USER_HOME" ]; then
+            # 回退方案
+            USER_HOME="/home/$target_user"
+        fi
+    fi
+}
 
 fn_ssh_rollback() {
     local failed_port=$1
@@ -1691,11 +1706,7 @@ EOF
     
     TARGET_USER="${SUDO_USER:-root}"
     if [ "$TARGET_USER" = "root" ]; then
-        USER_HOME="/root"
         log_warn "检测到以 root 用户运行，将安装在 /root 目录。"
-    else
-        USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
-        if [ -z "$USER_HOME" ]; then fn_print_error "无法找到用户 '$TARGET_USER' 的家目录。"; fi
     fi
     INSTALL_DIR="$USER_HOME/sillytavern"
     CONFIG_FILE="$INSTALL_DIR/config/config.yaml"
@@ -2697,6 +2708,7 @@ main_menu() {
 }
 
 # --- [启动逻辑] ---
+fn_init_user_home
 fn_auto_install
 fn_check_update
 main_menu
