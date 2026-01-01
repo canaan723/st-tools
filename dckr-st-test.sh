@@ -14,7 +14,7 @@
 
 # --- [核心配置] ---
 # 脚本版本号
-readonly SCRIPT_VERSION="v3.0test8"
+readonly SCRIPT_VERSION="v3.0test9"
 # 模式切换: "test" (测试版) 或 "prod" (正式版)
 GUGU_MODE="test"
 
@@ -2251,6 +2251,73 @@ fn_test_scripts_menu() {
     done
 }
 
+fn_test_llm_api() {
+    while true; do
+        tput reset
+        echo -e "${BLUE}=== API 接口连通性测试 ===${NC}"
+        echo -e "  [1] 测试 Gemini API"
+        echo -e "  [2] 测试 OpenAI API (自定义)"
+        echo -e "  [0] 返回上一级"
+        echo -e "------------------------"
+        read -rp "请输入选项: " api_test_choice < /dev/tty
+        case "$api_test_choice" in
+            1)
+                echo -e "\n${CYAN}--- Gemini API 测试 ---${NC}"
+                read -rp "请输入 Gemini API KEY: " GEMINI_KEY < /dev/tty
+                if [ -z "$GEMINI_KEY" ]; then log_warn "API KEY 不能为空"; sleep 1; continue; fi
+                
+                log_info "1. 正在测试 API 连通性 (拉取模型列表)..."
+                curl -s -H 'Content-Type: application/json' \
+                     -X GET "https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_KEY}" | head -n 20
+                
+                echo -e "\n"
+                read -rp "请输入测试模型名称 [默认: gemini-2.5-flash]: " GEMINI_MODEL < /dev/tty
+                GEMINI_MODEL=${GEMINI_MODEL:-"gemini-2.5-flash"}
+                
+                log_info "2. 正在测试聊天补全功能 (${GEMINI_MODEL})..."
+                curl -s -H 'Content-Type: application/json' \
+                     -d "{\"contents\":[{\"parts\":[{\"text\":\"你好，讲个一句话笑话！\"}]}]}" \
+                     "https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_KEY}"
+                
+                echo -e "\n"
+                read -rp "测试完成，按 Enter 继续..." < /dev/tty
+                ;;
+            2)
+                echo -e "\n${CYAN}--- OpenAI API 测试 ---${NC}"
+                read -rp "请输入 API BASE [例如: https://api.openai.com/v1]: " OPENAI_BASE < /dev/tty
+                read -rp "请输入 API KEY: " OPENAI_KEY < /dev/tty
+                if [ -z "$OPENAI_BASE" ] || [ -z "$OPENAI_KEY" ]; then log_warn "BASE 或 KEY 不能为空"; sleep 1; continue; fi
+                
+                # 确保 BASE 不以 / 结尾
+                OPENAI_BASE=${OPENAI_BASE%/}
+                
+                log_info "1. 正在测试 API 连通性 (拉取模型列表)..."
+                curl -s "$OPENAI_BASE/models" \
+                  -H "Authorization: Bearer $OPENAI_KEY" | head -n 20
+                
+                echo -e "\n"
+                read -rp "请输入测试模型名称 [默认: gemini-2.5-flash]: " OPENAI_MODEL < /dev/tty
+                OPENAI_MODEL=${OPENAI_MODEL:-"gemini-2.5-flash"}
+                
+                log_info "2. 正在测试聊天补全功能 (${OPENAI_MODEL})..."
+                curl -s "$OPENAI_BASE/chat/completions" \
+                  -H "Content-Type: application/json" \
+                  -H "Authorization: Bearer $OPENAI_KEY" \
+                  -d "{
+                    \"model\": \"$OPENAI_MODEL\",
+                    \"messages\": [{\"role\": \"user\", \"content\": \"你好，讲个一句话笑话！\"}],
+                    \"stream\": false
+                  }"
+                
+                echo -e "\n"
+                read -rp "测试完成，按 Enter 继续..." < /dev/tty
+                ;;
+            0) break ;;
+            *) log_warn "无效输入"; sleep 1 ;;
+        esac
+    done
+}
+
 # --- [酒馆运维辅助函数] ---
 fn_st_switch_to_single() {
     local project_dir=$1
@@ -2702,24 +2769,26 @@ fn_tools_menu() {
         fn_show_main_header
         echo -e "\n${BLUE}==================== [ 系统安全与工具 ] ====================${NC}"
         echo -e "  [1] 测试脚本 (流媒体/综合测试)"
+        echo -e "  [2] API 接口连通性测试"
         if [ "$IS_DEBIAN_LIKE" = true ]; then
-            echo -e "  [2] 系统安全清理"
+            echo -e "  [3] 系统安全清理"
         fi
         if command -v fail2ban-client &> /dev/null; then
-            echo -e "  [3] Fail2ban 运维管理"
+            echo -e "  [4] Fail2ban 运维管理"
         fi
         if command -v ufw &> /dev/null; then
-            echo -e "  [4] UFW 防火墙运维管理"
+            echo -e "  [5] UFW 防火墙运维管理"
         fi
         echo -e "------------------------------------------------------"
         echo -e "  [0] 返回上一级"
         echo -e "${BLUE}======================================================${NC}"
-        read -rp "请输入选项 [0-4]: " tools_choice < /dev/tty
+        read -rp "请输入选项 [0-5]: " tools_choice < /dev/tty
         case "$tools_choice" in
             1) fn_test_scripts_menu ;;
-            2) [ "$IS_DEBIAN_LIKE" = true ] && run_system_cleanup || log_warn "系统不支持" ;;
-            3) command -v fail2ban-client &> /dev/null && fn_fail2ban_manager || log_warn "未安装" ;;
-            4) command -v ufw &> /dev/null && fn_ufw_manager || log_warn "未安装" ;;
+            2) fn_test_llm_api ;;
+            3) [ "$IS_DEBIAN_LIKE" = true ] && run_system_cleanup || log_warn "系统不支持" ;;
+            4) command -v fail2ban-client &> /dev/null && fn_fail2ban_manager || log_warn "未安装" ;;
+            5) command -v ufw &> /dev/null && fn_ufw_manager || log_warn "未安装" ;;
             0) break ;;
             *) log_warn "无效输入"; sleep 1 ;;
         esac
