@@ -2624,21 +2624,23 @@ fn_deploy_menu() {
         tput reset
         fn_show_main_header
         echo -e "\n${BLUE}==================== [ 应用部署中心 ] ====================${NC}"
+        echo -e "  [1] 安装 Docker"
         if [ "$IS_DEBIAN_LIKE" = true ]; then
-            echo -e "  [1] 安装 1Panel 面板"
+            echo -e "  [2] 安装 1Panel 面板"
         fi
-        echo -e "  [2] 部署 SillyTavern (酒馆)"
-        echo -e "  [3] 部署 gcli2api"
-        echo -e "  [4] 部署 ais2api"
+        echo -e "  [3] 部署 SillyTavern (酒馆)"
+        echo -e "  [4] 部署 gcli2api"
+        echo -e "  [5] 部署 ais2api"
         echo -e "------------------------------------------------------"
         echo -e "  [0] 返回上一级"
         echo -e "${BLUE}======================================================${NC}"
-        read -rp "请输入选项 [0-4]: " deploy_choice < /dev/tty
+        read -rp "请输入选项 [0-5]: " deploy_choice < /dev/tty
         case "$deploy_choice" in
-            1) [ "$IS_DEBIAN_LIKE" = true ] && install_1panel || log_warn "系统不支持" ;;
-            2) install_sillytavern; read -rp $'\n操作完成，按 Enter 键返回...' < /dev/tty ;;
-            3) install_gcli2api; read -rp $'\n操作完成，按 Enter 键返回...' < /dev/tty ;;
-            4) install_ais2api; read -rp $'\n操作完成，按 Enter 键返回...' < /dev/tty ;;
+            1) log_action "正在安装 Docker..."; bash <(curl -sSL https://linuxmirrors.cn/docker.sh); read -rp $'\n操作完成，按 Enter 键返回...' < /dev/tty ;;
+            2) [ "$IS_DEBIAN_LIKE" = true ] && install_1panel || log_warn "系统不支持" ;;
+            3) install_sillytavern; read -rp $'\n操作完成，按 Enter 键返回...' < /dev/tty ;;
+            4) install_gcli2api; read -rp $'\n操作完成，按 Enter 键返回...' < /dev/tty ;;
+            5) install_ais2api; read -rp $'\n操作完成，按 Enter 键返回...' < /dev/tty ;;
             0) break ;;
             *) log_warn "无效输入"; sleep 1 ;;
         esac
