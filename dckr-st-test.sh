@@ -14,7 +14,7 @@
 
 # --- [核心配置] ---
 # 脚本版本号
-readonly SCRIPT_VERSION="v3.0test9"
+readonly SCRIPT_VERSION="v3.0test10"
 # 模式切换: "test" (测试版) 或 "prod" (正式版)
 GUGU_MODE="test"
 
@@ -257,7 +257,7 @@ fn_uninstall_gugu() {
 
 fn_show_main_header() {
     echo -e "${YELLOW}>>${GREEN} 咕咕助手 ${SCRIPT_VERSION}${NC}"
-    echo -e "   ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
+    echo -e "   ${BOLD}\033[0;37m作者: 清绝 | 博客: blog.qjyg.de${NC}"
 }
 
 check_root() {
@@ -1684,7 +1684,7 @@ install_sillytavern() {
 
 
     fn_apply_config_changes() {
-        sed -i '1i# ✦ 咕咕助手 · 作者：清绝 | 官网：https://blog.qjyg.de' "$CONFIG_FILE"
+        sed -i '1i# ✦ 咕咕助手 · 作者：清绝 | 博客：https://blog.qjyg.de' "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # 允许外部访问/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false # 关闭IP白名单模式/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400 # 24小时退出登录/" "$CONFIG_FILE"
@@ -1735,6 +1735,7 @@ install_sillytavern() {
         fn_print_info "正在创建 Git 同步配置文件 (.gugu/git_sync.conf)..."
         mkdir -p "$INSTALL_DIR/.gugu"
         cat <<EOF > "$INSTALL_DIR/.gugu/git_sync.conf"
+# ✦ 咕咕助手 · 作者：清绝 | 博客：https://blog.qjyg.de
 REPO_URL="仓库"
 REPO_TOKEN="令牌"
 GIT_USER_NAME="用户名"
@@ -2062,6 +2063,7 @@ install_gcli2api() {
     
     log_action "正在生成 docker-compose.yml..."
     cat <<EOF > "$INSTALL_DIR/docker-compose.yml"
+# ✦ 咕咕助手 · 作者：清绝 | 博客：https://blog.qjyg.de
 services:
   gcli2api:
     image: ${IMAGE_NAME}
@@ -2165,6 +2167,7 @@ install_ais2api() {
     
     log_action "正在生成 app.env..."
     cat <<EOF > "$INSTALL_DIR/app.env"
+# ✦ 咕咕助手 · 作者：清绝 | 博客：https://blog.qjyg.de
 # 自定义密钥
 API_KEYS=${AIS_KEY}
 
@@ -2695,7 +2698,7 @@ fn_deploy_menu() {
         if [ "$IS_DEBIAN_LIKE" = true ]; then
             echo -e "  [2] 安装 1Panel 面板"
         fi
-        echo -e "  [3] 部署 SillyTavern (酒馆)"
+        echo -e "  [3] 部署 酒馆"
         echo -e "  [4] 部署 gcli2api"
         echo -e "  [5] 部署 ais2api"
         echo -e "------------------------------------------------------"
