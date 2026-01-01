@@ -14,7 +14,7 @@
 
 # --- [核心配置] ---
 # 脚本版本号
-readonly SCRIPT_VERSION="v3.0test7"
+readonly SCRIPT_VERSION="v3.0test8"
 # 模式切换: "test" (测试版) 或 "prod" (正式版)
 GUGU_MODE="test"
 
@@ -359,7 +359,7 @@ fn_check_dependencies() {
 
     local current_user="${SUDO_USER:-$(whoami)}"
     if ! groups "$current_user" | grep -q '\bdocker\b' && [ "$(id -u)" -ne 0 ]; then
-        fn_print_error "当前用户不在 docker 用户组。请执行【步骤2】或手动添加后，【重新登录SSH】再试。" || return 1
+        fn_print_error "当前用户不在 docker 用户组。请尝试【重新登录SSH】或手动执行 'sudo usermod -aG docker \$USER' 后再试。" || return 1
     fi
     log_success "Docker 环境检查通过！"
 }
@@ -1605,7 +1605,7 @@ install_1panel() {
     echo -e "\n${CYAN}================ 1Panel 安装完成 ===================${NC}"
     log_warn "重要：需牢记已设置的 1Panel 访问地址、端口、账号和密码。"
     echo -e "并确保防火墙/安全组中 ${GREEN}已放行 1Panel 的端口${NC}。"
-    echo -e "\n${BOLD}可重新运行本脚本，选择【步骤3】来部署 SillyTavern。${NC}"
+    echo -e "\n${BOLD}可重新运行本脚本，选择【2】进入应用部署中心，再选择【3】来部署 SillyTavern。${NC}"
     log_warn "若刚才有用户被添加到 docker 组，务必先退出并重新登录SSH！"
 }
 
