@@ -12,10 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-# --- [核心配置] ---
-# 脚本版本号
 readonly SCRIPT_VERSION="v3.0"
-# 模式切换: "test" (测试版) 或 "prod" (正式版)
 GUGU_MODE="test"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -25,10 +22,7 @@ else
     readonly GUGU_COMMAND="gugutest"
     readonly GUGU_URL="https://gugu.qjyg.de/vpstest"
 fi
-# ------------------
 
-# --- [核心] 信号捕获与环境检查 ---
-# 捕获 Ctrl+C (SIGINT)，确保在进程替换模式下也能优雅退出而不报语法错误
 trap 'exit 0' INT
 
 if [ -z "$BASH_VERSION" ]; then
