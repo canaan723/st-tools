@@ -14,7 +14,7 @@
 
 # --- [核心配置] ---
 # 脚本版本号
-readonly SCRIPT_VERSION="v3.0test6"
+readonly SCRIPT_VERSION="v3.0test7"
 # 模式切换: "test" (测试版) 或 "prod" (正式版)
 GUGU_MODE="test"
 
@@ -542,8 +542,21 @@ fn_optimize_docker() {
             ;;
     esac
 
-    log_action "正在应用 Docker 优化配置..."
+    log_action "正在应用 Docker 优化配置 (安全模式)..."
     
+    sudo mkdir -p /etc/docker
+    if [ -f "$DAEMON_JSON" ]; then
+        log_info "检测到现有的 daemon.json，正在备份并尝试合并配置..."
+        sudo cp "$DAEMON_JSON" "${DAEMON_JSON}.bak_$(date +%Y%m%d_%H%M%S)"
+        
+        # 检查是否存在自定义存储路径 (data-root)
+        if grep -q "data-root" "$DAEMON_JSON"; then
+            local current_root; current_root=$(grep "data-root" "$DAEMON_JSON" | cut -d'"' -f4)
+            log_warn "检测到自定义 Docker 存储路径: ${current_root}"
+            log_warn "为防止数据丢失，脚本将不会覆盖您的核心配置。"
+        fi
+    fi
+
     # 构建镜像列表 JSON 数组
     local mirrors_json="[]"
     if [ ${#best_mirrors[@]} -gt 0 ]; then
@@ -551,9 +564,42 @@ fn_optimize_docker() {
         mirrors_json="[ $mirrors_json ]"
     fi
 
-    # 使用人类易读的格式编写 daemon.json
-    sudo mkdir -p /etc/docker
-    cat <<EOF | sudo tee "$DAEMON_JSON" > /dev/null
+    # 使用 Python 进行安全的 JSON 合并 (如果 Python 可用)
+    if command -v python3 &> /dev/null; then
+        python3 - <<EOF
+import json, os
+path = "$DAEMON_JSON"
+new_conf = {
+    "log-driver": "json-file",
+    "log-opts": {"max-size": "50m", "max-file": "3"}
+}
+if $mirrors_json:
+    new_conf["registry-mirrors"] = $mirrors_json
+
+try:
+    if os.path.exists(path):
+        with open(path, 'r') as f:
+            data = json.load(f)
+    else:
+        data = {}
+    
+    # 深度合并配置，保留原有非冲突项
+    data.update({k: v for k, v in new_conf.items() if k not in data or k == "registry-mirrors"})
+    if "log-opts" in data and isinstance(data["log-opts"], dict):
+        data["log-opts"].update(new_conf["log-opts"])
+    else:
+        data["log-opts"] = new_conf["log-opts"]
+
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=4)
+except Exception as e:
+    print(f"JSON 合并失败: {e}")
+    exit(1)
+EOF
+    else
+        # 回退方案：如果没 Python，则仅在文件不存在时创建，存在时警告
+        if [ ! -f "$DAEMON_JSON" ]; then
+            cat <<EOF | sudo tee "$DAEMON_JSON" > /dev/null
 {
     "log-driver": "json-file",
     "log-opts": {
@@ -563,6 +609,11 @@ fn_optimize_docker() {
     \"registry-mirrors\": $mirrors_json" )
 }
 EOF
+        else
+            log_error "系统中未检测到 Python3，无法安全合并 JSON。请手动修改 ${DAEMON_JSON}。"
+            return 1
+        fi
+    fi
 
     if sudo systemctl restart docker; then
         log_success "Docker 服务已重启，优化配置已生效！"
