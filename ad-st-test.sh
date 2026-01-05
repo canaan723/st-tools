@@ -55,7 +55,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.4test${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.5${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
     echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
 }
@@ -115,6 +115,72 @@ fn_press_any_key() {
 
 fn_check_command() {
     command -v "$1" >/dev/null 2>&1
+}
+
+fn_get_st_config_value() {
+    local key="$1"
+    local config_path="$ST_DIR/config.yaml"
+    [ ! -f "$config_path" ] && return 1
+    # 1. 提取键后的内容 2. 去除行尾注释 3. 去除首尾空格 4. 去除首尾引号
+    grep -m 1 "^${key}:" "$config_path" | sed -E "s/^${key}:[[:space:]]*//" | sed -E "s/[[:space:]]*#.*$//" | sed -E 's/^[[:space:]]*//; s/[[:space:]]*$//' | sed -E 's/^["'\'']//; s/["'\'']$//' | tr -d '\r'
+}
+
+fn_get_st_nested_config_value() {
+    local parent="$1"
+    local key="$2"
+    local config_path="$ST_DIR/config.yaml"
+    [ ! -f "$config_path" ] && return 1
+    awk -v p="$parent" -v k="$key" '
+        $0 ~ "^"p":" {found=1; next}
+        found && $0 ~ "^[[:space:]]+"k":" {
+            sub(/^[[:space:]]+[^:]+:[[:space:]]*/, "");
+            sub(/[[:space:]]*#.*$/, "");
+            gsub(/^["\x27]|["\x27]$/, "");
+            print;
+            exit;
+        }
+        found && $0 ~ "^[^[:space:]]" {exit}
+    ' "$config_path" | tr -d '\r'
+}
+
+fn_update_st_config_value() {
+    local key="$1"
+    local value="$2"
+    local config_path="$ST_DIR/config.yaml"
+    [ ! -f "$config_path" ] && return 1
+    # 转义 sed 替换字符串中的特殊字符 (& 和 分隔符 |)
+    local escaped_value=$(echo "$value" | sed 's/[&|]/\\&/g')
+    sed -i -E "s|^(${key}:[[:space:]]*)[^#\r\n]*(.*)$|\1${escaped_value}\2|" "$config_path"
+}
+
+fn_update_st_nested_config_value() {
+    local parent="$1"
+    local key="$2"
+    local value="$3"
+    local config_path="$ST_DIR/config.yaml"
+    [ ! -f "$config_path" ] && return 1
+    # 转义 sed 替换字符串中的特殊字符
+    local escaped_value=$(echo "$value" | sed 's/[&|]/\\&/g')
+    sed -i -E "/^${parent}:/,/^[^[:space:]]/ s|^([[:space:]]+${key}:[[:space:]]*)[^#\r\n]*(.*)$|\1${escaped_value}\2|" "$config_path"
+}
+
+fn_add_st_whitelist_entry() {
+    local entry="$1"
+    local config_path="$ST_DIR/config.yaml"
+    [ ! -f "$config_path" ] && return 1
+    # 如果已存在则跳过
+    if grep -q -- "- $entry" "$config_path"; then return 0; fi
+    
+    # 1. 处理 whitelist: [] 格式
+    if grep -q "^whitelist:[[:space:]]*\[\]" "$config_path"; then
+        sed -i "s|^whitelist:[[:space:]]*\[\]|whitelist:\n  - $entry|" "$config_path"
+    # 2. 处理 whitelist: 后面直接换行（可能带注释）的情况
+    elif grep -qE "^whitelist:[[:space:]]*(#.*)?$" "$config_path"; then
+        sed -i "/^whitelist:/a \  - $entry" "$config_path"
+    # 3. 兜底处理：直接在 whitelist: 行后插入
+    elif grep -q "^whitelist:" "$config_path"; then
+        sed -i "/^whitelist:/a \  - $entry" "$config_path"
+    fi
 }
 
 fn_get_user_folders() {
@@ -2011,15 +2077,166 @@ fn_menu_gcli_manage() {
     done
 }
 
+fn_menu_st_config() {
+    while true; do
+        clear
+        fn_print_header "酒馆配置管理"
+        if [ ! -f "$ST_DIR/config.yaml" ]; then
+            fn_print_warning "未找到 config.yaml，请先部署酒馆。"
+            fn_press_any_key; return
+        fi
+
+        local curr_port=$(fn_get_st_config_value "port")
+        local curr_auth=$(fn_get_st_config_value "basicAuthMode")
+        local curr_user=$(fn_get_st_config_value "enableUserAccounts")
+        local curr_listen=$(fn_get_st_config_value "listen")
+
+        local mode_text="未知"
+        if [[ "$curr_auth" == "false" && "$curr_user" == "false" ]]; then
+            mode_text="默认 (无账密)"
+        elif [[ "$curr_auth" == "true" && "$curr_user" == "false" ]]; then
+            mode_text="单用户 (基础账密)"
+        elif [[ "$curr_auth" == "false" && "$curr_user" == "true" ]]; then
+            mode_text="多用户 (独立账户)"
+        fi
+
+        echo -e "      当前端口: ${GREEN}${curr_port}${NC}"
+        echo -e "      当前模式: ${GREEN}${mode_text}${NC}"
+        if [[ "$curr_auth" == "true" && "$curr_user" == "false" ]]; then
+            local u=$(fn_get_st_nested_config_value "basicAuthUser" "username")
+            local p=$(fn_get_st_nested_config_value "basicAuthUser" "password")
+            echo -e "      当前账密: ${BOLD}${u} / ${p}${NC}"
+        fi
+        echo -en "      局域网访问: "
+        if [[ "$curr_listen" == "true" ]]; then echo -e "${GREEN}已开启${NC}"; else echo -e "${RED}已关闭${NC}"; fi
+
+        echo -e "\n      [1] ${CYAN}修改端口号${NC}"
+        echo -e "      [2] ${CYAN}切换为：默认无账密模式${NC}"
+        
+        if [[ "$curr_auth" == "true" && "$curr_user" == "false" ]]; then
+            echo -e "      [3] ${CYAN}修改单用户账密${NC}"
+        else
+            echo -e "      [3] ${CYAN}切换为：单用户账密模式${NC}"
+        fi
+        
+        echo -e "      [4] ${CYAN}切换为：多用户账密模式${NC}"
+        
+        if [[ "$curr_listen" == "true" ]]; then
+            echo -e "      [5] ${RED}关闭局域网访问${NC}"
+        else
+            echo -e "      [5] ${YELLOW}允许局域网访问 (需开启账密)${NC}"
+        fi
+        
+        echo -e "\n      [0] ${CYAN}返回上一级${NC}"
+
+        read -p "    请输入选项: " choice
+        case "$choice" in
+            1)
+                read -p "请输入新的端口号 (1024-65535): " new_port
+                if [[ "$new_port" =~ ^[0-9]+$ ]] && [ "$new_port" -ge 1024 ] && [ "$new_port" -le 65535 ]; then
+                    fn_update_st_config_value "port" "$new_port"
+                    fn_print_success "端口已修改为 $new_port"
+                    fn_print_warning "设置将在重启酒馆后生效。"
+                else
+                    fn_print_error "无效的端口号。"
+                fi
+                fn_press_any_key
+                ;;
+            2)
+                fn_update_st_config_value "basicAuthMode" "false"
+                fn_update_st_config_value "enableUserAccounts" "false"
+                fn_update_st_config_value "listen" "false"
+                fn_print_success "已切换为默认无账密模式 (局域网访问已同步关闭)。"
+                fn_print_warning "设置将在重启酒馆后生效。"
+                fn_press_any_key
+                ;;
+            3)
+                read -p "请输入用户名: " u
+                read -p "请输入密码: " p
+                if [[ -z "$u" || -z "$p" ]]; then
+                    fn_print_error "用户名和密码不能为空！"
+                else
+                    fn_update_st_config_value "basicAuthMode" "true"
+                    fn_update_st_config_value "enableUserAccounts" "false"
+                    fn_update_st_nested_config_value "basicAuthUser" "username" "\"$u\""
+                    fn_update_st_nested_config_value "basicAuthUser" "password" "\"$p\""
+                    fn_print_success "单用户账密配置已更新。"
+                    fn_print_warning "设置将在重启酒馆后生效。"
+                fi
+                fn_press_any_key
+                ;;
+            4)
+                fn_update_st_config_value "basicAuthMode" "false"
+                fn_update_st_config_value "enableUserAccounts" "true"
+                fn_update_st_config_value "enableDiscreetLogin" "true"
+                fn_print_success "已切换为多用户账密模式。"
+                echo -e "\n${YELLOW}【重要提示】${NC}"
+                echo -e "请在启动酒馆后，进入 [用户设置] -> [管理员面板] 设置管理员密码，否则多用户模式可能无法正常工作。"
+                fn_print_warning "设置将在重启酒馆后生效。"
+                fn_press_any_key
+                ;;
+            5)
+                if [[ "$curr_listen" == "true" ]]; then
+                    fn_update_st_config_value "listen" "false"
+                    fn_print_success "局域网访问已关闭。"
+                    fn_print_warning "设置将在重启酒馆后生效。"
+                else
+                    if [[ "$curr_auth" == "false" && "$curr_user" == "false" ]]; then
+                        fn_print_warning "局域网访问必须开启账密模式！"
+                        read -p "是否自动开启单用户账密模式？[Y/n]: " confirm
+                        if [[ ! "$confirm" =~ ^[nN]$ ]]; then
+                            read -p "请设置用户名: " u
+                            read -p "请设置密码: " p
+                            if [[ -z "$u" || -z "$p" ]]; then
+                                fn_print_error "用户名和密码不能为空，操作已取消。"
+                                fn_press_any_key; continue
+                            fi
+                            fn_update_st_config_value "basicAuthMode" "true"
+                            fn_update_st_nested_config_value "basicAuthUser" "username" "\"$u\""
+                            fn_update_st_nested_config_value "basicAuthUser" "password" "\"$p\""
+                        else
+                            fn_print_error "操作已取消。"
+                            sleep 1; continue
+                        fi
+                    fi
+                    fn_update_st_config_value "listen" "true"
+                    
+                    # 过滤掉回环地址和常见的虚拟网卡地址 (保留 wlan1 以防万一)
+                    local ips=$(ip addr show | grep -w inet | grep -v 127.0.0.1 | grep -vE "docker|veth|br-|tun|arc" | awk '{print $2}' | cut -d/ -f1)
+                    if [[ -n "$ips" ]]; then
+                        fn_print_header "检测到以下局域网地址："
+                        for ip in $ips; do
+                            # 提取前三段构造 /24 网段
+                            local subnet=$(echo "$ip" | cut -d. -f1-3).0/24
+                            fn_add_st_whitelist_entry "$subnet"
+                            fn_print_success "已将网段 $subnet 加入白名单"
+                            echo -e "  - 访问地址: ${CYAN}http://${ip}:${curr_port}${NC}"
+                        done
+                        fn_print_success "局域网访问功能已配置完成。"
+                        fn_print_warning "设置将在重启酒馆后生效。"
+                    else
+                        fn_print_error "未能检测到有效的局域网 IP 地址。"
+                    fi
+                fi
+                fn_press_any_key
+                ;;
+            0) return ;;
+            *) fn_print_error "无效输入。"; sleep 1 ;;
+        esac
+    done
+}
+
 fn_menu_lab() {
     while true; do
         clear
         fn_print_header "额外功能 (实验室)"
         echo -e "      [1] ${CYAN}gcli2api${NC}"
+        echo -e "      [2] ${CYAN}酒馆配置管理${NC}"
         echo -e "      [0] ${CYAN}返回主菜单${NC}\n"
         read -p "    请输入选项: " choice
         case $choice in
             1) fn_menu_gcli_manage ;;
+            2) fn_menu_st_config ;;
             0) break ;;
             *) fn_print_error "无效输入。"; sleep 1 ;;
         esac
@@ -2042,7 +2259,8 @@ while true; do
     echo -e "      [4] ${YELLOW}${BOLD}首次部署 (全新安装)${NC}\n"
     echo -e "      [5] 酒馆版本管理      [6] 更新咕咕助手${update_notice}"
     echo -e "      [7] 管理助手自启      [8] 查看帮助文档"
-    echo -e "      [9] 配置网络代理      [10] 额外功能 (实验室)\n"
+    echo -e "      [9] 配置网络代理      [11] ${CYAN}酒馆配置管理${NC}"
+    echo -e "      [10] 额外功能 (实验室)\n"
     echo -e "      ${RED}[0] 退出咕咕助手${NC}\n"
     read -p "    请输入选项数字: " choice
 
@@ -2057,6 +2275,7 @@ while true; do
         8) fn_open_docs ;;
         9) fn_menu_proxy ;;
         10) fn_menu_lab ;;
+        11) fn_menu_st_config ;;
         0) echo -e "\n感谢使用，咕咕助手已退出。"; rm -f "$UPDATE_FLAG_FILE"; exit 0 ;;
         *) fn_print_warning "无效输入，请重新选择。"; sleep 1.5 ;;
     esac
