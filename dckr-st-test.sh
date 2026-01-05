@@ -31,29 +31,23 @@ if [ -z "$BASH_VERSION" ]; then
     exit 1
 fi
 
-# 自动请求 Root 权限
 if [ "$(id -u)" -ne 0 ]; then
     echo -e "\033[33m[提示] 正在请求 Root 权限以继续...\033[0m"
     
     if command -v sudo >/dev/null 2>&1; then
-        # 优先使用 sudo
         if [[ -f "$0" && "$0" != "/dev/fd/"* && "$0" != "bash" && "$0" != "sh" ]]; then
             exec sudo bash "$0" "$@"
         else
             exec curl -sL "$GUGU_URL" | sudo bash -s -- "$@"
         fi
     elif command -v su >/dev/null 2>&1; then
-        # 回退使用 su
         echo -e "\033[33m[提示] 未检测到 sudo，尝试通过 su 提权，请根据提示输入 Root 密码...\033[0m"
         if [[ -f "$0" && "$0" != "/dev/fd/"* && "$0" != "bash" && "$0" != "sh" ]]; then
             exec su -c "bash $0 $*"
         else
-            # 管道模式下，先下载到临时文件再用 su 运行，实现一键提权
-            # 注意：在脚本顶层作用域不能使用 local 关键字
             tmp_script="/tmp/gugu_$(date +%s).sh"
             if curl -sL "$GUGU_URL" -o "$tmp_script"; then
                 chmod +x "$tmp_script"
-                # 执行 su 并在执行完毕后清理临时文件
                 su -c "bash $tmp_script $*; rm -f $tmp_script"
                 exit 0
             else
@@ -68,13 +62,10 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 # --- -------------------------- ---
 
-# 全局变量初始化
 CUSTOM_PROXY_IMAGE=""
 USER_HOME=""
 
-# 初始化用户家目录变量
 fn_init_user_home() {
-    # 尝试多种方式获取原始用户名 (兼容 sudo 和 su)
     local target_user
     target_user="${SUDO_USER:-$(logname 2>/dev/null || who am i 2>/dev/null | awk '{print $1}')}"
     target_user="${target_user:-root}"
@@ -84,7 +75,6 @@ fn_init_user_home() {
     else
         USER_HOME=$(getent passwd "$target_user" | cut -d: -f6)
         if [ -z "$USER_HOME" ]; then
-            # 回退方案
             USER_HOME="/home/$target_user"
         fi
     fi
@@ -94,7 +84,6 @@ fn_ssh_rollback() {
     local failed_port=$1
     echo -e "\033[33m[警告] 检测到新SSH端口连接失败，正在执行回滚操作...\033[0m"
     
-    # 1. 恢复配置文件
     local restored=false
     if [ -f /etc/ssh/sshd_config.bak ]; then
         cp -f /etc/ssh/sshd_config.bak /etc/ssh/sshd_config
@@ -105,7 +94,6 @@ fn_ssh_rollback() {
         cp -f /etc/ssh/sshd_config.d/99-gugu-ssh.conf.bak /etc/ssh/sshd_config.d/99-gugu-ssh.conf
         restored=true
     elif [ -f /etc/ssh/sshd_config.d/99-gugu-ssh.conf ]; then
-        # 如果没有备份但存在该文件，说明是本次新建的，回滚时应删除
         rm -f /etc/ssh/sshd_config.d/99-gugu-ssh.conf
         restored=true
     fi
@@ -117,7 +105,6 @@ fn_ssh_rollback() {
         log_warn "未找到有效的备份文件，无法自动恢复配置。"
     fi
 
-    # 2. 同步清理 UFW 规则
     if [ -n "$failed_port" ] && ufw status | grep -q "Status: active"; then
         log_info "正在从 UFW 中移除失败的端口规则 (${failed_port})..."
         ufw delete allow "$failed_port/tcp" 2>/dev/null || true
