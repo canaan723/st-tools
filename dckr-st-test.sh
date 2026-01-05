@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v3.0"
+readonly SCRIPT_VERSION="v3.1"
 GUGU_MODE="test"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -34,13 +34,27 @@ fi
 # 自动请求 Root 权限
 if [ "$(id -u)" -ne 0 ]; then
     echo -e "\033[33m[提示] 正在请求 Root 权限以继续...\033[0m"
-    # 如果是已安装的脚本或本地文件，则直接 sudo 运行
-    if [[ -f "$0" && "$0" != "/dev/fd/"* && "$0" != "bash" && "$0" != "sh" ]]; then
-        exec sudo bash "$0" "$@"
+    
+    if command -v sudo >/dev/null 2>&1; then
+        # 优先使用 sudo
+        if [[ -f "$0" && "$0" != "/dev/fd/"* && "$0" != "bash" && "$0" != "sh" ]]; then
+            exec sudo bash "$0" "$@"
+        else
+            exec curl -sL "$GUGU_URL" | sudo bash -s -- "$@"
+        fi
+    elif command -v su >/dev/null 2>&1; then
+        # 回退使用 su
+        echo -e "\033[33m[提示] 未检测到 sudo，尝试通过 su 提权，请根据提示输入 Root 密码...\033[0m"
+        if [[ -f "$0" && "$0" != "/dev/fd/"* && "$0" != "bash" && "$0" != "sh" ]]; then
+            exec su -c "bash $0 $*"
+        else
+            echo -e "\033[31m[错误] 管道运行模式不支持 su 提权，请手动下载脚本运行：\033[0m"
+            echo "wget -O gugu.sh $GUGU_URL && su -c 'bash gugu.sh'"
+            exit 1
+        fi
     else
-        # 如果是通过管道或进程替换运行的，则重新下载并用 sudo 运行
-        # 这样用户就可以直接使用 bash <(curl ...) 而不需要手动加 sudo
-        exec curl -sL "$GUGU_URL" | sudo bash -s -- "$@"
+        echo -e "\033[31m[错误] 系统缺失 sudo 和 su，无法提权，请手动以 root 用户运行。\033[0m"
+        exit 1
     fi
 fi
 # --- -------------------------- ---
@@ -51,7 +65,11 @@ USER_HOME=""
 
 # 初始化用户家目录变量
 fn_init_user_home() {
-    local target_user="${SUDO_USER:-root}"
+    # 尝试多种方式获取原始用户名 (兼容 sudo 和 su)
+    local target_user
+    target_user="${SUDO_USER:-$(logname 2>/dev/null || who am i 2>/dev/null | awk '{print $1}')}"
+    target_user="${target_user:-root}"
+
     if [ "$target_user" = "root" ]; then
         USER_HOME="/root"
     else
@@ -265,7 +283,7 @@ check_root() {
 
 fn_check_base_deps() {
     local missing_pkgs=()
-    local required_pkgs=("bc" "curl" "tar")
+    local required_pkgs=("bc" "curl" "tar" "sudo")
 
     log_info "正在检查基础依赖: ${required_pkgs[*]}..."
     for pkg in "${required_pkgs[@]}"; do
@@ -538,10 +556,10 @@ fn_optimize_docker() {
 
     log_action "正在应用 Docker 优化配置 (安全模式)..."
     
-    sudo mkdir -p /etc/docker
+    mkdir -p /etc/docker
     if [ -f "$DAEMON_JSON" ]; then
         log_info "检测到现有的 daemon.json，正在备份并尝试合并配置..."
-        sudo cp "$DAEMON_JSON" "${DAEMON_JSON}.bak_$(date +%Y%m%d_%H%M%S)"
+        cp "$DAEMON_JSON" "${DAEMON_JSON}.bak_$(date +%Y%m%d_%H%M%S)"
         
         # 检查是否存在自定义存储路径 (data-root)
         if grep -q "data-root" "$DAEMON_JSON"; then
@@ -593,7 +611,7 @@ EOF
     else
         # 回退方案：如果没 Python，则仅在文件不存在时创建，存在时警告
         if [ ! -f "$DAEMON_JSON" ]; then
-            cat <<EOF | sudo tee "$DAEMON_JSON" > /dev/null
+            cat <<EOF | tee "$DAEMON_JSON" > /dev/null
 {
     "log-driver": "json-file",
     "log-opts": {
@@ -609,7 +627,7 @@ EOF
         fi
     fi
 
-    if sudo systemctl restart docker; then
+    if systemctl restart docker; then
         log_success "Docker 服务已重启，优化配置已生效！"
     else
         log_error "Docker 服务重启失败！请检查 ${DAEMON_JSON} 格式。" || return 1
@@ -769,7 +787,7 @@ fn_change_ssh_port() {
         # 注释掉该目录下所有 .conf 文件中的 Port 定义（排除我们自己的 99-gugu-ssh.conf）
         find /etc/ssh/sshd_config.d/ -name "*.conf" ! -name "99-gugu-ssh.conf" -exec sed -i 's/^\s*Port /#Port /g' {} +
         # 创建/更新我们的独立配置文件
-        echo "Port $NEW_SSH_PORT" | sudo tee /etc/ssh/sshd_config.d/99-gugu-ssh.conf > /dev/null
+        echo "Port $NEW_SSH_PORT" | tee /etc/ssh/sshd_config.d/99-gugu-ssh.conf > /dev/null
     else
         log_info "使用传统方式修改 /etc/ssh/sshd_config。"
         # 传统方式：在文件开头添加（因为上面已经注释了所有旧的）
@@ -1713,7 +1731,7 @@ install_sillytavern() {
         docker rm "$container_name" > /dev/null 2>&1 || true
         log_success "旧容器已停止并移除。"
         fn_print_info "正在删除旧目录: $dir_to_delete..."
-        sudo rm -rf "$dir_to_delete"
+        rm -rf "$dir_to_delete"
         log_success "旧目录已彻底清理。"
     }
 
