@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v4.6"
+$ScriptVersion = "v4.7"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -79,6 +79,78 @@ function Check-Command($Command) {
     return $false
 }
 
+function Get-STConfigValue {
+    param([string]$Key)
+    $configPath = Join-Path $ST_Dir "config.yaml"
+    if (-not (Test-Path $configPath)) { return $null }
+    $content = Get-Content $configPath -Raw
+    # 仅匹配根层级的键，避免误触嵌套键（如 browserLaunch.port）
+    if ($content -match "(?m)^${Key}:\s*([^#\r\n]*)(.*)$") {
+        return $Matches[1].Trim().Trim("'").Trim('"')
+    }
+    return $null
+}
+
+function Get-STNestedConfigValue {
+    param([string]$ParentKey, [string]$Key)
+    $configPath = Join-Path $ST_Dir "config.yaml"
+    if (-not (Test-Path $configPath)) { return $null }
+    $content = Get-Content $configPath -Raw
+    if ($content -match "(?ms)^${ParentKey}:\s*.*?^\s+${Key}:\s*([^#\r\n]*)(.*)$") {
+        return $Matches[1].Trim().Trim("'").Trim('"')
+    }
+    return $null
+}
+
+function Update-STConfigValue {
+    param([string]$Key, [string]$Value)
+    $configPath = Join-Path $ST_Dir "config.yaml"
+    if (-not (Test-Path $configPath)) { return $false }
+    $content = Get-Content $configPath -Raw
+    # 仅匹配根层级的键，保留键名缩进，并尝试保留行尾注释
+    # 使用 ${1} 和 ${2} 避免在 $Value 为数字时产生歧义
+    $pattern = "(?m)^(${Key}:\s*)[^#\r\n]*(.*)$"
+    if ($content -match $pattern) {
+        $newContent = $content -replace $pattern, ('${1}' + $Value + '${2}')
+        [System.IO.File]::WriteAllText($configPath, $newContent, [System.Text.Encoding]::UTF8)
+        return $true
+    }
+    return $false
+}
+
+function Update-STNestedConfigValue {
+    param([string]$ParentKey, [string]$Key, [string]$Value)
+    $configPath = Join-Path $ST_Dir "config.yaml"
+    if (-not (Test-Path $configPath)) { return $false }
+    $content = Get-Content $configPath -Raw
+    # 匹配父键下的子键，考虑缩进
+    $pattern = "(?ms)^(${ParentKey}:\s*.*?^\s+)${Key}:\s*[^#\r\n]*(.*)$"
+    if ($content -match $pattern) {
+        $newContent = $content -replace $pattern, ('${1}' + $Key + ': ' + $Value + '${2}')
+        [System.IO.File]::WriteAllText($configPath, $newContent, [System.Text.Encoding]::UTF8)
+        return $true
+    }
+    return $false
+}
+
+function Add-STWhitelistEntry {
+    param([string]$Entry)
+    $configPath = Join-Path $ST_Dir "config.yaml"
+    if (-not (Test-Path $configPath)) { return $false }
+    $content = Get-Content $configPath -Raw
+    
+    # 检查是否已存在
+    if ($content -match "- $Entry") { return $true }
+
+    # 寻找 whitelist: 这一行
+    if ($content -match "(?m)^whitelist:\s*\r?\n") {
+        $newContent = $content -replace "(?m)^whitelist:\s*\r?\n", "whitelist:`n  - $Entry`n"
+        [System.IO.File]::WriteAllText($configPath, $newContent, [System.Text.Encoding]::UTF8)
+        return $true
+    }
+    return $false
+}
+
 function Check-PortAndShowError {
     param([string]$SillyTavernPath)
     $configPath = Join-Path $SillyTavernPath "config.yaml"
@@ -87,7 +159,7 @@ function Check-PortAndShowError {
     if (Test-Path $configPath) {
         try {
             $configContent = Get-Content $configPath -Raw
-            $portLine = $configContent | Select-String -Pattern "^\s*port:\s*(\d+)"
+            $portLine = $configContent | Select-String -Pattern "(?m)^\s*port:\s*(\d+)"
             if ($portLine) {
                 $port = [int]$portLine.Matches[0].Groups[1].Value
             }
@@ -103,8 +175,8 @@ function Check-PortAndShowError {
         Write-Host "  - 占用程序: $($owningProcess.ProcessName) (PID: $($owningProcess.Id))" -ForegroundColor Yellow
         Write-Host "`n请尝试以下解决方案：" -ForegroundColor Cyan
         Write-Host "  1. 如果是之前启动的酒馆未完全关闭，请先【重启电脑】。" -ForegroundColor Cyan
-        Write-Host "  2. 如果重启无效，请打开文件 '$configPath'，" -ForegroundColor Cyan
-        Write-Host "     将 'port: $port' 修改为其他未被占用的端口号 (如 8001)。" -ForegroundColor Cyan
+        Write-Host "  2. 如果重启无效，请在主菜单选择 [11] 酒馆配置管理，" -ForegroundColor Cyan
+        Write-Host "     将端口修改为其他未被占用的端口号 (如 8001)。" -ForegroundColor Cyan
         Write-ErrorExit "无法继续启动。"
     }
 }
@@ -957,7 +1029,8 @@ function Start-SillyTavern {
     Start-Process -FilePath $startBatPath -WorkingDirectory $ST_Dir
     
     Write-Success "酒馆已在新窗口中启动！"
-    Write-Host "提示：如果启动失败，请检查新窗口中的错误信息。" -ForegroundColor Yellow
+    Write-Host "提示：酒馆服务将在新窗口中运行，请保持该窗口开启。" -ForegroundColor Green
+    Write-Host "      本助手窗口现在可以关闭，或按任意键返回主菜单。" -ForegroundColor Cyan
     Press-Any-Key
 }
 
@@ -2337,18 +2410,173 @@ function Show-AntiGravityMenu {
     }
 }
 
+function Show-STConfigMenu {
+    while ($true) {
+        Clear-Host
+        Write-Header "酒馆配置管理"
+        if (-not (Test-Path (Join-Path $ST_Dir "config.yaml"))) {
+            Write-Warning "未找到 config.yaml，请先部署酒馆。"
+            Press-Any-Key; return
+        }
+
+        $currPort = Get-STConfigValue "port"
+        $currAuth = Get-STConfigValue "basicAuthMode"
+        $currUser = Get-STConfigValue "enableUserAccounts"
+        $currListen = Get-STConfigValue "listen"
+
+        $isSingleUser = ($currAuth -eq "true" -and $currUser -eq "false")
+        $isMultiUser = ($currAuth -eq "false" -and $currUser -eq "true")
+        $isNoAuth = ($currAuth -eq "false" -and $currUser -eq "false")
+
+        $modeText = "未知"
+        if ($isNoAuth) { $modeText = "默认 (无账密)" }
+        elseif ($isSingleUser) { $modeText = "单用户 (基础账密)" }
+        elseif ($isMultiUser) { $modeText = "多用户 (独立账户)" }
+
+        Write-Host "      当前端口: " -NoNewline; Write-Host "$currPort" -ForegroundColor Green
+        Write-Host "      当前模式: " -NoNewline; Write-Host "$modeText" -ForegroundColor Green
+        if ($isSingleUser) {
+            $u = Get-STNestedConfigValue "basicAuthUser" "username"
+            $p = Get-STNestedConfigValue "basicAuthUser" "password"
+            Write-Host "      当前账密: " -NoNewline; Write-Host "$u / $p" -ForegroundColor DarkGray
+        }
+        Write-Host "      局域网访问: " -NoNewline
+        if ($currListen -eq "true") { Write-Host "已开启" -ForegroundColor Green } else { Write-Host "已关闭" -ForegroundColor Red }
+
+        Write-Host "`n      [1] " -NoNewline; Write-Host "修改端口号" -ForegroundColor Cyan
+        Write-Host "      [2] " -NoNewline; Write-Host "切换为：默认无账密模式" -ForegroundColor Cyan
+        
+        Write-Host "      [3] " -NoNewline
+        if ($isSingleUser) { Write-Host "修改单用户账密" -ForegroundColor Cyan } else { Write-Host "切换为：单用户账密模式" -ForegroundColor Cyan }
+        
+        Write-Host "      [4] " -NoNewline; Write-Host "切换为：多用户账密模式" -ForegroundColor Cyan
+        
+        Write-Host "      [5] " -NoNewline
+        if ($currListen -eq "true") { Write-Host "关闭局域网访问" -ForegroundColor Red } else { Write-Host "允许局域网访问 (需开启账密)" -ForegroundColor Yellow }
+        
+        Write-Host "`n      [0] " -NoNewline; Write-Host "返回主菜单" -ForegroundColor Cyan
+
+        $choice = Read-Host "`n    请输入选项"
+        switch ($choice) {
+            "1" {
+                $newPort = Read-Host "请输入新的端口号 (1024-65535)"
+                if ($newPort -match '^\d+$' -and [int]$newPort -ge 1024 -and [int]$newPort -le 65535) {
+                    if (Update-STConfigValue "port" $newPort) {
+                        Write-Success "端口已修改为 $newPort"
+                        Write-Warning "设置将在重启酒馆后生效。"
+                    }
+                } else { Write-Error "无效的端口号。" }
+                Press-Any-Key
+            }
+            "2" {
+                Update-STConfigValue "basicAuthMode" "false" | Out-Null
+                Update-STConfigValue "enableUserAccounts" "false" | Out-Null
+                Update-STConfigValue "listen" "false" | Out-Null
+                Write-Success "已切换为默认无账密模式 (局域网访问已同步关闭)。"
+                Write-Warning "设置将在重启酒馆后生效。"
+                Press-Any-Key
+            }
+            "3" {
+                $u = Read-Host "请输入用户名"
+                $p = Read-Host "请输入密码"
+                if ([string]::IsNullOrWhiteSpace($u) -or [string]::IsNullOrWhiteSpace($p)) {
+                    Write-Error "用户名和密码不能为空！"
+                } else {
+                    Update-STConfigValue "basicAuthMode" "true" | Out-Null
+                    Update-STConfigValue "enableUserAccounts" "false" | Out-Null
+                    Update-STNestedConfigValue "basicAuthUser" "username" "`"$u`"" | Out-Null
+                    Update-STNestedConfigValue "basicAuthUser" "password" "`"$p`"" | Out-Null
+                    Write-Success "单用户账密配置已更新。"
+                    Write-Warning "设置将在重启酒馆后生效。"
+                }
+                Press-Any-Key
+            }
+            "4" {
+                Update-STConfigValue "basicAuthMode" "false" | Out-Null
+                Update-STConfigValue "enableUserAccounts" "true" | Out-Null
+                Update-STConfigValue "enableDiscreetLogin" "true" | Out-Null
+                Write-Success "已切换为多用户账密模式。"
+                Write-Host "`n【重要提示】" -ForegroundColor Yellow
+                Write-Host "请在启动酒馆后，进入 [用户设置] -> [管理员面板] 设置管理员密码，否则多用户模式可能无法正常工作。" -ForegroundColor Cyan
+                Write-Warning "设置将在重启酒馆后生效。"
+                Press-Any-Key
+            }
+            "5" {
+                if ($currListen -eq "true") {
+                    Update-STConfigValue "listen" "false" | Out-Null
+                    Write-Success "局域网访问已关闭。"
+                    Write-Warning "设置将在重启酒馆后生效。"
+                } else {
+                    # 检查是否开启了账密
+                    if ($isNoAuth) {
+                        Write-Warning "局域网访问必须开启账密模式！"
+                        $confirm = Read-Host "是否自动开启单用户账密模式？[Y/n]"
+                        if ($confirm -ne 'n') {
+                            $u = Read-Host "请设置用户名"
+                            $p = Read-Host "请设置密码"
+                            if ([string]::IsNullOrWhiteSpace($u) -or [string]::IsNullOrWhiteSpace($p)) {
+                                Write-Error "用户名和密码不能为空，操作已取消。"
+                                Press-Any-Key; continue
+                            }
+                            Update-STConfigValue "basicAuthMode" "true" | Out-Null
+                            Update-STNestedConfigValue "basicAuthUser" "username" "`"$u`"" | Out-Null
+                            Update-STNestedConfigValue "basicAuthUser" "password" "`"$p`"" | Out-Null
+                        } else {
+                            Write-Error "操作已取消。"
+                            Start-Sleep -Seconds 1; continue
+                        }
+                    }
+                    
+                    # 开启监听
+                    Update-STConfigValue "listen" "true" | Out-Null
+                    
+                    # 获取本机IP并加入白名单
+                    # 过滤 127.x.x.x (回环) 和 172.x.x.x (通常为 Docker/虚拟网桥)
+                    $ips = Get-NetIPAddress -AddressFamily IPv4 | Where-Object {
+                        $_.IPAddress -notmatch '^127\.' -and
+                        $_.IPAddress -notmatch '^172\.' -and
+                        $_.InterfaceAlias -notmatch 'Loopback|VirtualBox|VMware|vEthernet'
+                    }
+                    if ($ips) {
+                        Write-Header "检测到以下局域网地址："
+                        foreach ($ipObj in $ips) {
+                            $ip = $ipObj.IPAddress
+                            if ($ip -match '^(\d+\.\d+\.\d+)\.\d+') {
+                                $subnet = $Matches[1] + ".0/24"
+                                if (Add-STWhitelistEntry $subnet) {
+                                    Write-Host "  - 已将网段 $subnet 加入白名单" -ForegroundColor Green
+                                }
+                            }
+                            Write-Host "  - 访问地址: http://$($ip):$currPort" -ForegroundColor Cyan
+                        }
+                        Write-Success "局域网访问功能已配置完成。"
+                        Write-Warning "设置将在重启酒馆后生效。"
+                    } else {
+                        Write-Error "未能检测到有效的局域网 IP 地址。"
+                    }
+                }
+                Press-Any-Key
+            }
+            "0" { return }
+            default { Write-Warning "无效输入。"; Start-Sleep 1 }
+        }
+    }
+}
+
 function Show-ExtraFeaturesMenu {
     while ($true) {
         Clear-Host
         Write-Header "额外功能 (实验室)"
         Write-Host "      [1] " -NoNewline; Write-Host "gcli2api 管理" -ForegroundColor Cyan
         Write-Host "      [2] " -NoNewline; Write-Host "反重力2api 管理" -ForegroundColor Cyan
+        Write-Host "      [3] " -NoNewline; Write-Host "酒馆配置管理" -ForegroundColor Cyan
         Write-Host "      [9] " -NoNewline; Write-Host "获取 AI Studio 凭证" -ForegroundColor Cyan
         Write-Host "`n      [0] " -NoNewline; Write-Host "返回主菜单" -ForegroundColor Cyan
         $choice = Read-Host "`n    请输入选项"
         switch ($choice) {
             "1" { Show-Gcli2ApiMenu }
             "2" { Show-AntiGravityMenu }
+            "3" { Show-STConfigMenu }
             "9" { Get-AiStudioToken }
             "0" { return }
             default { Write-Warning "无效输入。"; Start-Sleep 1 }
@@ -2390,7 +2618,7 @@ while ($true) {
     Write-Host "      [4] " -NoNewline -ForegroundColor Yellow; Write-Host "首次部署 (全新安装)`n"
     Write-Host "      [5] 酒馆版本管理      [6] 更新咕咕助手$($updateNoticeText)"
     Write-Host "      [7] 打开酒馆文件夹    [8] 查看帮助文档"
-    Write-Host "      [9] 配置网络代理"
+    Write-Host "      [9] 配置网络代理      [11] " -NoNewline; Write-Host "酒馆配置管理" -ForegroundColor Cyan
     Write-Host "      [10] " -NoNewline -ForegroundColor Magenta; Write-Host "额外功能 (实验室)`n"
     Write-Host "      [0] " -NoNewline -ForegroundColor Red; Write-Host "退出咕咕助手`n"
     $choice = Read-Host "    请输入选项数字"
@@ -2405,6 +2633,7 @@ while ($true) {
         "8" { Open-HelpDocs }
         "9" { Show-ManageProxyMenu }
         "10" { Show-ExtraFeaturesMenu }
+        "11" { Show-STConfigMenu }
         "0" { if (Test-Path $UpdateFlagFile) { Remove-Item $UpdateFlagFile -Force }; Write-Host "感谢使用，咕咕助手已退出。"; exit }
         default { Write-Warning "无效输入，请重新选择。"; Start-Sleep -Seconds 1.5 }
     }
