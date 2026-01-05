@@ -1308,7 +1308,7 @@ fn_fail2ban_manager() {
         case $f2b_choice in
             1) /usr/local/bin/fail2ban-status.sh; read -rp "按 Enter 继续..." < /dev/tty ;;
             2)
-                trap '' INT
+                trap : INT
                 tail -f /var/log/fail2ban.log
                 trap 'exit 0' INT
                 ;;
@@ -2043,7 +2043,7 @@ EOF
             1) fn_check_and_explain_status "$CONTAINER_NAME";;
             2)
                 echo -e "\n${YELLOW}--- 实时日志 (按 Ctrl+C 停止) ---${NC}"
-                trap '' INT
+                trap : INT
                 docker logs -f "$CONTAINER_NAME" || true
                 trap 'exit 0' INT
                 ;;
@@ -2649,13 +2649,13 @@ fn_st_docker_manager() {
                 ;;
             7)
                 echo -e "\n${CYAN}--- 资源占用 (按 Ctrl+C 退出) ---${NC}"
-                trap '' INT
+                trap : INT
                 docker stats "$container_name"
                 trap 'exit 0' INT
                 ;;
             8)
                 echo -e "\n${CYAN}--- 实时日志 (按 Ctrl+C 退出) ---${NC}"
-                trap '' INT
+                trap : INT
                 cd "$project_dir" && $compose_cmd logs -f --tail 1000
                 trap 'exit 0' INT
                 ;;
@@ -2712,7 +2712,7 @@ fn_api_docker_manager() {
             4) echo -e "\n${CYAN}--- 状态 ---${NC}"; cd "$project_dir" && $compose_cmd ps; read -rp "按 Enter 继续..." < /dev/tty ;;
             5)
                 echo -e "\n${CYAN}--- 日志 (Ctrl+C 退出) ---${NC}"
-                trap '' INT
+                trap : INT
                 cd "$project_dir" && $compose_cmd logs -f --tail 100
                 trap 'exit 0' INT
                 ;;
