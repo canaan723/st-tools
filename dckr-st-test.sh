@@ -48,9 +48,17 @@ if [ "$(id -u)" -ne 0 ]; then
         if [[ -f "$0" && "$0" != "/dev/fd/"* && "$0" != "bash" && "$0" != "sh" ]]; then
             exec su -c "bash $0 $*"
         else
-            echo -e "\033[31m[错误] 管道运行模式不支持 su 提权，请手动下载脚本运行：\033[0m"
-            echo "wget -O gugu.sh $GUGU_URL && su -c 'bash gugu.sh'"
-            exit 1
+            # 管道模式下，先下载到临时文件再用 su 运行，实现一键提权
+            local tmp_script="/tmp/gugu_$(date +%s).sh"
+            if curl -sL "$GUGU_URL" -o "$tmp_script"; then
+                chmod +x "$tmp_script"
+                # 执行 su 并在执行完毕后清理临时文件
+                su -c "bash $tmp_script $*; rm -f $tmp_script"
+                exit 0
+            else
+                echo -e "\033[31m[错误] 提权失败：无法下载临时脚本文件以供 su 运行。\033[0m"
+                exit 1
+            fi
         fi
     else
         echo -e "\033[31m[错误] 系统缺失 sudo 和 su，无法提权，请手动以 root 用户运行。\033[0m"
