@@ -49,7 +49,8 @@ if [ "$(id -u)" -ne 0 ]; then
             exec su -c "bash $0 $*"
         else
             # 管道模式下，先下载到临时文件再用 su 运行，实现一键提权
-            local tmp_script="/tmp/gugu_$(date +%s).sh"
+            # 注意：在脚本顶层作用域不能使用 local 关键字
+            tmp_script="/tmp/gugu_$(date +%s).sh"
             if curl -sL "$GUGU_URL" -o "$tmp_script"; then
                 chmod +x "$tmp_script"
                 # 执行 su 并在执行完毕后清理临时文件
