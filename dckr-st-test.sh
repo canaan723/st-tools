@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v3.1"
+readonly SCRIPT_VERSION="v3.2"
 GUGU_MODE="test"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -1079,9 +1079,9 @@ fn_1panel_manager() {
 fn_install_fail2ban() {
     log_step "安装/更新进阶版 Fail2ban" "双重防护体系"
     
-    log_action "正在安装 Fail2ban..."
+    log_action "正在安装 Fail2ban 及必要组件..."
     apt-get update
-    apt-get install -y fail2ban
+    apt-get install -y fail2ban python3-systemd
     
     # 移除可能冲突的旧组件
     if dpkg -l | grep -q iptables-persistent; then
@@ -1196,32 +1196,50 @@ seconds_to_readable() {
 get_remaining_time() {
     local jail=$1
     local ip=$2
-    local ban_time=$(fail2ban-client get $jail bantime 2>/dev/null)
+    local ban_time
+    ban_time=$(fail2ban-client get "$jail" bantime 2>/dev/null)
+    if [ -z "$ban_time" ]; then echo "未知"; return; fi
     if [ "$ban_time" = "-1" ]; then echo "永久"; return; fi
-    local ban_start=$(grep "Ban $ip" /var/log/fail2ban.log | tail -1 | cut -d' ' -f1-2)
+    
+    local ban_start
+    ban_start=$(grep "Ban $ip" /var/log/fail2ban.log | tail -1 | cut -d' ' -f1-2)
     if [ -z "$ban_start" ]; then echo "未知"; return; fi
-    local ban_timestamp=$(date -d "$ban_start" +%s 2>/dev/null)
-    local current_timestamp=$(date +%s)
+    
+    local ban_timestamp
+    ban_timestamp=$(date -d "$ban_start" +%s 2>/dev/null)
+    if [ -z "$ban_timestamp" ]; then echo "未知"; return; fi
+    
+    local current_timestamp
+    current_timestamp=$(date +%s)
     local elapsed=$((current_timestamp - ban_timestamp))
     local remaining=$((ban_time - elapsed))
-    if [ $remaining -le 0 ]; then echo "即将解封"; else seconds_to_readable $remaining; fi
+    if [ $remaining -le 0 ]; then echo "即将解封"; else seconds_to_readable "$remaining"; fi
 }
 
 show_jail_status() {
     local jail=$1
     local name=$2
     echo -e "${YELLOW}$name：${NC}"
-    local status=$(fail2ban-client status $jail 2>/dev/null)
-    if [ $? -ne 0 ]; then echo "  ${RED}jail '$jail' 未运行${NC}"; return; fi
-    local bantime=$(fail2ban-client get $jail bantime 2>/dev/null)
-    local findtime=$(fail2ban-client get $jail findtime 2>/dev/null)
-    local maxretry=$(fail2ban-client get $jail maxretry 2>/dev/null)
-    echo -e "${BLUE}  封禁策略: ${maxretry}次失败(${findtime}秒内) → 封禁$(seconds_to_readable $bantime)${NC}"
-    local banned_ips=$(fail2ban-client get $jail banip 2>/dev/null)
+    
+    # 预检服务状态，防止 socket 连接错误
+    if ! systemctl is-active --quiet fail2ban; then
+        echo -e "  ${RED}错误：Fail2ban 服务未运行，无法获取状态${NC}"
+        return 1
+    fi
+
+    local status
+    status=$(fail2ban-client status "$jail" 2>/dev/null)
+    if [ $? -ne 0 ]; then echo "  ${RED}jail '$jail' 未运行或不存在${NC}"; return; fi
+
+    local bantime=$(fail2ban-client get "$jail" bantime 2>/dev/null)
+    local findtime=$(fail2ban-client get "$jail" findtime 2>/dev/null)
+    local maxretry=$(fail2ban-client get "$jail" maxretry 2>/dev/null)
+    echo -e "${BLUE}  封禁策略: ${maxretry}次失败(${findtime}秒内) → 封禁$(seconds_to_readable "$bantime")${NC}"
+    local banned_ips=$(fail2ban-client get "$jail" banip 2>/dev/null)
     if [ -n "$banned_ips" ]; then
         echo -e "${RED}  被封禁的IP及剩余时间：${NC}"
         for ip in $banned_ips; do
-            local remaining=$(get_remaining_time $jail $ip)
+            local remaining=$(get_remaining_time "$jail" "$ip")
             echo "    $ip → 剩余: $remaining"
         done
     else
@@ -1236,7 +1254,7 @@ echo -e "\n${YELLOW}1. 服务状态：${NC}"
 systemctl is-active --quiet fail2ban && echo -e "${GREEN}运行中${NC}" || echo -e "${RED}未运行${NC}"
 
 # 显示当前白名单
-if command -v fail2ban-client &> /dev/null; then
+if command -v fail2ban-client &> /dev/null && systemctl is-active --quiet fail2ban; then
     white_list=$(fail2ban-client get sshd ignoreip 2>/dev/null || echo "获取失败")
     echo -e "${CYAN}当前白名单 (ignoreip): ${NC}${white_list}"
 fi
@@ -1267,6 +1285,15 @@ fn_fail2ban_manager() {
     while true; do
         tput reset
         echo -e "${BLUE}=== Fail2ban 运维管理 ===${NC}"
+        
+        local svc_status
+        if systemctl is-active --quiet fail2ban; then
+            svc_status="${GREEN}运行中${NC}"
+        else
+            svc_status="${RED}未运行${NC}"
+        fi
+        echo -e "服务状态: $svc_status"
+        echo -e "------------------------"
         echo -e "  [1] 查看详细封禁报告"
         echo -e "  [2] 查看实时拦截日志 (Ctrl+C 退出)"
         echo -e "  [3] 手动解封被封 IP"
@@ -1286,9 +1313,15 @@ fn_fail2ban_manager() {
                 trap 'exit 0' INT
                 ;;
             3)
+                if ! systemctl is-active --quiet fail2ban; then
+                    log_error "Fail2ban 服务未运行，无法执行此操作。"
+                    sleep 2
+                    continue
+                fi
                 echo -e "\n${CYAN}--- 正在获取被封禁的 IP 列表 ---${NC}"
                 # 兼容不同版本的 fail2ban-client 输出格式 (处理空格或制表符)
-                local jails=$(fail2ban-client status | grep "Jail list:" | sed -E 's/.*Jail list:[[:space:]]+//' | tr ',' ' ')
+                local jails
+                jails=$(fail2ban-client status | grep "Jail list:" | sed -E 's/.*Jail list:[[:space:]]+//' | tr ',' ' ')
                 local banned_list=()
                 local i=1
                 for jail in $jails; do
