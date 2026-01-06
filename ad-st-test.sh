@@ -55,7 +55,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.5test2${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.5test3${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
     echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
 }
@@ -2222,7 +2222,7 @@ fn_menu_st_config() {
                             
                             case "$iface" in
                                 wlan*) type_label="[WiFi]" ;;
-                                ap*)   type_label="[手机热点]" ;;
+                                ap*)   type_label="[本机热点]" ;;
                                 rndis*) type_label="[USB 共享]" ;;
                                 eth*)   type_label="[有线网络]" ;;
                             esac
@@ -2234,9 +2234,10 @@ fn_menu_st_config() {
                             echo -e "  ${GREEN}✓${NC} ${BOLD}${type_label}${NC} 地址: ${CYAN}http://${ip}:${curr_port}${NC}"
                         done
                         echo -e "\n${YELLOW}选择建议：${NC}"
-                        echo -e "  - 如果 PC 连接了手机 ${BOLD}热点${NC}，请使用 ${BOLD}[手机热点]${NC} 地址。"
-                        echo -e "  - 如果 PC 和手机连接了 ${BOLD}同一个 WiFi${NC}，请使用 ${BOLD}[WiFi]${NC} 地址。"
-                        echo -e "  - 如果使用了 ${BOLD}USB 线${NC} 连接 PC 共享网络，请使用 ${BOLD}[USB 共享]${NC} 地址。"
+                        echo -e "  - ${BOLD}[WiFi]${NC}: 适用于其他设备通过 ${BOLD}路由器${NC} 或 ${BOLD}他人热点${NC} 与本机处于同一局域网时访问。"
+                        echo -e "  - ${BOLD}[本机热点]${NC}: 适用于其他设备直接连接了 ${BOLD}这台手机开启的移动热点${NC} 时访问。"
+                        echo -e "  - ${BOLD}[USB 共享]${NC}: 适用于通过 ${BOLD}USB 数据线${NC} 连接并开启网络共享的电脑访问。"
+                        echo -e "  - ${YELLOW}提示: ${NC}若有多个地址，请优先尝试 ${GREEN}192.168${NC} 开头的地址。"
                         
                         fn_print_success "\n局域网访问功能已配置完成。"
                         fn_print_warning "设置将在重启酒馆后生效。"

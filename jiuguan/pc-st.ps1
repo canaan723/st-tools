@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v4.8"
+$ScriptVersion = "v4.9"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -2534,22 +2534,34 @@ function Show-STConfigMenu {
                     # 过滤 127.x.x.x (回环) 和 169.254.x.x (APIPA/不可用)
                     $ips = Get-NetIPAddress -AddressFamily IPv4 | Where-Object {
                         $_.IPAddress -notmatch '^127\.' -and
-                        $_.IPAddress -notmatch '^169\.254\.' -and
-                        $_.InterfaceAlias -notmatch 'Loopback|VirtualBox|VMware|Pseudo|Teredo|6to4' -and
-                        $_.InterfaceAlias -notmatch 'vEthernet.*(WSL|Docker|Hyper-V)'
+                        $_.IPAddress -notmatch '^169\.254\.'
                     }
-                    if ($ips) {
+                    
+                    $validIps = New-Object System.Collections.Generic.List[object]
+                    foreach ($ipObj in $ips) {
+                        # 获取物理网卡详情，用于精准排除虚拟网卡
+                        $adapter = Get-NetAdapter -InterfaceAlias $ipObj.InterfaceAlias -ErrorAction SilentlyContinue
+                        if ($null -eq $adapter) { continue }
+                        
+                        # 排除常见的虚拟网卡 (通过名称或描述)
+                        if ($adapter.Name -match 'VirtualBox|VMware|Pseudo|Teredo|6to4|Loopback') { continue }
+                        if ($adapter.InterfaceDescription -match 'Virtual|WSL|Docker|Hyper-V|VPN|ZeroTier|Tailscale') { continue }
+                        
+                        $validIps.Add(@{ IPObj = $ipObj; Adapter = $adapter })
+                    }
+
+                    if ($validIps.Count -gt 0) {
                         Write-Header "检测到以下局域网地址："
-                        foreach ($ipObj in $ips) {
+                        foreach ($item in $validIps) {
+                            $ipObj = $item.IPObj
+                            $adapter = $item.Adapter
                             $ip = $ipObj.IPAddress
                             
                             # 识别网卡类型
-                            $adapter = Get-NetAdapter -InterfaceAlias $ipObj.InterfaceAlias -ErrorAction SilentlyContinue
                             $typeLabel = "[未知]"
-                            if ($adapter) {
-                                if ($adapter.MediaType -eq "802.3" -or $adapter.Name -like "*Ethernet*") { $typeLabel = "[有线网络]" }
-                                elseif ($adapter.MediaType -eq "Native 802.11" -or $adapter.Name -like "*Wi-Fi*") { $typeLabel = "[WiFi]" }
-                            }
+                            if ($adapter.Name -like "*Microsoft Wi-Fi Direct Virtual Adapter*") { $typeLabel = "[本机热点]" }
+                            elseif ($adapter.MediaType -eq "802.3" -or $adapter.Name -like "*Ethernet*") { $typeLabel = "[有线网络]" }
+                            elseif ($adapter.MediaType -eq "Native 802.11" -or $adapter.Name -like "*Wi-Fi*") { $typeLabel = "[WiFi]" }
 
                             # 动态计算子网网段 (支持全球各种子网掩码)
                             $prefixLength = $ipObj.PrefixLength
@@ -2562,9 +2574,9 @@ function Show-STConfigMenu {
                             Write-Host "      访问地址: " -NoNewline; Write-Host "http://$($ip):$currPort" -ForegroundColor Cyan
                         }
                         Write-Host "`n选择建议：" -ForegroundColor Yellow
-                        Write-Host "  - 如果 PC 使用 ${Green}网线${NC} 连接路由器，请优先尝试 ${Green}[有线网络]${NC} 地址。"
-                        Write-Host "  - 如果 PC 使用 ${Green}WiFi${NC} 连接，请优先尝试 ${Green}[WiFi]${NC} 地址。"
-                        Write-Host "  - 如果 PC 开启了 ${Green}移动热点${NC} 供其他设备连接，请尝试对应的 WiFi 地址。"
+                        Write-Host "  - " -NoNewline; Write-Host "[有线网络/WiFi] " -ForegroundColor Green -NoNewline; Write-Host ": 适用于其他设备通过 " -NoNewline; Write-Host "路由器 " -ForegroundColor Cyan -NoNewline; Write-Host "或 " -NoNewline; Write-Host "他人热点 " -ForegroundColor Cyan -NoNewline; Write-Host "与这台电脑处于同一局域网时访问。"
+                        Write-Host "  - " -NoNewline; Write-Host "[本机热点] " -ForegroundColor Green -NoNewline; Write-Host ": 适用于其他设备直接连接了 " -NoNewline; Write-Host "这台电脑开启的移动热点 " -ForegroundColor Cyan -NoNewline; Write-Host "时访问。"
+                        Write-Host "  - " -NoNewline; Write-Host "提示: " -ForegroundColor Yellow -NoNewline; Write-Host "若有多个地址，请优先尝试 " -NoNewline; Write-Host "192.168 " -ForegroundColor Green -NoNewline; Write-Host "开头的地址。"
 
                         Write-Success "`n局域网访问功能已配置完成。"
                         Write-Warning "设置将在重启酒馆后生效。"
