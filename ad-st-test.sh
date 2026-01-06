@@ -55,7 +55,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.5${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.5test${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
     echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
 }
@@ -2201,8 +2201,15 @@ fn_menu_st_config() {
                     fi
                     fn_update_st_config_value "listen" "true"
                     
-                    # 过滤掉回环地址和常见的虚拟网卡地址 (保留 wlan1 以防万一)
-                    local ips=$(ip addr show | grep -w inet | grep -v 127.0.0.1 | grep -vE "docker|veth|br-|tun|arc" | awk '{print $2}' | cut -d/ -f1)
+                    # 兼容性 IP 检测逻辑：优先使用 ip addr，备选 ifconfig
+                    local ips=""
+                    if fn_check_command "ip"; then
+                        ips=$(ip addr show | grep -w inet | grep -v 127.0.0.1 | grep -vE "docker|veth|br-|tun|arc|rmnet" | awk '{print $2}' | cut -d/ -f1)
+                    elif fn_check_command "ifconfig"; then
+                        # 从 ifconfig 输出中提取 inet 地址，过滤掉回环、移动数据和 VPN
+                        ips=$(ifconfig 2>/dev/null | grep -w inet | grep -v 127.0.0.1 | grep -vE "rmnet|tun" | awk '{print $2}' | sed 's/addr://')
+                    fi
+
                     if [[ -n "$ips" ]]; then
                         fn_print_header "检测到以下局域网地址："
                         for ip in $ips; do
