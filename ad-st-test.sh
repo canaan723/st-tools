@@ -55,7 +55,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.5test${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.5test2${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
     echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
 }
@@ -2201,25 +2201,44 @@ fn_menu_st_config() {
                     fi
                     fn_update_st_config_value "listen" "true"
                     
-                    # 兼容性 IP 检测逻辑：优先使用 ip addr，备选 ifconfig
-                    local ips=""
+                    # 精准 IP 检测逻辑：仅保留 WiFi(wlan)、热点(ap)、USB共享(rndis) 和 有线(eth)
+                    local ip_info=""
+                    local valid_interfaces="wlan|ap|rndis|eth|p2p|br"
+                    
                     if fn_check_command "ip"; then
-                        ips=$(ip addr show | grep -w inet | grep -v 127.0.0.1 | grep -vE "docker|veth|br-|tun|arc|rmnet" | awk '{print $2}' | cut -d/ -f1)
+                        # 提取 接口名:IP 格式，过滤 127.* 和 169.254.* (APIPA)
+                        ip_info=$(ip addr show | grep -E "^[0-9]+: ($valid_interfaces)" -A2 | awk '/^[0-9]+: / {iface=$2; sub(/:$/, "", iface)} /inet / {print iface ":" $2}' | grep -vE ":127\.|:169\.254\." | cut -d/ -f1)
                     elif fn_check_command "ifconfig"; then
-                        # 从 ifconfig 输出中提取 inet 地址，过滤掉回环、移动数据和 VPN
-                        ips=$(ifconfig 2>/dev/null | grep -w inet | grep -v 127.0.0.1 | grep -vE "rmnet|tun" | awk '{print $2}' | sed 's/addr://')
+                        # 提取 接口名:IP 格式，过滤 127.* 和 169.254.* (APIPA)
+                        ip_info=$(ifconfig 2>/dev/null | grep -E "^($valid_interfaces)" -A1 | awk '/^[a-z0-9]/ {iface=$1; sub(/:$/, "", iface)} /inet / {print iface ":" $2}' | grep -vE ":127\.|:169\.254\." | sed 's/addr://')
                     fi
 
-                    if [[ -n "$ips" ]]; then
+                    if [[ -n "$ip_info" ]]; then
                         fn_print_header "检测到以下局域网地址："
-                        for ip in $ips; do
+                        for entry in $ip_info; do
+                            local iface=$(echo "$entry" | cut -d: -f1)
+                            local ip=$(echo "$entry" | cut -d: -f2)
+                            local type_label="[未知]"
+                            
+                            case "$iface" in
+                                wlan*) type_label="[WiFi]" ;;
+                                ap*)   type_label="[手机热点]" ;;
+                                rndis*) type_label="[USB 共享]" ;;
+                                eth*)   type_label="[有线网络]" ;;
+                            esac
+
                             # 提取前三段构造 /24 网段
                             local subnet=$(echo "$ip" | cut -d. -f1-3).0/24
                             fn_add_st_whitelist_entry "$subnet"
-                            fn_print_success "已将网段 $subnet 加入白名单"
-                            echo -e "  - 访问地址: ${CYAN}http://${ip}:${curr_port}${NC}"
+                            
+                            echo -e "  ${GREEN}✓${NC} ${BOLD}${type_label}${NC} 地址: ${CYAN}http://${ip}:${curr_port}${NC}"
                         done
-                        fn_print_success "局域网访问功能已配置完成。"
+                        echo -e "\n${YELLOW}选择建议：${NC}"
+                        echo -e "  - 如果 PC 连接了手机 ${BOLD}热点${NC}，请使用 ${BOLD}[手机热点]${NC} 地址。"
+                        echo -e "  - 如果 PC 和手机连接了 ${BOLD}同一个 WiFi${NC}，请使用 ${BOLD}[WiFi]${NC} 地址。"
+                        echo -e "  - 如果使用了 ${BOLD}USB 线${NC} 连接 PC 共享网络，请使用 ${BOLD}[USB 共享]${NC} 地址。"
+                        
+                        fn_print_success "\n局域网访问功能已配置完成。"
                         fn_print_warning "设置将在重启酒馆后生效。"
                     else
                         fn_print_error "未能检测到有效的局域网 IP 地址。"

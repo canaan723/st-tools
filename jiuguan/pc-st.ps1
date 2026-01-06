@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v4.7"
+$ScriptVersion = "v4.8"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -2531,25 +2531,42 @@ function Show-STConfigMenu {
                     Update-STConfigValue "listen" "true" | Out-Null
                     
                     # 获取本机IP并加入白名单
-                    # 过滤 127.x.x.x (回环) 和 172.x.x.x (通常为 Docker/虚拟网桥)
+                    # 过滤 127.x.x.x (回环) 和 169.254.x.x (APIPA/不可用)
                     $ips = Get-NetIPAddress -AddressFamily IPv4 | Where-Object {
                         $_.IPAddress -notmatch '^127\.' -and
-                        $_.IPAddress -notmatch '^172\.' -and
-                        $_.InterfaceAlias -notmatch 'Loopback|VirtualBox|VMware|vEthernet'
+                        $_.IPAddress -notmatch '^169\.254\.' -and
+                        $_.InterfaceAlias -notmatch 'Loopback|VirtualBox|VMware|Pseudo|Teredo|6to4' -and
+                        $_.InterfaceAlias -notmatch 'vEthernet.*(WSL|Docker|Hyper-V)'
                     }
                     if ($ips) {
                         Write-Header "检测到以下局域网地址："
                         foreach ($ipObj in $ips) {
                             $ip = $ipObj.IPAddress
-                            if ($ip -match '^(\d+\.\d+\.\d+)\.\d+') {
-                                $subnet = $Matches[1] + ".0/24"
+                            
+                            # 识别网卡类型
+                            $adapter = Get-NetAdapter -InterfaceAlias $ipObj.InterfaceAlias -ErrorAction SilentlyContinue
+                            $typeLabel = "[未知]"
+                            if ($adapter) {
+                                if ($adapter.MediaType -eq "802.3" -or $adapter.Name -like "*Ethernet*") { $typeLabel = "[有线网络]" }
+                                elseif ($adapter.MediaType -eq "Native 802.11" -or $adapter.Name -like "*Wi-Fi*") { $typeLabel = "[WiFi]" }
+                            }
+
+                            # 动态计算子网网段 (支持全球各种子网掩码)
+                            $prefixLength = $ipObj.PrefixLength
+                            if ($ip -match '^(\d+\.\d+\.\d+\.\d+)') {
+                                $subnet = "$($Matches[1])/$prefixLength"
                                 if (Add-STWhitelistEntry $subnet) {
-                                    Write-Host "  - 已将网段 $subnet 加入白名单" -ForegroundColor Green
+                                    Write-Host "  ✓ " -NoNewline; Write-Host "$typeLabel " -ForegroundColor Green -NoNewline; Write-Host "已将网段 $subnet 加入白名单"
                                 }
                             }
-                            Write-Host "  - 访问地址: http://$($ip):$currPort" -ForegroundColor Cyan
+                            Write-Host "      访问地址: " -NoNewline; Write-Host "http://$($ip):$currPort" -ForegroundColor Cyan
                         }
-                        Write-Success "局域网访问功能已配置完成。"
+                        Write-Host "`n选择建议：" -ForegroundColor Yellow
+                        Write-Host "  - 如果 PC 使用 ${Green}网线${NC} 连接路由器，请优先尝试 ${Green}[有线网络]${NC} 地址。"
+                        Write-Host "  - 如果 PC 使用 ${Green}WiFi${NC} 连接，请优先尝试 ${Green}[WiFi]${NC} 地址。"
+                        Write-Host "  - 如果 PC 开启了 ${Green}移动热点${NC} 供其他设备连接，请尝试对应的 WiFi 地址。"
+
+                        Write-Success "`n局域网访问功能已配置完成。"
                         Write-Warning "设置将在重启酒馆后生效。"
                     } else {
                         Write-Error "未能检测到有效的局域网 IP 地址。"
