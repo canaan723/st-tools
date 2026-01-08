@@ -55,7 +55,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.5${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v5.11${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
     echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
 }
@@ -1844,6 +1844,70 @@ if not hasattr(BaseModel, 'model_dump'):
 " &>/dev/null
 }
 
+fn_set_lab_mirror_preference() {
+    local key="$1"
+    local title="$2"
+    clear
+    fn_print_header "设置 $title 安装线路"
+    
+    local current_pref="Auto"
+    if [ -f "$LAB_CONFIG_FILE" ]; then
+        local val
+        val=$(grep "^${key}=" "$LAB_CONFIG_FILE" | cut -d'=' -f2 | tr -d '"')
+        if [ -n "$val" ]; then current_pref="$val"; fi
+    fi
+    
+    local pref_text="自动"
+    case "$current_pref" in
+        "Auto") pref_text="自动 (优先海外，失败则切国内)" ;;
+        "Official") pref_text="强制海外 (GitHub/官方源)" ;;
+        "Mirror") pref_text="强制国内 (镜像加速)" ;;
+    esac
+    
+    echo -e "当前设置: ${YELLOW}${pref_text}${NC}"
+    echo -e "\n${GREEN}[1] 自动 (推荐)${NC}"
+    echo -e "    优先尝试官方源，如果失败自动切换到国内镜像。"
+    echo -e "${CYAN}[2] 强制海外${NC}"
+    echo -e "    只使用官方源。适合网络环境极好(有梯子)的用户。"
+    echo -e "${CYAN}[3] 强制国内${NC}"
+    echo -e "    只使用国内镜像。适合无梯子用户。"
+    
+    read -p $'\n请选择 [1-3]: ' choice
+    local new_pref=""
+    case "$choice" in
+        1) new_pref="Auto" ;;
+        2) new_pref="Official" ;;
+        3) new_pref="Mirror" ;;
+        *) fn_print_warning "无效输入。"; sleep 1; return ;;
+    esac
+    
+    mkdir -p "$CONFIG_DIR"
+    touch "$LAB_CONFIG_FILE"
+    sed -i "/^${key}=/d" "$LAB_CONFIG_FILE"
+    echo "${key}=\"${new_pref}\"" >> "$LAB_CONFIG_FILE"
+    fn_print_success "设置已保存！"
+    sleep 1
+}
+
+fn_get_git_version() {
+    local target_dir="$1"
+    if [ ! -d "$target_dir/.git" ]; then
+        echo "未知"
+        return
+    fi
+    
+    local date
+    date=$(git -C "$target_dir" log -1 --format=%cd --date=format:'%Y-%m-%d' 2>/dev/null)
+    local hash
+    hash=$(git -C "$target_dir" rev-parse --short HEAD 2>/dev/null)
+    
+    if [[ -n "$date" && -n "$hash" ]]; then
+        echo "$date ($hash)"
+    else
+        echo "未知"
+    fi
+}
+
 fn_menu_version_management() {
     while true; do
         clear
@@ -1903,22 +1967,85 @@ fn_install_gcli() {
         npm install pm2 -g || { fn_print_error "pm2 安装失败！"; fn_press_any_key; return; }
     fi
 
-    fn_print_warning "正在部署 gcli2api..."
+    local mirror_pref="Auto"
+    if [ -f "$LAB_CONFIG_FILE" ]; then
+        local val
+        val=$(grep "^GCLI_MIRROR_PREF=" "$LAB_CONFIG_FILE" | cut -d'=' -f2 | tr -d '"')
+        if [ -n "$val" ]; then mirror_pref="$val"; fi
+    fi
+    
+    local official_git="https://github.com/su-kaka/gcli2api.git"
+    local mirror_git="https://hub.gitmirror.com/https://github.com/su-kaka/gcli2api.git"
+    
+    local use_official_git=true
+    if [[ "$mirror_pref" == "Mirror" ]]; then use_official_git=false; fi
+    
+    fn_print_warning "正在部署 gcli2api (模式: $mirror_pref)..."
     cd "$HOME" || return
+    
     if [ -d "$GCLI_DIR" ]; then
         fn_print_warning "检测到旧目录，正在更新..."
         cd "$GCLI_DIR" || return
-        git fetch --all
+        
+        local update_success=false
+        if $use_official_git; then
+            echo -e "${BOLD}尝试从官方源拉取...${NC}"
+            git remote set-url origin "$official_git"
+            if git fetch --all; then update_success=true; fi
+        fi
+        
+        if ! $update_success && [[ "$mirror_pref" == "Auto" || "$mirror_pref" == "Mirror" ]]; then
+            if $use_official_git; then fn_print_warning "官方源连接失败，自动切换到国内镜像..."; fi
+            git remote set-url origin "$mirror_git"
+            if git fetch --all; then update_success=true; fi
+        fi
+        
+        if ! $update_success; then
+            fn_print_error "Git 拉取更新失败！请检查网络连接。"
+            fn_press_any_key
+            return
+        fi
         git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
     else
-        git clone https://github.com/su-kaka/gcli2api.git "$GCLI_DIR" || { fn_print_error "克隆仓库失败！"; fn_press_any_key; return; }
+        local clone_success=false
+        if $use_official_git; then
+            echo -e "${BOLD}尝试从官方源克隆...${NC}"
+            if git clone "$official_git" "$GCLI_DIR"; then clone_success=true; fi
+        fi
+        
+        if ! $clone_success && [[ "$mirror_pref" == "Auto" || "$mirror_pref" == "Mirror" ]]; then
+            if $use_official_git; then fn_print_warning "官方源连接失败，自动切换到国内镜像..."; fi
+            rm -rf "$GCLI_DIR"
+            if git clone "$mirror_git" "$GCLI_DIR"; then clone_success=true; fi
+        fi
+        
+        if ! $clone_success; then
+            fn_print_error "克隆仓库失败！请检查网络或代理设置。"
+            fn_press_any_key
+            return
+        fi
         cd "$GCLI_DIR" || return
     fi
 
     fn_print_warning "正在初始化 Python 环境 (uv)..."
     uv venv --clear
-    fn_print_warning "正在安装 Python 依赖..."
-    uv pip install -r requirements-termux.txt --link-mode copy || { fn_print_error "Python 依赖安装失败！"; fn_press_any_key; return; }
+    
+    local install_success=false
+    if [[ "$mirror_pref" == "Official" || "$mirror_pref" == "Auto" ]]; then
+        fn_print_warning "尝试使用官方源安装依赖..."
+        if uv pip install -r requirements-termux.txt --link-mode copy; then install_success=true; fi
+    fi
+    
+    if ! $install_success && [[ "$mirror_pref" == "Auto" || "$mirror_pref" == "Mirror" ]]; then
+        if [[ "$mirror_pref" == "Auto" ]]; then fn_print_warning "官方源安装失败，自动切换到国内镜像..."; else fn_print_warning "使用国内镜像安装依赖..."; fi
+        if uv pip install -r requirements-termux.txt --link-mode copy --index-url https://pypi.tuna.tsinghua.edu.cn/simple; then install_success=true; fi
+    fi
+    
+    if ! $install_success; then
+        fn_print_error "Python 依赖安装失败！"
+        fn_press_any_key
+        return
+    fi
 
     fn_gcli_patch_pydantic
 
@@ -2011,8 +2138,14 @@ fn_menu_gcli_manage() {
         clear
         fn_print_header "gcli2api 管理"
         local status_text=$(fn_get_gcli_status)
-        echo -e "      当前状态: ${status_text}\n"
+        echo -e "      当前状态: ${status_text}"
         
+        if [ -d "$GCLI_DIR" ]; then
+            local version=$(fn_get_git_version "$GCLI_DIR")
+            echo -e "      当前版本: ${YELLOW}${version}${NC}"
+        fi
+        echo ""
+
         local auto_start_status="${RED}关闭${NC}"
         if [ -f "$LAB_CONFIG_FILE" ] && grep -q "AUTO_START_GCLI=\"true\"" "$LAB_CONFIG_FILE"; then
             auto_start_status="${GREEN}开启${NC}"
@@ -2033,6 +2166,7 @@ fn_menu_gcli_manage() {
         echo -e "      [4] ${RED}卸载 gcli2api${NC}"
         echo -e "      [5] 查看运行日志"
         echo -e "      [6] 打开 Web 面板"
+        echo -e "\n      [7] ${YELLOW}切换安装线路${NC}"
         echo -e "      [0] ${CYAN}返回上一级${NC}\n"
         
         read -p "    请输入选项: " choice
@@ -2071,11 +2205,13 @@ fn_menu_gcli_manage() {
                 fi
                 sleep 1
                 ;;
+            7) fn_set_lab_mirror_preference "GCLI_MIRROR_PREF" "gcli2api" ;;
             0) break ;;
             *) fn_print_error "无效输入。"; sleep 1 ;;
         esac
     done
 }
+
 
 fn_menu_st_config() {
     while true; do
