@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v5.0"
+$ScriptVersion = "v5.1"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -33,7 +33,6 @@ $SyncRulesConfigFile = Join-Path $ConfigDir "sync_rules.conf"
 $AgreementFile = Join-Path $ConfigDir ".agreement_shown"
 $LabConfigFile = Join-Path $ConfigDir "lab.conf"
 $GcliDir = Join-Path $ScriptBaseDir "gcli2api"
-$AntiGravityDir = Join-Path $ScriptBaseDir "Antigravity2api"
 
 $Mirror_List = @(
     "https://github.com/SillyTavern/SillyTavern.git",
@@ -1541,371 +1540,6 @@ function Show-BackupMenu {
     }
 }
 
-function Open-HelpDocs {
-    Clear-Host
-    Write-Header "查看帮助文档"
-    Write-Host "文档网址: "
-    Write-Host $HelpDocsUrl -ForegroundColor Cyan
-    Write-Host "`n"
-    try {
-        Start-Process $HelpDocsUrl
-        Write-Success "已尝试在浏览器中打开，若未自动跳转请手动复制上方网址。"
-    } catch {
-        Write-Warning "无法自动打开浏览器。"
-    }
-    Press-Any-Key
-}
-
-function Update-AssistantScript {
-    Clear-Host
-    Write-Header "更新咕咕助手脚本"
-    Write-Warning "正在从服务器获取最新版本..."
-    try {
-        $newScriptContent = (Invoke-WebRequest -Uri $ScriptSelfUpdateUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop).Content
-        if ([string]::IsNullOrWhiteSpace($newScriptContent)) { Write-ErrorExit "下载失败：脚本内容为空！" }
-
-        if ($newScriptContent.StartsWith([char]0xFEFF)) {
-            $newScriptContent = $newScriptContent.Substring(1)
-        }
-
-        $currentScriptContent = Get-Content -Path $PSCommandPath -Raw
-        if ($newScriptContent.Replace("`r`n", "`n").Trim() -eq $currentScriptContent.Replace("`r`n", "`n").Trim()) {
-            Write-Success "当前已是最新版本。"
-            Press-Any-Key
-            return
-        }
-
-        $newFileName = "pc-st.new.ps1"
-        $newFilePath = Join-Path $ScriptBaseDir $newFileName
-        [System.IO.File]::WriteAllText($newFilePath, $newScriptContent, [System.Text.Encoding]::UTF8)
-
-        Clear-Host
-        Write-Header "新版本下载完成！"
-        Write-Success "正在自动应用更新..."
-
-        $batchPath = Join-Path $ScriptBaseDir "update_helper.bat"
-        $currentScriptPath = $PSCommandPath
-        $starterScript = Join-Path $ScriptBaseDir "咕咕助手.bat"
-        
-        $batchContent = "@echo off`r`n"
-        $batchContent += "chcp 936 >nul`r`n"
-        $batchContent += "title GuGu Assistant Auto Updater`r`n"
-        $batchContent += "cd /d `"$ScriptBaseDir`"`r`n"
-        $batchContent += "echo Waiting for the old process to release...`r`n"
-        $batchContent += "`r`n"
-        $batchContent += ":RetryLoop`r`n"
-        $batchContent += "timeout /t 2 /nobreak >nul`r`n"
-        $batchContent += "if exist `"$currentScriptPath`" (`r`n"
-        $batchContent += "    del /f /q `"$currentScriptPath`"`r`n"
-        $batchContent += "    if exist `"$currentScriptPath`" (`r`n"
-        $batchContent += "        echo [!] Old file is still locked, retrying...`r`n"
-        $batchContent += "        goto RetryLoop`r`n"
-        $batchContent += "    )`r`n"
-        $batchContent += ")`r`n"
-        $batchContent += "`r`n"
-        $batchContent += "if not exist `"$newFilePath`" (`r`n"
-        $batchContent += "    echo [X] Error: New version file not found!`r`n"
-        $batchContent += "    echo     Path: `"$newFilePath`"`r`n"
-        $batchContent += "    pause`r`n"
-        $batchContent += "    exit`r`n"
-        $batchContent += ")`r`n"
-        $batchContent += "`r`n"
-        $batchContent += "move /y `"$newFilePath`" `"$currentScriptPath`"`r`n"
-        $batchContent += "if not exist `"$currentScriptPath`" (`r`n"
-        $batchContent += "    echo [X] Error: Failed to move file!`r`n"
-        $batchContent += "    pause`r`n"
-        $batchContent += "    exit`r`n"
-        $batchContent += ")`r`n"
-        $batchContent += "`r`n"
-        $batchContent += "echo Update completed, restarting assistant...`r`n"
-        $batchContent += "start `"`" `"$starterScript`"`r`n"
-        $batchContent += "del `"%~f0`"`r`n"
-
-        if (Test-Path $batchPath) { Remove-Item $batchPath -Force }
-        [System.IO.File]::WriteAllText($batchPath, $batchContent, [System.Text.Encoding]::GetEncoding(936))
-
-        Write-Warning "助手即将重启以应用更新..."
-        Start-Sleep -Seconds 1
-        
-        Start-Process -FilePath $batchPath
-        exit 2
-    } catch {
-        Write-ErrorExit "下载脚本时发生错误！`n`n错误详情: $($_.Exception.Message)"
-    }
-}
-
-function Get-UnifiedMirrorCandidates {
-    param($GitUrl, $FileUrl)
-    $candidates = @()
-    $candidates += [PSCustomObject]@{ Name = "官方线路 (github.com)"; GitUrl = $GitUrl; FileUrl = $FileUrl }
-    
-    $seenHosts = @("github.com")
-    
-    foreach ($m in $Mirror_List) {
-        $hostName = ($m -split '/')[2]
-        if ($seenHosts -contains $hostName) { continue }
-        
-        $g = $null; $f = $null
-        
-        if ($m -match "/gh/") {
-            $base = $m.Substring(0, $m.IndexOf("/gh/"))
-            $repoPath = $GitUrl -replace '^https://github.com/', ''
-            $filePath = $FileUrl -replace '^https://github.com/', ''
-            $g = "$base/gh/$repoPath"
-            $f = "$base/gh/$filePath"
-        } elseif ($m -match "/https://github.com/") {
-            $base = $m.Substring(0, $m.IndexOf("/https://github.com/"))
-            $g = "$base/$GitUrl"
-            $f = "$base/$FileUrl"
-        } elseif ($m -match "/github.com/") {
-            $base = $m.Substring(0, $m.IndexOf("/github.com/"))
-            $g = "$base/$GitUrl"
-            $f = "$base/$FileUrl"
-        }
-        
-        if ($g -and $f) {
-            $candidates += [PSCustomObject]@{ Name = "镜像线路 ($hostName)"; GitUrl = $g; FileUrl = $f }
-            $seenHosts += $hostName
-        }
-    }
-    return $candidates
-}
-
-function Select-UnifiedMirror {
-    param($GitUrl, $FileUrl)
-    
-    $candidates = Get-UnifiedMirrorCandidates -GitUrl $GitUrl -FileUrl $FileUrl
-    $successfulCandidates = New-Object System.Collections.Generic.List[object]
-
-    Write-Warning "正在测试可用下载线路，请稍候..."
-    
-    foreach ($c in $candidates) {
-        Write-Host "  - 正在测试: $($c.Name)..." -NoNewline
-        $isSuccess = $false
-        try {
-            $req = [System.Net.WebRequest]::Create($c.FileUrl)
-            $req.Method = "HEAD"
-            $req.Timeout = 7000
-            $resp = $req.GetResponse()
-            $statusCode = [int]$resp.StatusCode
-            if ($statusCode -ge 200 -and $statusCode -lt 400) {
-                $isSuccess = $true
-                $successfulCandidates.Add($c)
-            }
-            $resp.Close()
-        } catch {
-        }
-
-        if ($isSuccess) {
-            Write-Host "`r  ✓ 测试: $($c.Name) [成功]                                  " -ForegroundColor Green
-        } else {
-            Write-Host "`r  ✗ 测试: $($c.Name) [失败]                                  " -ForegroundColor Red
-        }
-    }
-
-    if ($successfulCandidates.Count -eq 0) {
-        Write-Error "`n所有下载线路均测试失败！`n可能是网络问题、代理配置错误或镜像服务器暂时不可用。"
-        Press-Any-Key
-        return $null
-    }
-    
-    Write-Success "`n测试完成，共找到 $($successfulCandidates.Count) 条可用线路。"
-
-    $successful = @{}
-    for ($i = 0; $i -lt $successfulCandidates.Count; $i++) {
-        $successful[($i + 1)] = $successfulCandidates[$i]
-    }
-
-    while ($true) {
-        Clear-Host
-        Write-Header "选择下载线路"
-        Write-Success "请选择一条可用线路进行下载："
-        foreach ($k in ($successful.Keys | Sort-Object)) {
-            Write-Host ("  [{0,2}] {1}" -f $k, $successful[$k].Name) -ForegroundColor Cyan
-        }
-        Write-Host "`n  [0] 取消操作" -ForegroundColor Red
-        $choice = Read-Host "`n请输入序号"
-        if ($choice -eq '0') { return $null }
-        if ($choice -match '^\d+$' -and $successful.ContainsKey([int]$choice)) {
-            return $successful[[int]$choice]
-        }
-    }
-}
-
-function Download-FileWithHttpClient {
-    param(
-        [Parameter(Mandatory=$true)] [string]$Url,
-        [Parameter(Mandatory=$true)] [string]$DestPath
-    )
-    $client = New-Object System.Net.Http.HttpClient
-    $client.Timeout = [TimeSpan]::FromMinutes(10)
-    
-    try {
-        $response = $client.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
-        $response.EnsureSuccessStatusCode() | Out-Null
-
-        $totalBytes = $response.Content.Headers.ContentLength
-        $readChunkSize = 8192
-        $buffer = New-Object byte[] $readChunkSize
-        $totalRead = 0
-
-        $stream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
-        $fileStream = [System.IO.File]::Create($DestPath)
-
-        do {
-            $bytesRead = $stream.Read($buffer, 0, $readChunkSize)
-            $fileStream.Write($buffer, 0, $bytesRead)
-            $totalRead += $bytesRead
-            
-            if ($totalBytes -gt 0) {
-                $percent = ($totalRead / $totalBytes) * 100
-                $receivedMB = $totalRead / 1MB
-                $totalMB = $totalBytes / 1MB
-                $statusText = "下载中: {0:N2} MB / {1:N2} MB ({2:N0}%)" -f $receivedMB, $totalMB, $percent
-                Write-Progress -Activity "正在下载文件" -Status $statusText -PercentComplete $percent
-            } else {
-                $receivedMB = $totalRead / 1MB
-                $statusText = "下载中: {0:N2} MB" -f $receivedMB
-                Write-Progress -Activity "正在下载文件" -Status $statusText
-            }
-        } while ($bytesRead -gt 0)
-        
-        Write-Progress -Activity "正在下载文件" -Completed
-    } finally {
-        if ($stream) { $stream.Dispose() }
-        if ($fileStream) { $fileStream.Dispose() }
-        if ($client) { $client.Dispose() }
-    }
-}
-
-function Get-AiStudioToken {
-    Clear-Host
-    Write-Header "获取 AI Studio 凭证"
-
-    if (-not (Check-Command "git") -or -not (Check-Command "node")) {
-        Write-Error "未检测到 Git 或 Node.js，无法继续。"
-        Write-Warning "请先在主菜单选择 [首次部署] 或手动安装这些依赖。"
-        Press-Any-Key
-        return
-    }
-    Write-Success "环境检查通过 (Git, Node.js 已安装)。"
-
-    $ais2apiDir = Join-Path $ScriptBaseDir "ais2api"
-    $camoufoxDir = Join-Path $ais2apiDir "camoufox"
-    $camoufoxExe = Join-Path $camoufoxDir "camoufox.exe"
-    
-    $targetGitUrl = "https://github.com/Ellinav/ais2api.git"
-    $targetFileUrl = "https://github.com/daijro/camoufox/releases/download/v135.0.1-beta.24/camoufox-135.0.1-beta.24-win.x86_64.zip"
-    
-    $needClone = -not (Test-Path $ais2apiDir)
-    $needDownload = -not (Test-Path $camoufoxExe)
-    
-    if ($needClone -or $needDownload) {
-        $selectedMirror = Select-UnifiedMirror -GitUrl $targetGitUrl -FileUrl $targetFileUrl
-        if (-not $selectedMirror) {
-            Write-Error "未选择线路或操作取消。"
-            Press-Any-Key
-            return
-        }
-        
-        if ($needClone) {
-            Write-Warning "正在克隆 ais2api 项目..."
-            $gitOutput = git clone $selectedMirror.GitUrl $ais2apiDir 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                if ($gitOutput -match "Permission denied") {
-                    Write-Error "权限不足，无法创建目录。请尝试以【管理员身份】运行本脚本。"
-                } elseif ($gitOutput -match "Failed to connect to .* port .*|Could not connect to server") {
-                    Write-Error "网络连接失败，可能是代理配置问题。"
-                    Write-Host "  请检查：" -ForegroundColor Cyan
-                    Write-Host "  1. 如果您【需要】使用代理：请确保代理软件已正常运行，且助手内的代理已正确配置（主菜单 -> 9）。" -ForegroundColor Cyan
-                    Write-Host "  2. 如果您【不】使用代理：请检查并清除之前可能设置过的Git全局代理。" -ForegroundColor Cyan
-                    Write-Host "     (可在任意终端执行命令： git config --global --unset http.proxy 后重试)" -ForegroundColor DarkGray
-                } else {
-                    Write-Error "克隆失败！Git输出: $($gitOutput | Out-String)"
-                }
-                Press-Any-Key
-                return
-            }
-        } else {
-            Write-Warning "ais2api 目录已存在，跳过克隆。"
-        }
-        
-        if ($needDownload) {
-            if (-not (Test-Path $camoufoxDir)) { New-Item -Path $camoufoxDir -ItemType Directory | Out-Null }
-            $zipPath = Join-Path $ais2apiDir "camoufox.zip"
-            
-            Write-Warning "正在下载 Camoufox 内核..."
-            try {
-                Download-FileWithHttpClient -Url $selectedMirror.FileUrl -DestPath $zipPath
-                
-                Write-Success "下载完成，正在解压..."
-                Expand-Archive -Path $zipPath -DestinationPath $camoufoxDir -Force
-                Remove-Item $zipPath -Force
-                
-                if (-not (Test-Path $camoufoxExe)) {
-                    $nestedExe = Get-ChildItem -Path $camoufoxDir -Filter "camoufox.exe" -Recurse | Select-Object -First 1
-                    if ($nestedExe) {
-                        Write-Warning "检测到嵌套目录，正在调整结构..."
-                        $parentDir = $nestedExe.Directory.FullName
-                        Get-ChildItem -Path $parentDir | Move-Item -Destination $camoufoxDir -Force
-                        if ((Get-ChildItem $parentDir -Force).Count -eq 0) { Remove-Item $parentDir -Force }
-                    } else {
-                        Write-Error "解压后未找到 camoufox.exe！"
-                        Press-Any-Key; return
-                    }
-                }
-                Write-Success "Camoufox 配置完成。"
-            } catch {
-                Write-Error "下载或解压失败: $($_.Exception.Message)"
-                if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-                Press-Any-Key; return
-            }
-        } else {
-            Write-Success "Camoufox 已存在。"
-        }
-    }
-
-    Set-Location $ais2apiDir
-    if (-not (Test-Path "node_modules")) {
-        Write-Warning "正在安装依赖 (npm install)..."
-        npm install
-        if ($LASTEXITCODE -ne 0) { Write-Error "依赖安装失败！"; Set-Location $ScriptBaseDir; Press-Any-Key; return }
-    }
-
-    while ($true) {
-        Clear-Host
-        Write-Header "准备获取凭证"
-        Write-Host "即将启动浏览器..." -ForegroundColor Cyan
-        Write-Host "1. 请在弹出的浏览器中登录您的谷歌账号。" -ForegroundColor Yellow
-        Write-Host "2. 登录成功看到 AI Studio 页面后，请保持浏览器开启。" -ForegroundColor Yellow
-        Write-Host "3. 回到本窗口按回车，即可自动获取凭证并关闭浏览器。" -ForegroundColor Yellow
-        Write-Host "4. 凭证将保存在 ais2api\single-line-auth 文件中。" -ForegroundColor Green
-        
-        node save-auth.js
-        Write-Success "操作结束。"
-        
-        Get-Process -Name "camoufox" -ErrorAction SilentlyContinue | Stop-Process -Force
-
-        while ($true) {
-            Write-Host "`n后续操作：" -ForegroundColor Cyan
-            Write-Host " [1] 继续获取 (切换账号)" -ForegroundColor Green
-            Write-Host " [2] 打开凭证文件" -ForegroundColor Yellow
-            Write-Host " [0] 返回上一级" -ForegroundColor Red
-            $next = Read-Host " 请输入"
-            if ($next -eq '1') { break }
-            if ($next -eq '2') {
-                $authFile = Join-Path $ais2apiDir "single-line-auth"
-                if (Test-Path $authFile) {
-                    Invoke-Item $authFile
-                } else {
-                    Write-Warning "凭证文件不存在。"
-                }
-            }
-            if ($next -eq '0') { Set-Location $ScriptBaseDir; return }
-        }
-    }
-}
-
 function Get-GitVersionInfo {
     param([string]$Path)
     if (-not (Test-Path (Join-Path $Path ".git"))) { return "未知" }
@@ -2044,23 +1678,64 @@ function Install-Gcli2Api {
     }
     Write-Success "核心依赖检查通过。"
 
-    Write-Warning "正在部署 gcli2api..."
+    $labConfig = Parse-ConfigFile $LabConfigFile
+    $mirrorPref = if ($labConfig.ContainsKey("GCLI_MIRROR_PREF")) { $labConfig["GCLI_MIRROR_PREF"] } else { "Auto" }
+    
+    $officialGit = "https://github.com/su-kaka/gcli2api.git"
+    $mirrorGit = "https://hub.gitmirror.com/https://github.com/su-kaka/gcli2api.git"
+    
+    $useOfficialGit = $true
+    if ($mirrorPref -eq "Mirror") { $useOfficialGit = $false }
+    
+    Write-Warning "正在部署 gcli2api (模式: $mirrorPref)..."
+    
     if (Test-Path $GcliDir) {
         Write-Warning "检测到旧目录，正在尝试更新..."
         Set-Location $GcliDir
-        git fetch --all
-        if ($LASTEXITCODE -ne 0) {
+        
+        # 尝试更新
+        $updateSuccess = $false
+        if ($useOfficialGit) {
+            Write-Host "尝试从官方源拉取..." -ForegroundColor DarkGray
+            git remote set-url origin $officialGit
+            git fetch --all
+            if ($LASTEXITCODE -eq 0) { $updateSuccess = $true }
+        }
+        
+        if (-not $updateSuccess -and ($mirrorPref -eq "Auto" -or $mirrorPref -eq "Mirror")) {
+            if ($useOfficialGit) { Write-Warning "官方源连接失败，自动切换到国内镜像..." }
+            git remote set-url origin $mirrorGit
+            git fetch --all
+            if ($LASTEXITCODE -eq 0) { $updateSuccess = $true }
+        }
+        
+        if (-not $updateSuccess) {
             Set-Location $ScriptBaseDir
             Write-Error "Git 拉取更新失败！请检查网络连接。"; Press-Any-Key; return
         }
+        
         git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
         if ($LASTEXITCODE -ne 0) {
             Set-Location $ScriptBaseDir
             Write-Error "Git 重置失败！请检查文件占用或手动处理。"; Press-Any-Key; return
         }
     } else {
-        git clone "https://github.com/su-kaka/gcli2api.git" $GcliDir
-        if ($LASTEXITCODE -ne 0) {
+        # 尝试克隆
+        $cloneSuccess = $false
+        if ($useOfficialGit) {
+            Write-Host "尝试从官方源克隆..." -ForegroundColor DarkGray
+            git clone $officialGit $GcliDir
+            if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
+        }
+        
+        if (-not $cloneSuccess -and ($mirrorPref -eq "Auto" -or $mirrorPref -eq "Mirror")) {
+            if ($useOfficialGit) { Write-Warning "官方源连接失败，自动切换到国内镜像..." }
+            if (Test-Path $GcliDir) { Remove-Item $GcliDir -Recurse -Force }
+            git clone $mirrorGit $GcliDir
+            if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
+        }
+        
+        if (-not $cloneSuccess) {
             Write-Error "克隆 gcli2api 仓库失败！请检查网络或代理设置。"; Press-Any-Key; return
         }
     }
@@ -2068,15 +1743,24 @@ function Install-Gcli2Api {
 
     Write-Warning "正在初始化 Python 环境并安装依赖 (uv)..."
     python -m uv venv --clear
-    Write-Warning "正在尝试使用国内镜像源安装依赖..."
-    python -m uv pip install -r requirements.txt --python .venv --index-url https://pypi.tuna.tsinghua.edu.cn/simple
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "镜像源安装失败，正在尝试使用官方源..."
+    
+    $installSuccess = $false
+    # 依赖安装逻辑
+    if ($mirrorPref -eq "Official" -or $mirrorPref -eq "Auto") {
+        Write-Warning "尝试使用官方源安装依赖..."
         python -m uv pip install -r requirements.txt --python .venv
-        if ($LASTEXITCODE -ne 0) {
-            Set-Location $ScriptBaseDir
-            Write-Error "Python 依赖安装失败！"; Press-Any-Key; return
-        }
+        if ($LASTEXITCODE -eq 0) { $installSuccess = $true }
+    }
+    
+    if (-not $installSuccess -and ($mirrorPref -eq "Auto" -or $mirrorPref -eq "Mirror")) {
+        if ($mirrorPref -eq "Auto") { Write-Warning "官方源安装失败，自动切换到国内镜像..." } else { Write-Warning "使用国内镜像安装依赖..." }
+        python -m uv pip install -r requirements.txt --python .venv --index-url https://pypi.tuna.tsinghua.edu.cn/simple
+        if ($LASTEXITCODE -eq 0) { $installSuccess = $true }
+    }
+    
+    if (-not $installSuccess) {
+        Set-Location $ScriptBaseDir
+        Write-Error "Python 依赖安装失败！"; Press-Any-Key; return
     }
     Set-Location $ScriptBaseDir
 
@@ -2109,6 +1793,45 @@ function Toggle-Gcli2ApiAutostart {
         Write-Success "已开启跟随启动。"
     } else {
         Write-Warning "已关闭跟随启动。"
+    }
+    Start-Sleep -Seconds 1
+}
+
+function Set-LabMirrorPreference {
+    param([string]$Key, [string]$Title)
+    Clear-Host
+    Write-Header "设置 $Title 安装线路"
+    $labConfig = Parse-ConfigFile $LabConfigFile
+    $currentPref = if ($labConfig.ContainsKey($Key)) { $labConfig[$Key] } else { "Auto" }
+    
+    $prefText = switch ($currentPref) {
+        "Auto" { "自动 (优先海外，失败则切国内)" }
+        "Official" { "强制海外 (GitHub/官方源)" }
+        "Mirror" { "强制国内 (镜像加速)" }
+        default { "自动" }
+    }
+    
+    Write-Host "当前设置: $prefText" -ForegroundColor Yellow
+    Write-Host "`n[1] 自动 (推荐)" -ForegroundColor Green
+    Write-Host "    优先尝试官方源，如果失败自动切换到国内镜像。"
+    Write-Host "[2] 强制海外" -ForegroundColor Cyan
+    Write-Host "    只使用官方源。适合网络环境极好(有梯子)的用户。"
+    Write-Host "[3] 强制国内" -ForegroundColor Cyan
+    Write-Host "    只使用国内镜像。适合无梯子用户。"
+    
+    $choice = Read-Host "`n请选择 [1-3]"
+    $newPref = switch ($choice) {
+        "1" { "Auto" }
+        "2" { "Official" }
+        "3" { "Mirror" }
+        default { $null }
+    }
+    
+    if ($newPref) {
+        Update-SyncRuleValue $Key $newPref $LabConfigFile
+        Write-Success "设置已保存！"
+    } else {
+        Write-Warning "未修改设置。"
     }
     Start-Sleep -Seconds 1
 }
@@ -2148,7 +1871,8 @@ function Show-Gcli2ApiMenu {
             Write-Host "      [5] " -NoNewline; Write-Host "打开 Web 面板"
         }
         
-        Write-Host "`n      [0] " -NoNewline; Write-Host "返回上一级" -ForegroundColor Cyan
+        Write-Host "`n      [7] " -NoNewline; Write-Host "切换安装线路" -ForegroundColor Yellow
+        Write-Host "      [0] " -NoNewline; Write-Host "返回上一级" -ForegroundColor Cyan
 
         $choice = Read-Host "`n    请输入选项"
         
@@ -2172,6 +1896,7 @@ function Show-Gcli2ApiMenu {
                     Write-Error "无法自动打开浏览器。"
                 }
             }
+            "7" { Set-LabMirrorPreference "GCLI_MIRROR_PREF" "gcli2api" }
             "0" { return }
             default { Write-Warning "无效输入。"; Start-Sleep 1 }
         }
@@ -2290,31 +2015,85 @@ function Install-AntiGravity {
         }
     }
 
-    Write-Warning "正在部署 反重力2api..."
+    $labConfig = Parse-ConfigFile $LabConfigFile
+    $mirrorPref = if ($labConfig.ContainsKey("ANTIGRAVITY_MIRROR_PREF")) { $labConfig["ANTIGRAVITY_MIRROR_PREF"] } else { "Auto" }
+    
+    $officialGit = "https://github.com/zhongruan0522/Antigravity2api-node-js.git"
+    $mirrorGit = "https://hub.gitmirror.com/https://github.com/zhongruan0522/Antigravity2api-node-js.git"
+    
+    $useOfficialGit = $true
+    if ($mirrorPref -eq "Mirror") { $useOfficialGit = $false }
+    
+    Write-Warning "正在部署 反重力2api (模式: $mirrorPref)..."
+    
     if (Test-Path $AntiGravityDir) {
         Write-Warning "检测到旧目录，正在尝试更新..."
         Set-Location $AntiGravityDir
-        git fetch --all
-        if ($LASTEXITCODE -ne 0) {
+        
+        $updateSuccess = $false
+        if ($useOfficialGit) {
+            Write-Host "尝试从官方源拉取..." -ForegroundColor DarkGray
+            git remote set-url origin $officialGit
+            git fetch --all
+            if ($LASTEXITCODE -eq 0) { $updateSuccess = $true }
+        }
+        
+        if (-not $updateSuccess -and ($mirrorPref -eq "Auto" -or $mirrorPref -eq "Mirror")) {
+            if ($useOfficialGit) { Write-Warning "官方源连接失败，自动切换到国内镜像..." }
+            git remote set-url origin $mirrorGit
+            git fetch --all
+            if ($LASTEXITCODE -eq 0) { $updateSuccess = $true }
+        }
+        
+        if (-not $updateSuccess) {
             Set-Location $ScriptBaseDir
             Write-Error "Git 拉取更新失败！请检查网络连接。"; Press-Any-Key; return
         }
+        
         git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
         if ($LASTEXITCODE -ne 0) {
             Set-Location $ScriptBaseDir
             Write-Error "Git 重置失败！请检查文件占用或手动处理。"; Press-Any-Key; return
         }
     } else {
-        git clone "https://github.com/zhongruan0522/Antigravity2api-node-js.git" $AntiGravityDir
-        if ($LASTEXITCODE -ne 0) {
+        $cloneSuccess = $false
+        if ($useOfficialGit) {
+            Write-Host "尝试从官方源克隆..." -ForegroundColor DarkGray
+            git clone $officialGit $AntiGravityDir
+            if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
+        }
+        
+        if (-not $cloneSuccess -and ($mirrorPref -eq "Auto" -or $mirrorPref -eq "Mirror")) {
+            if ($useOfficialGit) { Write-Warning "官方源连接失败，自动切换到国内镜像..." }
+            if (Test-Path $AntiGravityDir) { Remove-Item $AntiGravityDir -Recurse -Force }
+            git clone $mirrorGit $AntiGravityDir
+            if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
+        }
+        
+        if (-not $cloneSuccess) {
             Write-Error "克隆仓库失败！请检查网络或代理设置。"; Press-Any-Key; return
         }
     }
     Set-Location $AntiGravityDir
 
     Write-Warning "正在安装依赖 (npm install)..."
-    npm install
-    if ($LASTEXITCODE -ne 0) {
+    
+    $installSuccess = $false
+    if ($mirrorPref -eq "Official" -or $mirrorPref -eq "Auto") {
+        Write-Warning "尝试使用官方源安装依赖..."
+        npm config delete registry
+        npm install
+        if ($LASTEXITCODE -eq 0) { $installSuccess = $true }
+    }
+    
+    if (-not $installSuccess -and ($mirrorPref -eq "Auto" -or $mirrorPref -eq "Mirror")) {
+        if ($mirrorPref -eq "Auto") { Write-Warning "官方源安装失败，自动切换到国内镜像..." } else { Write-Warning "使用国内镜像安装依赖..." }
+        npm config set registry https://registry.npmmirror.com
+        npm install
+        if ($LASTEXITCODE -eq 0) { $installSuccess = $true }
+    }
+    
+    if (-not $installSuccess) {
         Set-Location $ScriptBaseDir
         Write-Error "依赖安装失败！"; Press-Any-Key; return
     }
@@ -2414,7 +2193,8 @@ function Show-AntiGravityMenu {
             Write-Host "      [5] " -NoNewline; Write-Host "打开 Web 面板"
         }
         
-        Write-Host "`n      [0] " -NoNewline; Write-Host "返回上一级" -ForegroundColor Cyan
+        Write-Host "`n      [7] " -NoNewline; Write-Host "切换安装线路" -ForegroundColor Yellow
+        Write-Host "      [0] " -NoNewline; Write-Host "返回上一级" -ForegroundColor Cyan
 
         $choice = Read-Host "`n    请输入选项"
         
@@ -2438,6 +2218,7 @@ function Show-AntiGravityMenu {
                     Write-Error "无法自动打开浏览器。"
                 }
             }
+            "7" { Set-LabMirrorPreference "ANTIGRAVITY_MIRROR_PREF" "反重力2api" }
             "0" { return }
             default { Write-Warning "无效输入。"; Start-Sleep 1 }
         }
@@ -2631,14 +2412,12 @@ function Show-ExtraFeaturesMenu {
         Clear-Host
         Write-Header "额外功能 (实验室)"
         Write-Host "      [1] " -NoNewline; Write-Host "gcli2api 管理" -ForegroundColor Cyan
-        Write-Host "      [2] " -NoNewline; Write-Host "反重力2api 管理" -ForegroundColor Cyan
         Write-Host "      [3] " -NoNewline; Write-Host "酒馆配置管理" -ForegroundColor Cyan
         Write-Host "      [9] " -NoNewline; Write-Host "获取 AI Studio 凭证" -ForegroundColor Cyan
         Write-Host "`n      [0] " -NoNewline; Write-Host "返回主菜单" -ForegroundColor Cyan
         $choice = Read-Host "`n    请输入选项"
         switch ($choice) {
             "1" { Show-Gcli2ApiMenu }
-            "2" { Show-AntiGravityMenu }
             "3" { Show-STConfigMenu }
             "9" { Get-AiStudioToken }
             "0" { return }

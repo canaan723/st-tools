@@ -55,7 +55,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v5.0test${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v5.1test${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
     echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
 }
@@ -1103,6 +1103,18 @@ fn_start_st() {
         fi
     fi
 
+    if [ -f "$LAB_CONFIG_FILE" ] && grep -q "AUTO_START_ANTIGRAVITY=\"true\"" "$LAB_CONFIG_FILE"; then
+        if [ -d "$ANTIGRAVITY_DIR" ]; then
+            if ! pm2 list 2>/dev/null | grep -q "antigravity.*online"; then
+                if fn_antigravity_start_service >/dev/null 2>&1; then
+                    echo -e "[反重力2api] 服务已在后台启动..."
+                else
+                    echo -e "${YELLOW}[警告] 反重力2api 启动失败，跳过...${NC}"
+                fi
+            fi
+        fi
+    fi
+
     cd "$ST_DIR" || fn_print_error_exit "无法进入酒馆目录。"
     echo -e "正在配置NPM镜像并准备启动环境..."
     npm config set registry https://registry.npmmirror.com
@@ -1844,24 +1856,68 @@ if not hasattr(BaseModel, 'model_dump'):
 " &>/dev/null
 }
 
+fn_set_lab_mirror_preference() {
+    local key="$1"
+    local title="$2"
+    clear
+    fn_print_header "设置 $title 安装线路"
+    
+    local current_pref="Auto"
+    if [ -f "$LAB_CONFIG_FILE" ]; then
+        local val
+        val=$(grep "^${key}=" "$LAB_CONFIG_FILE" | cut -d'=' -f2 | tr -d '"')
+        if [ -n "$val" ]; then current_pref="$val"; fi
+    fi
+    
+    local pref_text="自动"
+    case "$current_pref" in
+        "Auto") pref_text="自动 (优先海外，失败则切国内)" ;;
+        "Official") pref_text="强制海外 (GitHub/官方源)" ;;
+        "Mirror") pref_text="强制国内 (镜像加速)" ;;
+    esac
+    
+    echo -e "当前设置: ${YELLOW}${pref_text}${NC}"
+    echo -e "\n${GREEN}[1] 自动 (推荐)${NC}"
+    echo -e "    优先尝试官方源，如果失败自动切换到国内镜像。"
+    echo -e "${CYAN}[2] 强制海外${NC}"
+    echo -e "    只使用官方源。适合网络环境极好(有梯子)的用户。"
+    echo -e "${CYAN}[3] 强制国内${NC}"
+    echo -e "    只使用国内镜像。适合无梯子用户。"
+    
+    read -p $'\n请选择 [1-3]: ' choice
+    local new_pref=""
+    case "$choice" in
+        1) new_pref="Auto" ;;
+        2) new_pref="Official" ;;
+        3) new_pref="Mirror" ;;
+        *) fn_print_warning "无效输入。"; sleep 1; return ;;
+    esac
+    
+    mkdir -p "$CONFIG_DIR"
+    touch "$LAB_CONFIG_FILE"
+    sed -i "/^${key}=/d" "$LAB_CONFIG_FILE"
+    echo "${key}=\"${new_pref}\"" >> "$LAB_CONFIG_FILE"
+    fn_print_success "设置已保存！"
+    sleep 1
+}
+
 fn_get_git_version() {
     local target_dir="$1"
     if [ ! -d "$target_dir/.git" ]; then
         echo "未知"
         return
     fi
-    (
-        cd "$target_dir" || return
-        local date
-        date=$(git log -1 --format=%cd --date=format:'%Y-%m-%d' 2>/dev/null)
-        local hash
-        hash=$(git rev-parse --short HEAD 2>/dev/null)
-        if [[ -n "$date" && -n "$hash" ]]; then
-            echo "$date ($hash)"
-        else
-            echo "未知"
-        fi
-    )
+    
+    local date
+    date=$(git -C "$target_dir" log -1 --format=%cd --date=format:'%Y-%m-%d' 2>/dev/null)
+    local hash
+    hash=$(git -C "$target_dir" rev-parse --short HEAD 2>/dev/null)
+    
+    if [[ -n "$date" && -n "$hash" ]]; then
+        echo "$date ($hash)"
+    else
+        echo "未知"
+    fi
 }
 
 fn_menu_version_management() {
@@ -1923,26 +1979,85 @@ fn_install_gcli() {
         npm install pm2 -g || { fn_print_error "pm2 安装失败！"; fn_press_any_key; return; }
     fi
 
-    fn_print_warning "正在部署 gcli2api..."
+    local mirror_pref="Auto"
+    if [ -f "$LAB_CONFIG_FILE" ]; then
+        local val
+        val=$(grep "^GCLI_MIRROR_PREF=" "$LAB_CONFIG_FILE" | cut -d'=' -f2 | tr -d '"')
+        if [ -n "$val" ]; then mirror_pref="$val"; fi
+    fi
+    
+    local official_git="https://github.com/su-kaka/gcli2api.git"
+    local mirror_git="https://hub.gitmirror.com/https://github.com/su-kaka/gcli2api.git"
+    
+    local use_official_git=true
+    if [[ "$mirror_pref" == "Mirror" ]]; then use_official_git=false; fi
+    
+    fn_print_warning "正在部署 gcli2api (模式: $mirror_pref)..."
     cd "$HOME" || return
+    
     if [ -d "$GCLI_DIR" ]; then
         fn_print_warning "检测到旧目录，正在更新..."
         cd "$GCLI_DIR" || return
-        if ! git fetch --all; then
+        
+        local update_success=false
+        if $use_official_git; then
+            echo -e "${BOLD}尝试从官方源拉取...${NC}"
+            git remote set-url origin "$official_git"
+            if git fetch --all; then update_success=true; fi
+        fi
+        
+        if ! $update_success && [[ "$mirror_pref" == "Auto" || "$mirror_pref" == "Mirror" ]]; then
+            if $use_official_git; then fn_print_warning "官方源连接失败，自动切换到国内镜像..."; fi
+            git remote set-url origin "$mirror_git"
+            if git fetch --all; then update_success=true; fi
+        fi
+        
+        if ! $update_success; then
             fn_print_error "Git 拉取更新失败！请检查网络连接。"
             fn_press_any_key
             return
         fi
         git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
     else
-        git clone https://github.com/su-kaka/gcli2api.git "$GCLI_DIR" || { fn_print_error "克隆仓库失败！"; fn_press_any_key; return; }
+        local clone_success=false
+        if $use_official_git; then
+            echo -e "${BOLD}尝试从官方源克隆...${NC}"
+            if git clone "$official_git" "$GCLI_DIR"; then clone_success=true; fi
+        fi
+        
+        if ! $clone_success && [[ "$mirror_pref" == "Auto" || "$mirror_pref" == "Mirror" ]]; then
+            if $use_official_git; then fn_print_warning "官方源连接失败，自动切换到国内镜像..."; fi
+            rm -rf "$GCLI_DIR"
+            if git clone "$mirror_git" "$GCLI_DIR"; then clone_success=true; fi
+        fi
+        
+        if ! $clone_success; then
+            fn_print_error "克隆仓库失败！请检查网络或代理设置。"
+            fn_press_any_key
+            return
+        fi
         cd "$GCLI_DIR" || return
     fi
 
     fn_print_warning "正在初始化 Python 环境 (uv)..."
     uv venv --clear
-    fn_print_warning "正在安装 Python 依赖..."
-    uv pip install -r requirements-termux.txt --link-mode copy || { fn_print_error "Python 依赖安装失败！"; fn_press_any_key; return; }
+    
+    local install_success=false
+    if [[ "$mirror_pref" == "Official" || "$mirror_pref" == "Auto" ]]; then
+        fn_print_warning "尝试使用官方源安装依赖..."
+        if uv pip install -r requirements-termux.txt --link-mode copy; then install_success=true; fi
+    fi
+    
+    if ! $install_success && [[ "$mirror_pref" == "Auto" || "$mirror_pref" == "Mirror" ]]; then
+        if [[ "$mirror_pref" == "Auto" ]]; then fn_print_warning "官方源安装失败，自动切换到国内镜像..."; else fn_print_warning "使用国内镜像安装依赖..."; fi
+        if uv pip install -r requirements-termux.txt --link-mode copy --index-url https://pypi.tuna.tsinghua.edu.cn/simple; then install_success=true; fi
+    fi
+    
+    if ! $install_success; then
+        fn_print_error "Python 依赖安装失败！"
+        fn_press_any_key
+        return
+    fi
 
     fn_gcli_patch_pydantic
 
@@ -2063,6 +2178,7 @@ fn_menu_gcli_manage() {
         echo -e "      [4] ${RED}卸载 gcli2api${NC}"
         echo -e "      [5] 查看运行日志"
         echo -e "      [6] 打开 Web 面板"
+        echo -e "\n      [7] ${YELLOW}切换安装线路${NC}"
         echo -e "      [0] ${CYAN}返回上一级${NC}\n"
         
         read -p "    请输入选项: " choice
@@ -2101,6 +2217,295 @@ fn_menu_gcli_manage() {
                 fi
                 sleep 1
                 ;;
+            7) fn_set_lab_mirror_preference "GCLI_MIRROR_PREF" "gcli2api" ;;
+            0) break ;;
+            *) fn_print_error "无效输入。"; sleep 1 ;;
+        esac
+    done
+}
+
+fn_install_antigravity() {
+    clear
+    fn_print_header "安装/更新 反重力2api"
+    
+    echo -e "${RED}${BOLD}【重要提示】${NC}"
+    echo -e "此组件 (Antigravity2api) 由 ${CYAN}zhongruan0522${NC} 开发。"
+    echo -e "项目地址: https://github.com/zhongruan0522/Antigravity2api-node-js"
+    echo -e "本脚本仅作为聚合工具提供安装引导，不修改其原始代码。"
+    echo -e "该组件遵循 ${YELLOW}CC BY-NC-SA 4.0${NC} 协议，${RED}${BOLD}严禁商业用途${NC}。"
+    echo -e "继续安装即代表您知晓并同意遵守该协议。"
+    echo -e "────────────────────────────────────────"
+    read -p "请输入 'yes' 确认并继续安装: " confirm
+    if [[ "$confirm" != "yes" ]]; then
+        fn_print_warning "用户取消安装。"
+        fn_press_any_key
+        return
+    fi
+
+    fn_print_warning "正在检查环境依赖..."
+    local packages_to_install=""
+    if ! command -v node &> /dev/null; then packages_to_install+=" nodejs"; fi
+    if ! command -v git &> /dev/null; then packages_to_install+=" git"; fi
+
+    if [ -n "$packages_to_install" ]; then
+        fn_print_warning "正在安装缺失的系统依赖: $packages_to_install"
+        pkg install $packages_to_install -y || { fn_print_error "依赖安装失败！"; fn_press_any_key; return; }
+    fi
+
+    if ! command -v pm2 &> /dev/null; then
+        fn_print_warning "正在安装 pm2..."
+        npm install pm2 -g || { fn_print_error "pm2 安装失败！"; fn_press_any_key; return; }
+    fi
+
+    local mirror_pref="Auto"
+    if [ -f "$LAB_CONFIG_FILE" ]; then
+        local val
+        val=$(grep "^ANTIGRAVITY_MIRROR_PREF=" "$LAB_CONFIG_FILE" | cut -d'=' -f2 | tr -d '"')
+        if [ -n "$val" ]; then mirror_pref="$val"; fi
+    fi
+    
+    local official_git="https://github.com/zhongruan0522/Antigravity2api-node-js.git"
+    local mirror_git="https://hub.gitmirror.com/https://github.com/zhongruan0522/Antigravity2api-node-js.git"
+    
+    local use_official_git=true
+    if [[ "$mirror_pref" == "Mirror" ]]; then use_official_git=false; fi
+    
+    fn_print_warning "正在部署 反重力2api (模式: $mirror_pref)..."
+    cd "$HOME" || return
+    
+    if [ -d "$ANTIGRAVITY_DIR" ]; then
+        fn_print_warning "检测到旧目录，正在更新..."
+        cd "$ANTIGRAVITY_DIR" || return
+        
+        local update_success=false
+        if $use_official_git; then
+            echo -e "${BOLD}尝试从官方源拉取...${NC}"
+            git remote set-url origin "$official_git"
+            if git fetch --all; then update_success=true; fi
+        fi
+        
+        if ! $update_success && [[ "$mirror_pref" == "Auto" || "$mirror_pref" == "Mirror" ]]; then
+            if $use_official_git; then fn_print_warning "官方源连接失败，自动切换到国内镜像..."; fi
+            git remote set-url origin "$mirror_git"
+            if git fetch --all; then update_success=true; fi
+        fi
+        
+        if ! $update_success; then
+            fn_print_error "Git 拉取更新失败！请检查网络连接。"
+            fn_press_any_key
+            return
+        fi
+        git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
+    else
+        local clone_success=false
+        if $use_official_git; then
+            echo -e "${BOLD}尝试从官方源克隆...${NC}"
+            if git clone "$official_git" "$ANTIGRAVITY_DIR"; then clone_success=true; fi
+        fi
+        
+        if ! $clone_success && [[ "$mirror_pref" == "Auto" || "$mirror_pref" == "Mirror" ]]; then
+            if $use_official_git; then fn_print_warning "官方源连接失败，自动切换到国内镜像..."; fi
+            rm -rf "$ANTIGRAVITY_DIR"
+            if git clone "$mirror_git" "$ANTIGRAVITY_DIR"; then clone_success=true; fi
+        fi
+        
+        if ! $clone_success; then
+            fn_print_error "克隆仓库失败！请检查网络或代理设置。"
+            fn_press_any_key
+            return
+        fi
+        cd "$ANTIGRAVITY_DIR" || return
+    fi
+
+    fn_print_warning "正在安装依赖 (npm install)..."
+    local install_success=false
+    
+    if [[ "$mirror_pref" == "Official" || "$mirror_pref" == "Auto" ]]; then
+        fn_print_warning "尝试使用官方源安装依赖..."
+        npm config delete registry
+        if npm install; then install_success=true; fi
+    fi
+    
+    if ! $install_success && [[ "$mirror_pref" == "Auto" || "$mirror_pref" == "Mirror" ]]; then
+        if [[ "$mirror_pref" == "Auto" ]]; then fn_print_warning "官方源安装失败，自动切换到国内镜像..."; else fn_print_warning "使用国内镜像安装依赖..."; fi
+        npm config set registry https://registry.npmmirror.com
+        if npm install; then install_success=true; fi
+    fi
+    
+    if ! $install_success; then
+        fn_print_error "依赖安装失败！"
+        fn_press_any_key
+        return
+    fi
+
+    if [ ! -f ".env" ]; then
+        if [ -f ".env.example" ]; then
+            cp ".env.example" ".env"
+            fn_print_success "已创建默认配置文件 (.env)。"
+            echo -e "${YELLOW}默认账号: admin${NC}"
+            echo -e "${YELLOW}默认密码: your-strong-password${NC}"
+            echo -e "${YELLOW}默认Key: sk-text${NC}"
+        else
+            fn_print_warning "未找到 .env.example 模板文件，请手动配置 .env。"
+        fi
+    fi
+
+    mkdir -p "$CONFIG_DIR"
+    if ! grep -q "AUTO_START_ANTIGRAVITY" "$LAB_CONFIG_FILE" 2>/dev/null; then
+        echo "AUTO_START_ANTIGRAVITY=\"true\"" >> "$LAB_CONFIG_FILE"
+    fi
+
+    fn_print_success "反重力2api 安装/更新完成！"
+
+    if fn_antigravity_start_service; then
+        if fn_check_command "termux-open-url"; then
+            fn_print_warning "正在尝试打开 Web 面板 (http://127.0.0.1:8045)..."
+            termux-open-url "http://127.0.0.1:8045"
+        fi
+    else
+        fn_print_error "服务启动失败，未能自动打开面板。"
+    fi
+    
+    fn_press_any_key
+}
+
+fn_antigravity_start_service() {
+    if [ ! -d "$ANTIGRAVITY_DIR" ]; then
+        fn_print_error "反重力2api 尚未安装。"
+        return 1
+    fi
+    
+    if pm2 list 2>/dev/null | grep -q "antigravity"; then
+        fn_print_warning "服务已经在运行中。"
+        return 0
+    fi
+
+    fn_print_warning "正在启动 反重力2api 服务..."
+    # 使用 pm2 启动 npm start
+    if pm2 start npm --name "antigravity" --cwd "$ANTIGRAVITY_DIR" -- start; then
+        fn_print_success "服务启动成功！"
+        return 0
+    else
+        fn_print_error "服务启动失败。"
+        return 1
+    fi
+}
+
+fn_antigravity_stop_service() {
+    fn_print_warning "正在停止 反重力2api 服务..."
+    pm2 stop antigravity >/dev/null 2>&1
+    pm2 delete antigravity >/dev/null 2>&1
+    fn_print_success "服务已停止。"
+}
+
+fn_antigravity_uninstall() {
+    clear
+    fn_print_header "卸载 反重力2api"
+    read -p "确认要卸载 反重力2api 吗？(这将删除程序目录和配置文件) [y/N]: " confirm
+    if [[ "$confirm" =~ ^[yY]$ ]]; then
+        fn_antigravity_stop_service
+        rm -rf "$ANTIGRAVITY_DIR"
+        cd "$HOME" || return
+        if [ -f "$LAB_CONFIG_FILE" ]; then
+             sed -i "/^AUTO_START_ANTIGRAVITY=/d" "$LAB_CONFIG_FILE"
+        fi
+        fn_print_success "反重力2api 已卸载。"
+    else
+        fn_print_warning "操作已取消。"
+    fi
+    fn_press_any_key
+}
+
+fn_antigravity_show_logs() {
+    clear
+    fn_print_header "查看运行日志 (最后 50 行)"
+    echo -e "────────────────────────────────────────"
+    pm2 logs antigravity --lines 50 --nostream
+    echo -e "────────────────────────────────────────"
+    fn_press_any_key
+}
+
+fn_get_antigravity_status() {
+    if pm2 list 2>/dev/null | grep -q "antigravity.*online"; then
+        echo -e "${GREEN}运行中${NC}"
+    else
+        echo -e "${RED}未运行${NC}"
+    fi
+}
+
+fn_menu_antigravity_manage() {
+    while true; do
+        clear
+        fn_print_header "反重力2api 管理"
+        local status_text=$(fn_get_antigravity_status)
+        echo -e "      当前状态: ${status_text}"
+        
+        if [ -d "$ANTIGRAVITY_DIR" ]; then
+            local version=$(fn_get_git_version "$ANTIGRAVITY_DIR")
+            echo -e "      当前版本: ${YELLOW}${version}${NC}"
+        fi
+        echo ""
+
+        local auto_start_status="${RED}关闭${NC}"
+        if [ -f "$LAB_CONFIG_FILE" ] && grep -q "AUTO_START_ANTIGRAVITY=\"true\"" "$LAB_CONFIG_FILE"; then
+            auto_start_status="${GREEN}开启${NC}"
+        fi
+
+        local is_running=false
+        if echo "$status_text" | grep -q "运行中"; then
+            is_running=true
+        fi
+
+        echo -e "      [1] ${CYAN}安装/更新${NC}"
+        if $is_running; then
+            echo -e "      [2] ${YELLOW}停止服务${NC}"
+        else
+            echo -e "      [2] ${GREEN}启动服务${NC}"
+        fi
+        echo -e "      [3] 跟随酒馆启动: [${auto_start_status}]"
+        echo -e "      [4] ${RED}卸载 反重力2api${NC}"
+        echo -e "      [5] 查看运行日志"
+        echo -e "      [6] 打开 Web 面板"
+        echo -e "\n      [7] ${YELLOW}切换安装线路${NC}"
+        echo -e "      [0] ${CYAN}返回上一级${NC}\n"
+        
+        read -p "    请输入选项: " choice
+        case $choice in
+            1) fn_install_antigravity ;;
+            2)
+                if $is_running; then
+                    fn_antigravity_stop_service
+                else
+                    fn_antigravity_start_service
+                fi
+                fn_press_any_key
+                ;;
+            3)
+                mkdir -p "$CONFIG_DIR"
+                touch "$LAB_CONFIG_FILE"
+                if grep -q "AUTO_START_ANTIGRAVITY=\"true\"" "$LAB_CONFIG_FILE"; then
+                    sed -i "/^AUTO_START_ANTIGRAVITY=/d" "$LAB_CONFIG_FILE"
+                    echo "AUTO_START_ANTIGRAVITY=\"false\"" >> "$LAB_CONFIG_FILE"
+                    fn_print_warning "已关闭跟随启动。"
+                else
+                    sed -i "/^AUTO_START_ANTIGRAVITY=/d" "$LAB_CONFIG_FILE"
+                    echo "AUTO_START_ANTIGRAVITY=\"true\"" >> "$LAB_CONFIG_FILE"
+                    fn_print_success "已开启跟随启动。"
+                fi
+                sleep 1
+                ;;
+            4) fn_antigravity_uninstall ;;
+            5) fn_antigravity_show_logs ;;
+            6)
+                if fn_check_command "termux-open-url"; then
+                    termux-open-url "http://127.0.0.1:8045"
+                    fn_print_success "已尝试打开浏览器。"
+                else
+                    fn_print_error "未找到 termux-open-url 命令。"
+                fi
+                sleep 1
+                ;;
+            7) fn_set_lab_mirror_preference "ANTIGRAVITY_MIRROR_PREF" "反重力2api" ;;
             0) break ;;
             *) fn_print_error "无效输入。"; sleep 1 ;;
         esac
@@ -2288,12 +2693,14 @@ fn_menu_lab() {
         clear
         fn_print_header "额外功能 (实验室)"
         echo -e "      [1] ${CYAN}gcli2api${NC}"
-        echo -e "      [2] ${CYAN}酒馆配置管理${NC}"
+        echo -e "      [2] ${CYAN}反重力2api${NC}"
+        echo -e "      [3] ${CYAN}酒馆配置管理${NC}"
         echo -e "      [0] ${CYAN}返回主菜单${NC}\n"
         read -p "    请输入选项: " choice
         case $choice in
             1) fn_menu_gcli_manage ;;
-            2) fn_menu_st_config ;;
+            2) fn_menu_antigravity_manage ;;
+            3) fn_menu_st_config ;;
             0) break ;;
             *) fn_print_error "无效输入。"; sleep 1 ;;
         esac
