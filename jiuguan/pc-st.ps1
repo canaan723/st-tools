@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v4.9"
+$ScriptVersion = "v5.0"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1906,6 +1906,22 @@ function Get-AiStudioToken {
     }
 }
 
+function Get-GitVersionInfo {
+    param([string]$Path)
+    if (-not (Test-Path (Join-Path $Path ".git"))) { return "未知" }
+    try {
+        $currentLocation = Get-Location
+        Set-Location $Path
+        $date = git log -1 --format=%cd --date=format:'%Y-%m-%d' 2>$null
+        $hash = git rev-parse --short HEAD 2>$null
+        Set-Location $currentLocation
+        if ($date -and $hash) {
+            return "$date ($hash)"
+        }
+    } catch {}
+    return "未知"
+}
+
 function Get-Gcli2ApiStatus {
     $connection = Get-NetTCPConnection -LocalPort 7861 -State Listen -ErrorAction SilentlyContinue
     if ($null -ne $connection) {
@@ -2033,10 +2049,14 @@ function Install-Gcli2Api {
         Write-Warning "检测到旧目录，正在尝试更新..."
         Set-Location $GcliDir
         git fetch --all
+        if ($LASTEXITCODE -ne 0) {
+            Set-Location $ScriptBaseDir
+            Write-Error "Git 拉取更新失败！请检查网络连接。"; Press-Any-Key; return
+        }
         git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
         if ($LASTEXITCODE -ne 0) {
             Set-Location $ScriptBaseDir
-            Write-Error "Git 更新失败！请检查网络或手动处理。"; Press-Any-Key; return
+            Write-Error "Git 重置失败！请检查文件占用或手动处理。"; Press-Any-Key; return
         }
     } else {
         git clone "https://github.com/su-kaka/gcli2api.git" $GcliDir
@@ -2103,6 +2123,11 @@ function Show-Gcli2ApiMenu {
         
         Write-Host "      当前状态: " -NoNewline
         if ($isRunning) { Write-Host $statusText -ForegroundColor Green } else { Write-Host $statusText -ForegroundColor Red }
+
+        if (Test-Path $GcliDir) {
+            $version = Get-GitVersionInfo -Path $GcliDir
+            Write-Host "      当前版本: " -NoNewline; Write-Host $version -ForegroundColor Yellow
+        }
 
         $labConfig = Parse-ConfigFile $LabConfigFile
         $autoStartEnabled = $labConfig.ContainsKey("AUTO_START_GCLI") -and $labConfig["AUTO_START_GCLI"] -eq "true"
@@ -2270,10 +2295,14 @@ function Install-AntiGravity {
         Write-Warning "检测到旧目录，正在尝试更新..."
         Set-Location $AntiGravityDir
         git fetch --all
+        if ($LASTEXITCODE -ne 0) {
+            Set-Location $ScriptBaseDir
+            Write-Error "Git 拉取更新失败！请检查网络连接。"; Press-Any-Key; return
+        }
         git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
         if ($LASTEXITCODE -ne 0) {
             Set-Location $ScriptBaseDir
-            Write-Error "Git 更新失败！请检查网络或手动处理。"; Press-Any-Key; return
+            Write-Error "Git 重置失败！请检查文件占用或手动处理。"; Press-Any-Key; return
         }
     } else {
         git clone "https://github.com/zhongruan0522/Antigravity2api-node-js.git" $AntiGravityDir
@@ -2360,6 +2389,11 @@ function Show-AntiGravityMenu {
         
         Write-Host "      当前状态: " -NoNewline
         if ($isRunning) { Write-Host $statusText -ForegroundColor Green } else { Write-Host $statusText -ForegroundColor Red }
+
+        if (Test-Path $AntiGravityDir) {
+            $version = Get-GitVersionInfo -Path $AntiGravityDir
+            Write-Host "      当前版本: " -NoNewline; Write-Host $version -ForegroundColor Yellow
+        }
 
         $labConfig = Parse-ConfigFile $LabConfigFile
         $autoStartEnabled = $labConfig.ContainsKey("AUTO_START_ANTIGRAVITY") -and $labConfig["AUTO_START_ANTIGRAVITY"] -eq "true"

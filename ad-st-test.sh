@@ -55,7 +55,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v3.5test3${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v5.0test${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
     echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
 }
@@ -1844,6 +1844,26 @@ if not hasattr(BaseModel, 'model_dump'):
 " &>/dev/null
 }
 
+fn_get_git_version() {
+    local target_dir="$1"
+    if [ ! -d "$target_dir/.git" ]; then
+        echo "未知"
+        return
+    fi
+    (
+        cd "$target_dir" || return
+        local date
+        date=$(git log -1 --format=%cd --date=format:'%Y-%m-%d' 2>/dev/null)
+        local hash
+        hash=$(git rev-parse --short HEAD 2>/dev/null)
+        if [[ -n "$date" && -n "$hash" ]]; then
+            echo "$date ($hash)"
+        else
+            echo "未知"
+        fi
+    )
+}
+
 fn_menu_version_management() {
     while true; do
         clear
@@ -1908,7 +1928,11 @@ fn_install_gcli() {
     if [ -d "$GCLI_DIR" ]; then
         fn_print_warning "检测到旧目录，正在更新..."
         cd "$GCLI_DIR" || return
-        git fetch --all
+        if ! git fetch --all; then
+            fn_print_error "Git 拉取更新失败！请检查网络连接。"
+            fn_press_any_key
+            return
+        fi
         git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
     else
         git clone https://github.com/su-kaka/gcli2api.git "$GCLI_DIR" || { fn_print_error "克隆仓库失败！"; fn_press_any_key; return; }
@@ -2011,8 +2035,14 @@ fn_menu_gcli_manage() {
         clear
         fn_print_header "gcli2api 管理"
         local status_text=$(fn_get_gcli_status)
-        echo -e "      当前状态: ${status_text}\n"
+        echo -e "      当前状态: ${status_text}"
         
+        if [ -d "$GCLI_DIR" ]; then
+            local version=$(fn_get_git_version "$GCLI_DIR")
+            echo -e "      当前版本: ${YELLOW}${version}${NC}"
+        fi
+        echo ""
+
         local auto_start_status="${RED}关闭${NC}"
         if [ -f "$LAB_CONFIG_FILE" ] && grep -q "AUTO_START_GCLI=\"true\"" "$LAB_CONFIG_FILE"; then
             auto_start_status="${GREEN}开启${NC}"
