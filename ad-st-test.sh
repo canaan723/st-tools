@@ -1103,18 +1103,6 @@ fn_start_st() {
         fi
     fi
 
-    if [ -f "$LAB_CONFIG_FILE" ] && grep -q "AUTO_START_ANTIGRAVITY=\"true\"" "$LAB_CONFIG_FILE"; then
-        if [ -d "$ANTIGRAVITY_DIR" ]; then
-            if ! pm2 list 2>/dev/null | grep -q "antigravity.*online"; then
-                if fn_antigravity_start_service >/dev/null 2>&1; then
-                    echo -e "[反重力2api] 服务已在后台启动..."
-                else
-                    echo -e "${YELLOW}[警告] 反重力2api 启动失败，跳过...${NC}"
-                fi
-            fi
-        fi
-    fi
-
     cd "$ST_DIR" || fn_print_error_exit "无法进入酒馆目录。"
     echo -e "正在配置NPM镜像并准备启动环境..."
     npm config set registry https://registry.npmmirror.com
