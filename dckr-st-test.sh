@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v5.121test"
+readonly SCRIPT_VERSION="v5.122test"
 GUGU_MODE="test"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -2531,16 +2531,23 @@ fn_st_proxy_manager() {
                 sed -i -E "/requestProxy:/,/url:/{s/enabled: .*/enabled: true/}" "$config_file"
                 sed -i -E "/requestProxy:/,/url:/{s|url: .*|url: \"socks5://warp:1080\"|}" "$config_file"
                 
+                # 1. 确保全局 networks 块存在
                 if ! grep -q "^networks:" "$compose_file"; then
                     echo -e "\nnetworks:\n  warp:\n    external: true" >> "$compose_file"
                 elif ! sed -n '/^networks:/,$p' "$compose_file" | grep -q "^  warp:"; then
                     sed -i '/^networks:/a \  warp:\n    external: true' "$compose_file"
                 fi
                 
-                if ! sed -n '/sillytavern:/,/^[a-z]/p' "$compose_file" | grep -q "networks:"; then
-                    sed -i '/sillytavern:/,/^[a-z]/ { /restart:/i \    networks:\n      - warp' -e '}' "$compose_file"
-                elif ! sed -n '/sillytavern:/,/^[a-z]/p' "$compose_file" | grep -q "\- warp"; then
-                    sed -i '/sillytavern:/,/^[a-z]/ { /networks:/a \      - warp' -e '}' "$compose_file"
+                # 2. 为 sillytavern 服务添加网络连接 (使用更稳健的范围匹配)
+                # 检查 sillytavern 服务块中是否已存在 - warp
+                if ! sed -n "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/p" "$compose_file" | grep -q "\- warp"; then
+                    if sed -n "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/p" "$compose_file" | grep -q "networks:"; then
+                        # 如果已有 networks 块但没 warp，在 networks: 之后追加
+                        sed -i "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/ { /networks:/a \      - warp" -e "}" "$compose_file"
+                    else
+                        # 如果完全没有 networks 块，直接在 sillytavern: 之后插入
+                        sed -i "/^[[:space:]]*sillytavern:/a \    networks:\n      - warp" "$compose_file"
+                    fi
                 fi
                 
                 log_info "正在重启酒馆以应用更改..."
@@ -2566,9 +2573,23 @@ fn_st_proxy_manager() {
             3)
                 log_action "正在禁用并清理代理配置..."
                 sed -i -E "/requestProxy:/,/enabled:/{s/enabled: .*/enabled: false/}" "$config_file"
-                sed -i '/sillytavern:/,/^[a-z]/ { /^[[:space:]]*- warp/d }' "$compose_file"
+                
+                # 1. 尝试删除带 networks: 的整块配置（针对脚本自动添加的情况）
+                if sed -n "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/p" "$compose_file" | grep -q "networks:" && \
+                   sed -n "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/p" "$compose_file" | grep -A 1 "networks:" | grep -q "\- warp"; then
+                    # 如果 networks: 下一行就是 - warp，且没有其他网络，则一起删除
+                    sed -i "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/ { /networks:/ { N; /\n[[:space:]]*- warp$/ d } }" "$compose_file"
+                fi
+                
+                # 2. 再次兜底删除残留的 - warp 行（针对用户手动修改过的情况）
+                sed -i "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/ { /^[[:space:]]*- warp$/d }" "$compose_file"
+                
+                # 3. 如果 networks: 变成空的了（后面没内容），则删除 networks: 行
+                # 这里使用一个简单的逻辑：如果某一行的 networks: 是该服务块的最后一行或下一行是其他属性
+                sed -i "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/ { /^[[:space:]]*networks:[[:space:]]*$/ { N; /^[[:space:]]*networks:[[:space:]]*\n[[:space:]]*[a-z]/ { s/\n/ /; s/networks:.*//; /^$/d } } }" "$compose_file"
+
                 cd "$project_dir" && $compose_cmd up -d --force-recreate
-                log_success "代理配置已禁用并清理。"
+                log_success "代理配置及网络连接已禁用并清理。"
                 sleep 2
                 ;;
             0) break ;;
@@ -2971,11 +2992,16 @@ fn_warp_docker_manager() {
         case "$warp_choice" in
             1)
                 local warp_port=$(grep "127.0.0.1:" "$project_dir/docker-compose.yml" | head -n 1 | sed -E 's/.*127.0.0.1:([0-9]+):1080.*/\1/' | grep -E '^[0-9]+$' || echo "1080")
-                echo -e "\n${CYAN}--- 代理访问地址 ---${NC}"
-                echo -e "  容器间通信:  ${GREEN}warp:1080${NC}"
-                echo -e "  宿主机访问:  ${GREEN}127.0.0.1:${warp_port}${NC}"
-                echo -e "  网桥访问:    ${GREEN}172.17.0.1:${warp_port}${NC}"
-                echo -e "\n  支持协议: HTTP / SOCKS5"
+                echo -e "\n${CYAN}代理访问地址 (容器间):${NC}"
+                echo -e "  HTTP:   ${GREEN}http://warp:1080${NC}"
+                echo -e "  SOCKS5: ${GREEN}socks5://warp:1080${NC}"
+                echo -e "\n${CYAN}代理访问地址 (宿主机):${NC}"
+                echo -e "  HTTP:   ${GREEN}http://127.0.0.1:${warp_port}${NC}"
+                echo -e "  SOCKS5: ${GREEN}socks5://127.0.0.1:${warp_port}${NC}"
+                echo -e "\n${CYAN}代理访问地址 (Docker网桥):${NC}"
+                echo -e "  HTTP:   ${GREEN}http://172.17.0.1:${warp_port}${NC}"
+                echo -e "  SOCKS5: ${GREEN}socks5://172.17.0.1:${warp_port}${NC}"
+                echo -e "\n${YELLOW}提示: 容器间通信仅限已加入 warp 网络的容器。${NC}"
                 read -rp "按 Enter 继续..." < /dev/tty
                 ;;
             2)
