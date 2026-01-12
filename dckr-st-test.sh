@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v3.2"
+readonly SCRIPT_VERSION="v5.11test"
 GUGU_MODE="test"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -173,6 +173,15 @@ fn_get_current_ip() {
     fi
     
     echo "$current_ip"
+}
+
+# 转义 sed 替换字符串中的特殊字符 (&, /, \)
+fn_escape_sed_str() {
+    local s="$1"
+    s="${s//\\/\\\\}" # 1. 转义反斜杠
+    s="${s//\//\\/}"  # 2. 转义斜杠
+    s="${s//&/\\&}"   # 3. 转义 & 符号
+    echo "$s"
 }
 
 # set -e  # 已移除全局退出设置，改为逻辑容错
@@ -1732,9 +1741,14 @@ install_sillytavern() {
         sed -i -E "s/^([[:space:]]*)lazyLoadCharacters: .*/\1lazyLoadCharacters: true # 懒加载、点击角色卡才加载/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)memoryCacheCapacity: .*/\1memoryCacheCapacity: '${ST_CACHE_MEM}mb' # 角色卡内存缓存/" "$CONFIG_FILE"
         if [[ "$run_mode" == "1" ]]; then
+            local safe_user
+            local safe_pass
+            safe_user=$(fn_escape_sed_str "$single_user")
+            safe_pass=$(fn_escape_sed_str "$single_pass")
+
             sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 启用基础认证/" "$CONFIG_FILE"
-            sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$single_user\"/}" "$CONFIG_FILE"
-            sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$single_pass\"/}" "$CONFIG_FILE"
+            sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$safe_user\"/}" "$CONFIG_FILE"
+            sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$safe_pass\"/}" "$CONFIG_FILE"
         elif [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
             sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 临时开启基础认证以设置管理员/" "$CONFIG_FILE"
             sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # 启用多用户模式/" "$CONFIG_FILE"
@@ -2376,10 +2390,15 @@ fn_st_switch_to_single() {
         return 1
     fi
 
+    local safe_user
+    local safe_pass
+    safe_user=$(fn_escape_sed_str "$new_user")
+    safe_pass=$(fn_escape_sed_str "$new_pass")
+
     sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: false # 禁用多用户模式/" "$config_file"
     sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 启用基础认证/" "$config_file"
-    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$new_user\"/}" "$config_file"
-    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$new_pass\"/}" "$config_file"
+    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$safe_user\"/}" "$config_file"
+    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$safe_pass\"/}" "$config_file"
     
     log_info "正在重启容器以应用更改..."
     cd "$project_dir" && $compose_cmd up -d --force-recreate
@@ -2473,8 +2492,13 @@ fn_st_change_credentials() {
         return 1
     fi
 
-    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$new_user\"/}" "$config_file"
-    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$new_pass\"/}" "$config_file"
+    local safe_user
+    local safe_pass
+    safe_user=$(fn_escape_sed_str "$new_user")
+    safe_pass=$(fn_escape_sed_str "$new_pass")
+
+    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$safe_user\"/}" "$config_file"
+    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$safe_pass\"/}" "$config_file"
     
     log_info "正在重启容器以应用更改..."
     cd "$project_dir" && $compose_cmd restart
