@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v5.12"
+$ScriptVersion = "v5.13"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -2354,29 +2354,53 @@ function Get-AiStudioToken {
 function Update-AssistantScript {
     Clear-Host
     Write-Header "更新咕咕助手脚本"
+
+    $confirm = Read-Host "确认要检查并更新咕咕助手脚本吗？[Y/n]"
+    if ($confirm -eq 'n' -or $confirm -eq 'N') { return }
+
     Write-Warning "正在从服务器获取最新版本..."
     try {
         $newScriptContent = (Invoke-WebRequest -Uri $ScriptSelfUpdateUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop).Content
         if ([string]::IsNullOrWhiteSpace($newScriptContent)) { Write-ErrorExit "下载失败：脚本内容为空！" }
 
-        $currentScriptContent = Get-Content -Path $PSCommandPath -Raw
+        $newScriptContent = $newScriptContent.TrimStart([char]0xFEFF)
+
+        $currentScriptContent = (Get-Content -Path $PSCommandPath -Raw).TrimStart([char]0xFEFF)
         if ($newScriptContent.Replace("`r`n", "`n").Trim() -eq $currentScriptContent.Replace("`r`n", "`n").Trim()) {
             Write-Success "当前已是最新版本。"
             Press-Any-Key; return
         }
 
         $newFile = Join-Path $ScriptBaseDir "pc-st.new.ps1"
-        [System.IO.File]::WriteAllText($newFile, $newScriptContent, [System.Text.Encoding]::UTF8)
+        $utf8WithBom = New-Object System.Text.UTF8Encoding($true)
+        [System.IO.File]::WriteAllText($newFile, $newScriptContent, $utf8WithBom)
 
         $batchPath = Join-Path $ScriptBaseDir "upd.bat"
         $starter = Join-Path $ScriptBaseDir "咕咕助手.bat"
-        $batchContent = "@echo off`r`ntimeout /t 2 >nul`r`ndel /f /q `"$PSCommandPath`"`r`nmove `"$newFile`" `"$PSCommandPath`"`r`nstart `"`" `"$starter`"`r`ndel %0"
+        $batchContent = @"
+@echo off
+title 正在更新咕咕助手...
+timeout /t 2 >nul
+:retry_del
+del /f /q "$PSCommandPath" >nul 2>&1
+if exist "$PSCommandPath" (
+    timeout /t 1 >nul
+    goto retry_del
+)
+move /y "$newFile" "$PSCommandPath" >nul
+start "" "$starter"
+del %0
+"@
         [System.IO.File]::WriteAllText($batchPath, $batchContent, [System.Text.Encoding]::GetEncoding(936))
 
         Write-Warning "助手即将重启以应用更新..."
         Start-Process $batchPath; exit
     } catch {
-        Write-Error "更新失败: $($_.Exception.Message)"; Press-Any-Key
+        Write-Error "更新失败: $($_.Exception.Message)"
+        Write-Host "`n若自动更新失败，请前往博客 " -NoNewline; Write-Host "https://blog.qjyg.de" -ForegroundColor Cyan
+        Write-Host "重新下载脚本压缩包，并手动使用新下载的 " -NoNewline; Write-Host "咕咕助手.bat" -ForegroundColor Yellow -NoNewline; Write-Host " 和 " -NoNewline; Write-Host "pc-st.ps1" -ForegroundColor Yellow
+        Write-Host " 替换当前正在使用的同名文件。"
+        Press-Any-Key
     }
 }
 
@@ -2388,7 +2412,8 @@ function Check-ForUpdatesOnStart {
         try {
             $new = (Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10).Content
             if (-not [string]::IsNullOrWhiteSpace($new)) {
-                $old = Get-Content -Path $path -Raw
+               $new = $new.TrimStart([char]0xFEFF)
+                $old = (Get-Content -Path $path -Raw).TrimStart([char]0xFEFF)
                 if ($new.Replace("`r`n", "`n").Trim() -ne $old.Replace("`r`n", "`n").Trim()) {
                     [System.IO.File]::Create($flag).Close()
                 } else {
