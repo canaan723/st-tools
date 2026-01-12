@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v5.12test"
+readonly SCRIPT_VERSION="v5.121test"
 GUGU_MODE="test"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -2911,6 +2911,9 @@ fn_st_docker_manager() {
                 cd "$project_dir" && $compose_cmd logs -f --tail 1000
                 trap 'exit 0' INT
                 ;;
+            9)
+                fn_st_proxy_manager "$project_dir" "$config_file" "$compose_file" "$compose_cmd"
+                ;;
             x|X)
                 if fn_uninstall_docker_app "sillytavern" "SillyTavern" "$project_dir" "ghcr.io/sillytavern/sillytavern:latest"; then
                     sleep 2
@@ -3078,16 +3081,18 @@ fn_deploy_menu() {
         echo -e "  [3] 部署 酒馆"
         echo -e "  [4] 部署 gcli2api"
         echo -e "  [5] 部署 ais2api"
+        echo -e "  [6] 部署 Warp"
         echo -e "------------------------------------------------------"
         echo -e "  [0] 返回上一级"
         echo -e "${BLUE}======================================================${NC}"
-        read -rp "请输入选项 [0-5]: " deploy_choice < /dev/tty
+        read -rp "请输入选项 [0-6]: " deploy_choice < /dev/tty
         case "$deploy_choice" in
             1) log_action "正在安装 Docker..."; bash <(curl -sSL https://linuxmirrors.cn/docker.sh); read -rp $'\n操作完成，按 Enter 键返回...' < /dev/tty ;;
             2) [ "$IS_DEBIAN_LIKE" = true ] && install_1panel || log_warn "系统不支持" ;;
             3) install_sillytavern; read -rp $'\n操作完成，按 Enter 键返回...' < /dev/tty ;;
             4) install_gcli2api; read -rp $'\n操作完成，按 Enter 键返回...' < /dev/tty ;;
             5) install_ais2api; read -rp $'\n操作完成，按 Enter 键返回...' < /dev/tty ;;
+            6) install_warp; read -rp $'\n操作完成，按 Enter 键返回...' < /dev/tty ;;
             0) break ;;
             *) log_warn "无效输入"; sleep 1 ;;
         esac
@@ -3122,6 +3127,11 @@ fn_manage_menu() {
             echo -e "  [4] ${GREEN}1Panel 运维管理${NC}"
             has_app=true
         fi
+        # 5. Warp 管理
+        if docker ps -a --format '{{.Names}}' | grep -q '^warp$'; then
+            echo -e "  [5] ${GREEN}Warp 运维管理${NC}"
+            has_app=true
+        fi
 
         if [ "$has_app" = false ]; then
             echo -e "  ${YELLOW}(未检测到已安装的应用)${NC}"
@@ -3136,6 +3146,7 @@ fn_manage_menu() {
             2) docker ps -a --format '{{.Names}}' | grep -q '^gcli2api$' && fn_api_docker_manager "gcli2api" "gcli2api" || log_warn "未安装" ;;
             3) docker ps -a --format '{{.Names}}' | grep -q '^ais2api$' && fn_api_docker_manager "ais2api" "ais2api" || log_warn "未安装" ;;
             4) command -v 1pctl &> /dev/null && fn_1panel_manager || log_warn "未安装" ;;
+            5) docker ps -a --format '{{.Names}}' | grep -q '^warp$' && fn_warp_docker_manager || log_warn "未安装" ;;
             0) break ;;
             *) log_warn "无效输入"; sleep 1 ;;
         esac
