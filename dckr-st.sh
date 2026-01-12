@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v3.2"
+readonly SCRIPT_VERSION="v5.11"
 GUGU_MODE="prod"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -173,6 +173,25 @@ fn_get_current_ip() {
     fi
     
     echo "$current_ip"
+}
+
+# 检查密码是否包含不支持的特殊字符
+fn_check_password_safe() {
+    local pwd="$1"
+    # 检查是否包含反斜杠、斜杠或双引号（这些字符容易导致 YAML 解析错误或 sed 替换问题）
+    if [[ "$pwd" =~ [\\/\"\&] ]]; then
+        return 1
+    fi
+    return 0
+}
+
+# 转义 sed 替换字符串中的特殊字符 (&, /, \)
+fn_escape_sed_str() {
+    local s="$1"
+    s="${s//\\/\\\\}" # 1. 转义反斜杠
+    s="${s//\//\\/}"  # 2. 转义斜杠
+    s="${s//&/\\&}"   # 3. 转义 & 符号
+    echo "$s"
 }
 
 # set -e  # 已移除全局退出设置，改为逻辑容错
@@ -1732,9 +1751,14 @@ install_sillytavern() {
         sed -i -E "s/^([[:space:]]*)lazyLoadCharacters: .*/\1lazyLoadCharacters: true # 懒加载、点击角色卡才加载/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)memoryCacheCapacity: .*/\1memoryCacheCapacity: '${ST_CACHE_MEM}mb' # 角色卡内存缓存/" "$CONFIG_FILE"
         if [[ "$run_mode" == "1" ]]; then
+            local safe_user
+            local safe_pass
+            safe_user=$(fn_escape_sed_str "$single_user")
+            safe_pass=$(fn_escape_sed_str "$single_pass")
+
             sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 启用基础认证/" "$CONFIG_FILE"
-            sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$single_user\"/}" "$CONFIG_FILE"
-            sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$single_pass\"/}" "$CONFIG_FILE"
+            sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$safe_user\"/}" "$CONFIG_FILE"
+            sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$safe_pass\"/}" "$CONFIG_FILE"
         elif [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
             sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 临时开启基础认证以设置管理员/" "$CONFIG_FILE"
             sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # 启用多用户模式/" "$CONFIG_FILE"
@@ -1893,8 +1917,17 @@ EOF
     case "$run_mode" in
         1)
             read -p "请输入自定义用户名: " single_user < /dev/tty
-            read -p "请输入自定义密码: " single_pass < /dev/tty
-            if [ -z "$single_user" ] || [ -z "$single_pass" ]; then fn_print_error "用户名和密码不能为空！"; fi
+            while true; do
+                read -p "请输入自定义密码: " single_pass < /dev/tty
+                if [ -z "$single_pass" ]; then
+                    log_warn "密码不能为空。"
+                elif ! fn_check_password_safe "$single_pass"; then
+                    log_warn "密码中包含不支持的特殊字符 (\\ / \" &)，请使用纯数字、字母或常规符号。"
+                else
+                    break
+                fi
+            done
+            if [ -z "$single_user" ]; then fn_print_error "用户名不能为空！"; fi
             ;;
         2)
             ;;
@@ -2370,16 +2403,31 @@ fn_st_switch_to_single() {
     
     log_action "正在切换为单用户模式..."
     read -rp "请输入新的用户名: " new_user < /dev/tty
-    read -rp "请输入新的密码: " new_pass < /dev/tty
-    if [ -z "$new_user" ] || [ -z "$new_pass" ]; then
-        log_error "用户名和密码不能为空，操作已取消。"
+    while true; do
+        read -rp "请输入新的密码: " new_pass < /dev/tty
+        if [ -z "$new_pass" ]; then
+            log_warn "密码不能为空。"
+        elif ! fn_check_password_safe "$new_pass"; then
+            log_warn "密码中包含不支持的特殊字符 (\\ / \" &)，请使用纯数字、字母或常规符号。"
+        else
+            break
+        fi
+    done
+
+    if [ -z "$new_user" ]; then
+        log_error "用户名不能为空，操作已取消。"
         return 1
     fi
 
+    local safe_user
+    local safe_pass
+    safe_user=$(fn_escape_sed_str "$new_user")
+    safe_pass=$(fn_escape_sed_str "$new_pass")
+
     sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: false # 禁用多用户模式/" "$config_file"
     sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 启用基础认证/" "$config_file"
-    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$new_user\"/}" "$config_file"
-    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$new_pass\"/}" "$config_file"
+    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$safe_user\"/}" "$config_file"
+    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$safe_pass\"/}" "$config_file"
     
     log_info "正在重启容器以应用更改..."
     cd "$project_dir" && $compose_cmd up -d --force-recreate
@@ -2457,13 +2505,31 @@ fn_st_change_credentials() {
     case "$cred_choice" in
         1)
             read -rp "请输入新用户名: " new_user < /dev/tty
-            read -rp "请输入新密码: " new_pass < /dev/tty
+            while true; do
+                read -rp "请输入新密码: " new_pass < /dev/tty
+                if [ -z "$new_pass" ]; then
+                    log_warn "密码不能为空。"
+                elif ! fn_check_password_safe "$new_pass"; then
+                    log_warn "密码中包含不支持的特殊字符 (\\ / \" &)，请使用纯数字、字母或常规符号。"
+                else
+                    break
+                fi
+            done
             ;;
         2)
             read -rp "请输入新用户名: " new_user < /dev/tty
             ;;
         3)
-            read -rp "请输入新密码: " new_pass < /dev/tty
+            while true; do
+                read -rp "请输入新密码: " new_pass < /dev/tty
+                if [ -z "$new_pass" ]; then
+                    log_warn "密码不能为空。"
+                elif ! fn_check_password_safe "$new_pass"; then
+                    log_warn "密码中包含不支持的特殊字符 (\\ / \" &)，请使用纯数字、字母或常规符号。"
+                else
+                    break
+                fi
+            done
             ;;
         *) return 0 ;;
     esac
@@ -2473,8 +2539,13 @@ fn_st_change_credentials() {
         return 1
     fi
 
-    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$new_user\"/}" "$config_file"
-    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$new_pass\"/}" "$config_file"
+    local safe_user
+    local safe_pass
+    safe_user=$(fn_escape_sed_str "$new_user")
+    safe_pass=$(fn_escape_sed_str "$new_pass")
+
+    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$safe_user\"/}" "$config_file"
+    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$safe_pass\"/}" "$config_file"
     
     log_info "正在重启容器以应用更改..."
     cd "$project_dir" && $compose_cmd restart
