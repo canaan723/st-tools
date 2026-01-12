@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v5.11"
+$ScriptVersion = "v5.12"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -33,6 +33,10 @@ $SyncRulesConfigFile = Join-Path $ConfigDir "sync_rules.conf"
 $AgreementFile = Join-Path $ConfigDir ".agreement_shown"
 $LabConfigFile = Join-Path $ConfigDir "lab.conf"
 $GcliDir = Join-Path $ScriptBaseDir "gcli2api"
+# 补全 AI Studio 相关路径变量
+$ais2apiDir = Join-Path $ScriptBaseDir "ais2api"
+$camoufoxDir = Join-Path $ais2apiDir "camoufox"
+$camoufoxExe = Join-Path $camoufoxDir "camoufox.exe"
 
 $Mirror_List = @(
     "https://github.com/SillyTavern/SillyTavern.git",
@@ -1324,11 +1328,11 @@ function Rollback-SillyTavern {
         }
 
         Write-Host "`n操作提示:" -ForegroundColor Yellow
-        Write-Host "  - 直接输入 ${Green}序号${NC} (如 '123') 或 ${Green}版本全名${NC} (如 '1.10.0') 进行选择"
-        Write-Host "  - 输入 ${Green}a${NC} 翻到上一页，${Green}d${NC} 翻到下一页"
-        Write-Host "  - 输入 ${Green}f [关键词]${NC} 筛选版本 (如 'f 1.10' 或 'f 2023-')"
-        Write-Host "  - 输入 ${Green}c${NC} 清除筛选，${Green}q${NC} 退出"
-        $userInput = Read-Host "请输入"
+        Write-Host "  - 直接输入 " -NoNewline; Write-Host "序号" -ForegroundColor Green -NoNewline; Write-Host " (如 '123') 或 " -NoNewline; Write-Host "版本全名" -ForegroundColor Green -NoNewline; Write-Host " (如 '1.10.0') 进行选择"
+        Write-Host "  - 输入 " -NoNewline; Write-Host "a" -ForegroundColor Green -NoNewline; Write-Host " 翻到上一页，" -NoNewline; Write-Host "d" -ForegroundColor Green -NoNewline; Write-Host " 翻到下一页"
+        Write-Host "  - 输入 " -NoNewline; Write-Host "f [关键词]" -ForegroundColor Green -NoNewline; Write-Host " 筛选版本 (如 'f 1.10' 或 'f 2023-')"
+        Write-Host "  - 输入 " -NoNewline; Write-Host "c" -ForegroundColor Green -NoNewline; Write-Host " 清除筛选，" -NoNewline; Write-Host "q" -ForegroundColor Green -NoNewline; Write-Host " 退出"
+        $userInput = Read-Host "`n请输入"
 
         if ($userInput -eq 'q') { Write-Warning "操作已取消。"; Press-Any-Key; return }
         elseif ($userInput -eq 'a') { if ($currentPage -gt 0) { $currentPage-- } }
@@ -1349,9 +1353,9 @@ function Rollback-SillyTavern {
                 if ($confirm -eq 'n' -or $confirm -eq 'N') { Write-Warning "操作已取消。"; continue }
 
                 Write-Warning "正在切换到版本 $selectedTag ..."
-                git checkout -f "tags/$selectedTag"
+                $checkoutOutput = git checkout -f "tags/$selectedTag" 2>&1
                 if ($LASTEXITCODE -ne 0) {
-                    Write-Error "切换版本时发生未知错误: $checkoutOutput"; Press-Any-Key; return
+                    Write-Error "切换版本时发生未知错误：$($checkoutOutput | Out-String)"; Press-Any-Key; return
                 }
                 
                 Write-Success "版本已成功切换到 $selectedTag"
@@ -2088,6 +2092,295 @@ function Show-ExtraFeaturesMenu {
         }
     }
 }
+
+# --- 补全缺失的核心功能函数 ---
+
+function Open-HelpDocs {
+    Clear-Host
+    Write-Header "查看帮助文档"
+    Write-Host "文档网址: "
+    Write-Host $HelpDocsUrl -ForegroundColor Cyan
+    Write-Host "`n"
+    try {
+        Start-Process $HelpDocsUrl
+        Write-Success "已尝试在浏览器中打开，若未自动跳转请手动复制上方网址。"
+    } catch {
+        Write-Warning "无法自动打开浏览器。"
+    }
+    Press-Any-Key
+}
+
+function Get-UnifiedMirrorCandidates {
+    param($GitUrl, $FileUrl)
+    $candidates = @()
+    $candidates += [PSCustomObject]@{ Name = "官方线路 (github.com)"; GitUrl = $GitUrl; FileUrl = $FileUrl }
+    
+    $seenHosts = @("github.com")
+    
+    foreach ($m in $Mirror_List) {
+        $hostName = ($m -split '/')[2]
+        if ($seenHosts -contains $hostName) { continue }
+        
+        $g = $null; $f = $null
+        
+        if ($m -match "/gh/") {
+            $base = $m.Substring(0, $m.IndexOf("/gh/"))
+            $repoPath = $GitUrl -replace '^https://github.com/', ''
+            $filePath = $FileUrl -replace '^https://github.com/', ''
+            $g = "$base/gh/$repoPath"
+            $f = "$base/gh/$filePath"
+        } elseif ($m -match "/https://github.com/") {
+            $base = $m.Substring(0, $m.IndexOf("/https://github.com/"))
+            $g = "$base/$GitUrl"
+            $f = "$base/$FileUrl"
+        } elseif ($m -match "/github.com/") {
+            $base = $m.Substring(0, $m.IndexOf("/github.com/"))
+            $g = "$base/$GitUrl"
+            $f = "$base/$FileUrl"
+        }
+        
+        if ($g -and $f) {
+            $candidates += [PSCustomObject]@{ Name = "镜像线路 ($hostName)"; GitUrl = $g; FileUrl = $f }
+            $seenHosts += $hostName
+        }
+    }
+    return $candidates
+}
+
+function Select-UnifiedMirror {
+    param($GitUrl, $FileUrl)
+    
+    $candidates = Get-UnifiedMirrorCandidates -GitUrl $GitUrl -FileUrl $FileUrl
+    $successfulCandidates = New-Object System.Collections.Generic.List[object]
+
+    Write-Warning "正在测试可用下载线路，请稍候..."
+    
+    foreach ($c in $candidates) {
+        Write-Host "  - 正在测试: $($c.Name)..." -NoNewline
+        $isSuccess = $false
+        try {
+            $req = [System.Net.WebRequest]::Create($c.FileUrl)
+            $req.Method = "HEAD"
+            $req.Timeout = 7000
+            $resp = $req.GetResponse()
+            $statusCode = [int]$resp.StatusCode
+            if ($statusCode -ge 200 -and $statusCode -lt 400) {
+                $isSuccess = $true
+                $successfulCandidates.Add($c)
+            }
+            $resp.Close()
+        } catch {
+        }
+
+        if ($isSuccess) {
+            Write-Host "`r  ✓ 测试: $($c.Name) [成功]                                  " -ForegroundColor Green
+        } else {
+            Write-Host "`r  ✗ 测试: $($c.Name) [失败]                                  " -ForegroundColor Red
+        }
+    }
+
+    if ($successfulCandidates.Count -eq 0) {
+        Write-Error "`n所有下载线路均测试失败！`n可能是网络问题、代理配置错误或镜像服务器暂时不可用。"
+        Press-Any-Key
+        return $null
+    }
+    
+    Write-Success "`n测试完成，共找到 $($successfulCandidates.Count) 条可用线路。"
+
+    $successful = @{}
+    for ($i = 0; $i -lt $successfulCandidates.Count; $i++) {
+        $successful[($i + 1)] = $successfulCandidates[$i]
+    }
+
+    while ($true) {
+        Clear-Host
+        Write-Header "选择下载线路"
+        Write-Success "请选择一条可用线路进行下载："
+        foreach ($k in ($successful.Keys | Sort-Object)) {
+            Write-Host ("  [{0,2}] {1}" -f $k, $successful[$k].Name) -ForegroundColor Cyan
+        }
+        Write-Host "`n  [0] 取消操作" -ForegroundColor Red
+        $choice = Read-Host "`n请输入序号"
+        if ($choice -eq '0') { return $null }
+        if ($choice -match '^\d+$' -and $successful.ContainsKey([int]$choice)) {
+            return $successful[[int]$choice]
+        }
+    }
+}
+
+function Download-FileWithHttpClient {
+    param(
+        [Parameter(Mandatory=$true)] [string]$Url,
+        [Parameter(Mandatory=$true)] [string]$DestPath
+    )
+    $client = New-Object System.Net.Http.HttpClient
+    $client.Timeout = [TimeSpan]::FromMinutes(10)
+    
+    try {
+        $response = $client.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+        $response.EnsureSuccessStatusCode() | Out-Null
+
+        $totalBytes = $response.Content.Headers.ContentLength
+        $readChunkSize = 8192
+        $buffer = New-Object byte[] $readChunkSize
+        $totalRead = 0
+
+        $stream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+        $fileStream = [System.IO.File]::Create($DestPath)
+
+        do {
+            $bytesRead = $stream.Read($buffer, 0, $readChunkSize)
+            $fileStream.Write($buffer, 0, $bytesRead)
+            $totalRead += $bytesRead
+            
+            if ($totalBytes -gt 0) {
+                $percent = ($totalRead / $totalBytes) * 100
+                $receivedMB = $totalRead / 1MB
+                $totalMB = $totalBytes / 1MB
+                $statusText = "下载中: {0:N2} MB / {1:N2} MB ({2:N0}%)" -f $receivedMB, $totalMB, $percent
+                Write-Progress -Activity "正在下载文件" -Status $statusText -PercentComplete $percent
+            } else {
+                $receivedMB = $totalRead / 1MB
+                $statusText = "下载中: {0:N2} MB" -f $receivedMB
+                Write-Progress -Activity "正在下载文件" -Status $statusText
+            }
+        } while ($bytesRead -gt 0)
+        
+        Write-Progress -Activity "正在下载文件" -Completed
+    } finally {
+        if ($stream) { $stream.Dispose() }
+        if ($fileStream) { $fileStream.Dispose() }
+        if ($client) { $client.Dispose() }
+    }
+}
+
+function Get-AiStudioToken {
+    Clear-Host
+    Write-Header "获取 AI Studio 凭证"
+
+    if (-not (Check-Command "git") -or -not (Check-Command "node")) {
+        Write-Error "未检测到 Git 或 Node.js，无法继续。"
+        Write-Warning "请先在主菜单选择 [首次部署] 或手动安装这些依赖。"
+        Press-Any-Key
+        return
+    }
+    Write-Success "环境检查通过 (Git, Node.js 已安装)。"
+
+    $targetGitUrl = "https://github.com/Ellinav/ais2api.git"
+    $targetFileUrl = "https://github.com/daijro/camoufox/releases/download/v135.0.1-beta.24/camoufox-135.0.1-beta.24-win.x86_64.zip"
+    
+    $needClone = -not (Test-Path $ais2apiDir)
+    $needDownload = -not (Test-Path $camoufoxExe)
+    
+    if ($needClone -or $needDownload) {
+        $selectedMirror = Select-UnifiedMirror -GitUrl $targetGitUrl -FileUrl $targetFileUrl
+        if (-not $selectedMirror) {
+            Write-Error "未选择线路或操作取消。"
+            Press-Any-Key
+            return
+        }
+        
+        if ($needClone) {
+            Write-Warning "正在克隆 ais2api 项目..."
+            $gitOutput = git clone $selectedMirror.GitUrl $ais2apiDir 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error "克隆失败！Git输出: $($gitOutput | Out-String)"
+                Press-Any-Key; return
+            }
+        }
+        
+        if ($needDownload) {
+            if (-not (Test-Path $camoufoxDir)) { New-Item -Path $camoufoxDir -ItemType Directory | Out-Null }
+            $zipPath = Join-Path $ais2apiDir "camoufox.zip"
+            Write-Warning "正在下载 Camoufox 内核..."
+            try {
+                Download-FileWithHttpClient -Url $selectedMirror.FileUrl -DestPath $zipPath
+                Write-Success "下载完成，正在解压..."
+                Expand-Archive -Path $zipPath -DestinationPath $camoufoxDir -Force
+                Remove-Item $zipPath -Force
+                
+                if (-not (Test-Path $camoufoxExe)) {
+                    $nestedExe = Get-ChildItem -Path $camoufoxDir -Filter "camoufox.exe" -Recurse | Select-Object -First 1
+                    if ($nestedExe) {
+                        $parentDir = $nestedExe.Directory.FullName
+                        Get-ChildItem -Path $parentDir | Move-Item -Destination $camoufoxDir -Force
+                    }
+                }
+                Write-Success "Camoufox 配置完成。"
+            } catch {
+                Write-Error "下载或解压失败: $($_.Exception.Message)"
+                Press-Any-Key; return
+            }
+        }
+    }
+
+    Set-Location $ais2apiDir
+    if (-not (Test-Path "node_modules")) {
+        Write-Warning "正在安装依赖 (npm install)..."
+        npm install
+        if ($LASTEXITCODE -ne 0) { Write-Error "依赖安装失败！"; Set-Location $ScriptBaseDir; Press-Any-Key; return }
+    }
+
+    while ($true) {
+        Clear-Host
+        Write-Header "准备获取凭证"
+        Write-Host "即将启动浏览器..." -ForegroundColor Cyan
+        Write-Host "1. 请在弹出的浏览器中登录您的谷歌账号。" -ForegroundColor Yellow
+        Write-Host "2. 登录成功看到 AI Studio 页面后，请保持浏览器开启。" -ForegroundColor Yellow
+        Write-Host "3. 回到本窗口按回车，即可自动获取凭证并关闭浏览器。" -ForegroundColor Yellow
+        Write-Host "4. 凭证将保存在 ais2api\single-line-auth 文件中。" -ForegroundColor Green
+        
+        node save-auth.js
+        Write-Success "操作结束。"
+        
+        Get-Process -Name "camoufox" -ErrorAction SilentlyContinue | Stop-Process -Force
+
+        while ($true) {
+            Write-Host "`n后续操作：" -ForegroundColor Cyan
+            Write-Host " [1] 继续获取 (切换账号)" -ForegroundColor Green
+            Write-Host " [2] 打开凭证文件" -ForegroundColor Yellow
+            Write-Host " [0] 返回上一级" -ForegroundColor Red
+            $next = Read-Host " 请输入"
+            if ($next -eq '1') { break }
+            if ($next -eq '2') {
+                $authFile = Join-Path $ais2apiDir "single-line-auth"
+                if (Test-Path $authFile) { Invoke-Item $authFile } else { Write-Warning "凭证文件不存在。" }
+            }
+            if ($next -eq '0') { Set-Location $ScriptBaseDir; return }
+        }
+    }
+}
+
+function Update-AssistantScript {
+    Clear-Host
+    Write-Header "更新咕咕助手脚本"
+    Write-Warning "正在从服务器获取最新版本..."
+    try {
+        $newScriptContent = (Invoke-WebRequest -Uri $ScriptSelfUpdateUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop).Content
+        if ([string]::IsNullOrWhiteSpace($newScriptContent)) { Write-ErrorExit "下载失败：脚本内容为空！" }
+
+        $currentScriptContent = Get-Content -Path $PSCommandPath -Raw
+        if ($newScriptContent.Replace("`r`n", "`n").Trim() -eq $currentScriptContent.Replace("`r`n", "`n").Trim()) {
+            Write-Success "当前已是最新版本。"
+            Press-Any-Key; return
+        }
+
+        $newFile = Join-Path $ScriptBaseDir "pc-st.new.ps1"
+        [System.IO.File]::WriteAllText($newFile, $newScriptContent, [System.Text.Encoding]::UTF8)
+
+        $batchPath = Join-Path $ScriptBaseDir "upd.bat"
+        $starter = Join-Path $ScriptBaseDir "咕咕助手.bat"
+        $batchContent = "@echo off`r`ntimeout /t 2 >nul`r`ndel /f /q `"$PSCommandPath`"`r`nmove `"$newFile`" `"$PSCommandPath`"`r`nstart `"`" `"$starter`"`r`ndel %0"
+        [System.IO.File]::WriteAllText($batchPath, $batchContent, [System.Text.Encoding]::GetEncoding(936))
+
+        Write-Warning "助手即将重启以应用更新..."
+        Start-Process $batchPath; exit
+    } catch {
+        Write-Error "更新失败: $($_.Exception.Message)"; Press-Any-Key
+    }
+}
+
+# --- 脚本执行入口 ---
 
 function Check-ForUpdatesOnStart {
     $jobScriptBlock = {
