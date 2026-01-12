@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v5.122test"
+readonly SCRIPT_VERSION="v5.123test"
 GUGU_MODE="test"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -2574,19 +2574,44 @@ fn_st_proxy_manager() {
                 log_action "正在禁用并清理代理配置..."
                 sed -i -E "/requestProxy:/,/enabled:/{s/enabled: .*/enabled: false/}" "$config_file"
                 
-                # 1. 尝试删除带 networks: 的整块配置（针对脚本自动添加的情况）
-                if sed -n "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/p" "$compose_file" | grep -q "networks:" && \
-                   sed -n "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/p" "$compose_file" | grep -A 1 "networks:" | grep -q "\- warp"; then
-                    # 如果 networks: 下一行就是 - warp，且没有其他网络，则一起删除
-                    sed -i "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/ { /networks:/ { N; /\n[[:space:]]*- warp$/ d } }" "$compose_file"
+                # 优先使用 Python 处理，因为它对多行逻辑更友好
+                if command -v python3 &> /dev/null; then
+                    python3 -c "
+import re, os
+path = '$compose_file'
+if os.path.exists(path):
+    with open(path, 'r') as f: content = f.read()
+    # 1. 清理 sillytavern 服务块内的网络引用
+    st_match = re.search(r'^(\s*sillytavern:.*?\n)(?=(^\S|\Z))', content, re.M | re.S)
+    if st_match:
+        block = st_match.group(1)
+        block = re.sub(r'^\s*-\s*warp\s*$\n?', '', block, flags=re.M)
+        block = re.sub(r'^\s*networks:\s*\n(?!\s*-)', '', block, flags=re.M)
+        content = content[:st_match.start(1)] + block + content[st_match.end(1):]
+    
+    # 2. 检查是否还有其他服务在使用 warp 网络
+    if not re.search(r'^\s+-\s+warp\s*$', content, re.M):
+        # 3. 清理全局 networks 定义块
+        net_match = re.search(r'^networks:.*?\n(?=(^\S|\Z))', content, re.M | re.S)
+        if net_match:
+            net_block = net_match.group(0)
+            net_block = re.sub(r'^\s+warp:\s*\n\s+external:\s*true\s*\n?', '', net_block, flags=re.M)
+            if net_block.strip() == 'networks:':
+                content = content[:net_match.start(0)] + content[net_match.end(0):]
+            else:
+                content = content[:net_match.start(0)] + net_block + content[net_match.end(0):]
+    
+    with open(path, 'w') as f: f.write(content)
+" 2>/dev/null
                 fi
                 
-                # 2. 再次兜底删除残留的 - warp 行（针对用户手动修改过的情况）
-                sed -i "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/ { /^[[:space:]]*- warp$/d }" "$compose_file"
-                
-                # 3. 如果 networks: 变成空的了（后面没内容），则删除 networks: 行
-                # 这里使用一个简单的逻辑：如果某一行的 networks: 是该服务块的最后一行或下一行是其他属性
-                sed -i "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/ { /^[[:space:]]*networks:[[:space:]]*$/ { N; /^[[:space:]]*networks:[[:space:]]*\n[[:space:]]*[a-z]/ { s/\n/ /; s/networks:.*//; /^$/d } } }" "$compose_file"
+                # 兜底使用 sed (针对没有 python 的环境)
+                sed -i -E "/^[[:space:]]*sillytavern:/,/^([^[:space:]]|$)/ { /^[[:space:]]*- warp$/d }" "$compose_file"
+                # 如果全局 networks 块中只剩下 warp 且没有其他服务引用，尝试删除全局定义
+                if ! grep -qE "^[[:space:]]+-[[:space:]]+warp" "$compose_file"; then
+                    sed -i "/^networks:/,/^[^[:space:]]/ { /^[[:space:]]*warp:/,+1 d }" "$compose_file"
+                    sed -i "/^networks:[[:space:]]*$/d" "$compose_file"
+                fi
 
                 cd "$project_dir" && $compose_cmd up -d --force-recreate
                 log_success "代理配置及网络连接已禁用并清理。"
