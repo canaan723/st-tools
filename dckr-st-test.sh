@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v5.124test"
+readonly SCRIPT_VERSION="v5.125test"
 GUGU_MODE="test"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -3242,12 +3242,12 @@ fn_warp_docker_manager() {
                 ;;
             2)
                 echo -e "\n${CYAN}--- Warp IP 信息 ---${NC}"
-                docker exec -it "$container_name" sh -c 'printf "IPv4: %s\nIPv6: %s\nLOC:  %s (%s)\n" "$(curl -4s ifconfig.me)" "$(curl -6s ifconfig.me)" "$(curl -s https://www.cloudflare.com/cdn-cgi/trace | grep "loc=" | cut -d= -f2)" "$(curl -s https://www.cloudflare.com/cdn-cgi/trace | grep "colo=" | cut -d= -f2)"'
+                docker exec "$container_name" sh -c 'printf "IPv4: %s\nIPv6: %s\nLOC:  %s (%s)\n" "$(curl -4s ifconfig.me)" "$(curl -6s ifconfig.me)" "$(curl -s https://www.cloudflare.com/cdn-cgi/trace | grep "loc=" | cut -d= -f2)" "$(curl -s https://www.cloudflare.com/cdn-cgi/trace | grep "colo=" | cut -d= -f2)"'
                 read -rp "按 Enter 继续..." < /dev/tty
                 ;;
             3)
                 log_action "正在更换 Warp IP..."
-                docker exec -it "$container_name" warp-cli tunnel rotate-keys
+                docker exec "$container_name" warp-cli tunnel rotate-keys
                 log_success "指令已发送，IP 将在几秒内更新。"
                 sleep 2
                 ;;
