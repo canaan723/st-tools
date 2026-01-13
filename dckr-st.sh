@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v5.11"
+readonly SCRIPT_VERSION="v5.12"
 GUGU_MODE="prod"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -1667,6 +1667,7 @@ install_1panel() {
     echo -e "并确保防火墙/安全组中 ${GREEN}已放行 1Panel 的端口${NC}。"
     echo -e "\n${BOLD}可重新运行本脚本，选择【2】进入应用部署中心，再选择【3】来部署 SillyTavern。${NC}"
     log_warn "若刚才有用户被添加到 docker 组，务必先退出并重新登录SSH！"
+    read -rp "请记录好以上信息，按 Enter 键返回..." < /dev/tty
 }
 
 fn_get_public_ip() {
@@ -2182,6 +2183,15 @@ install_ais2api() {
     
     tput reset
     echo -e "${CYAN}ais2api Docker 自动化安装流程${NC}"
+    
+    # 架构检测
+    local arch
+    arch=$(uname -m)
+    if [[ "$arch" != "x86_64" ]]; then
+        log_error "检测到当前系统架构为 ${arch}，而 ais2api 仅支持 x86_64 (amd64) 架构，无法继续安装。"
+        return 1
+    fi
+
     log_warn "注意：此镜像仅支持 x86 架构。"
     
     fn_check_base_deps
@@ -2298,6 +2308,100 @@ EOF
     echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
 }
 
+install_warp() {
+    local DOCKER_VER="-" DOCKER_STATUS="-"
+    local COMPOSE_VER="-" COMPOSE_STATUS="-"
+    local DOCKER_COMPOSE_CMD=""
+    local CONTAINER_NAME="warp"
+    local IMAGE_NAME="caomingjun/warp"
+
+    tput reset
+    echo -e "${CYAN}Warp-Docker 自动化安装流程${NC}"
+
+    fn_check_base_deps
+    fn_check_dependencies
+
+    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+        log_warn "检测到已存在名为 '${CONTAINER_NAME}' 的容器。"
+        read -rp "是否停止并移除现有容器？[y/N]: " confirm_rm < /dev/tty
+        if [[ "$confirm_rm" =~ ^[Yy]$ ]]; then
+            docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
+            docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
+        else
+            log_info "操作已取消。"
+            return 1
+        fi
+    fi
+
+    local default_parent_path="${USER_HOME}"
+    read -rp "安装路径: Warp 将被安装在 <上级目录>/warp 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
+    local parent_path="${custom_parent_path:-$default_parent_path}"
+    local INSTALL_DIR="${parent_path}/warp"
+
+    while true; do
+        read -rp "请输入 Warp 代理映射到宿主机的端口 [默认 1080]: " WARP_PORT < /dev/tty
+        WARP_PORT=${WARP_PORT:-1080}
+        if [[ "$WARP_PORT" =~ ^[0-9]+$ ]] && [ "$WARP_PORT" -ge 1 ] && [ "$WARP_PORT" -le 65535 ]; then
+            break
+        else
+            log_warn "端口无效。"
+        fi
+    done
+
+    log_action "正在创建目录结构..."
+    mkdir -p "$INSTALL_DIR/data"
+
+    log_action "正在创建 Docker 网络 'warp'..."
+    docker network create warp >/dev/null 2>&1 || true
+
+    log_action "正在生成 docker-compose.yml..."
+    cat <<EOF > "$INSTALL_DIR/docker-compose.yml"
+# ✦ 咕咕助手 · 作者：清绝 | 博客：https://blog.qjyg.de
+networks:
+  warp:
+    external: true
+services:
+  warp:
+    image: ${IMAGE_NAME}
+    container_name: ${CONTAINER_NAME}
+    restart: always
+    environment:
+      - WARP_SLEEP=2
+      - WARP_PROXY=0.0.0.0:1080
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=0
+      - net.ipv4.conf.all.src_valid_mark=1
+    volumes:
+      - ./data:/var/lib/cloudflare-warp
+    ports:
+      - "127.0.0.1:${WARP_PORT}:1080"
+    networks:
+      - warp
+EOF
+
+    log_action "正在启动服务..."
+    cd "$INSTALL_DIR" && $DOCKER_COMPOSE_CMD up -d
+
+    fn_verify_container_health "$CONTAINER_NAME"
+
+    echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "║                   ${BOLD}Warp 部署成功！${NC}                          ║"
+    echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "\n  ${CYAN}代理访问地址 (容器间):${NC}"
+    echo -e "    HTTP:   ${GREEN}http://warp:1080${NC}"
+    echo -e "    SOCKS5: ${GREEN}socks5://warp:1080${NC}"
+    echo -e "\n  ${CYAN}代理访问地址 (宿主机):${NC}"
+    echo -e "    HTTP:   ${GREEN}http://127.0.0.1:${WARP_PORT}${NC}"
+    echo -e "    SOCKS5: ${GREEN}socks5://127.0.0.1:${WARP_PORT}${NC}"
+    echo -e "\n  ${CYAN}代理访问地址 (Docker网桥):${NC}"
+    echo -e "    HTTP:   ${GREEN}http://172.17.0.1:${WARP_PORT}${NC}"
+    echo -e "    SOCKS5: ${GREEN}socks5://172.17.0.1:${WARP_PORT}${NC}"
+    echo -e "\n  ${CYAN}项目路径:${NC} $INSTALL_DIR"
+}
+
 fn_test_scripts_menu() {
     # 清理输入缓冲区
     while read -r -t 0.1; do :; done
@@ -2396,6 +2500,338 @@ fn_test_llm_api() {
 }
 
 # --- [酒馆运维辅助函数] ---
+fn_st_proxy_manager() {
+    local project_dir=$1
+    local config_file=$2
+    local compose_file=$3
+    local compose_cmd=$4
+
+    while true; do
+        tput reset
+        echo -e "${BLUE}=== 酒馆代理配置管理 ===${NC}"
+        local proxy_enabled=$(grep -A 5 "requestProxy:" "$config_file" | grep "enabled:" | head -n 1 | awk '{print $2}')
+        local proxy_url=$(grep -A 5 "requestProxy:" "$config_file" | grep "url:" | head -n 1 | cut -d'"' -f2)
+        
+        echo -e "当前状态: $( [[ "$proxy_enabled" == "true" ]] && echo -e "${GREEN}已启用${NC}" || echo -e "${RED}已禁用${NC}" )"
+        echo -e "当前代理: ${CYAN}${proxy_url:-未配置}${NC}"
+        echo -e "------------------------"
+        echo -e "  [1] 自动配置 Warp 代理 (warp:1080)"
+        echo -e "  [2] 手动配置自定义代理"
+        echo -e "  [3] 禁用并删除代理配置"
+        echo -e "  [0] 返回上一级"
+        echo -e "------------------------"
+        read -rp "请输入选项: " proxy_choice < /dev/tty
+        [[ -z "$proxy_choice" ]] && continue
+        
+        case "$proxy_choice" in
+            1)
+                log_action "正在检查 Warp 环境..."
+                if ! docker ps -a --format '{{.Names}}' | grep -q '^warp$'; then
+                    log_warn "未检测到 Warp 容器。"
+                    read -rp "是否立即安装 Warp？[Y/n]: " confirm_warp < /dev/tty
+                    if [[ "${confirm_warp:-y}" =~ ^[Yy]$ ]]; then
+                        install_warp || continue
+                    else
+                        continue
+                    fi
+                fi
+                
+                log_action "正在配置酒馆代理为 Warp..."
+                # 仅在 requestProxy 块内修改
+                sed -i -E "/requestProxy:/,/url:/{s/enabled: .*/enabled: true/}" "$config_file"
+                sed -i -E "/requestProxy:/,/url:/{s|url: .*|url: \"socks5://warp:1080\"|}" "$config_file"
+                
+                # 1. 确保全局 networks 块存在
+                if ! grep -q "^networks:" "$compose_file"; then
+                    echo -e "\nnetworks:\n  warp:\n    external: true" >> "$compose_file"
+                elif ! sed -n '/^networks:/,$p' "$compose_file" | grep -q "^  warp:"; then
+                    sed -i '/^networks:/a \  warp:\n    external: true' "$compose_file"
+                fi
+                
+                # 2. 为 sillytavern 服务添加网络连接 (置后放置)
+                if ! sed -n "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/p" "$compose_file" | grep -q "\- warp"; then
+                    if command -v python3 &> /dev/null; then
+                        python3 -c "
+import re, os
+path = '$compose_file'
+if os.path.exists(path):
+    with open(path, 'r') as f: content = f.read()
+    match = re.search(r'^(\s*sillytavern:.*?\n)(?=(^\S|\Z))', content, re.M | re.S)
+    if match:
+        block = match.group(1).rstrip()
+        if 'networks:' not in block:
+            block += '\n    networks:\n      - warp'
+        else:
+            # 如果已有 networks，先移除旧的 networks 块再重新加到最后，确保置后
+            lines = block.split('\n')
+            new_lines = []
+            net_lines = []
+            in_net = False
+            for line in lines:
+                if re.match(r'^\s+networks:', line):
+                    in_net = True
+                    continue
+                if in_net and re.match(r'^\s+-', line):
+                    net_lines.append(line)
+                    continue
+                if in_net and not re.match(r'^\s+-', line) and line.strip():
+                    in_net = False
+                if not in_net:
+                    new_lines.append(line)
+            
+            block = '\n'.join(new_lines).rstrip()
+            block += '\n    networks:'
+            for nl in net_lines: block += '\n' + nl
+            block += '\n      - warp'
+            
+        new_content = content[:match.start(1)] + block + '\n' + content[match.end(1):]
+        with open(path, 'w') as f: f.write(new_content)
+" 2>/dev/null
+                    else
+                        # 兜底 sed 逻辑
+                        if sed -n "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/p" "$compose_file" | grep -q "networks:"; then
+                            sed -i "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/ { /networks:/a \      - warp" -e "}" "$compose_file"
+                        else
+                            sed -i "/^[[:space:]]*sillytavern:/a \    networks:\n      - warp" "$compose_file"
+                        fi
+                    fi
+                fi
+                
+                log_info "正在重启酒馆以应用更改..."
+                cd "$project_dir" && $compose_cmd up -d --force-recreate
+                log_success "Warp 代理配置完成！"
+                sleep 2
+                ;;
+            2)
+                echo -e "\n${CYAN}请输入代理地址 (格式: 协议://[用户名:密码@]IP或域名:端口)${NC}"
+                read -rp "代理地址: " manual_url < /dev/tty
+                if [[ "$manual_url" =~ ^(http|https|socks|socks5|socks4|pac)://.+:[0-9]+$ ]]; then
+                    log_action "正在应用自定义代理..."
+                    sed -i -E "/requestProxy:/,/url:/{s/enabled: .*/enabled: true/}" "$config_file"
+                    local safe_url=$(fn_escape_sed_str "$manual_url")
+                    sed -i -E "/requestProxy:/,/url:/{s|url: .*|url: \"$safe_url\"|}" "$config_file"
+                    
+                    # 清理可能残留的 warp 网络连接
+                    if command -v python3 &> /dev/null; then
+                        python3 -c "
+import re, os
+path = '$compose_file'
+if os.path.exists(path):
+    with open(path, 'r') as f: content = f.read()
+    st_match = re.search(r'^(\s*sillytavern:.*?\n)(?=(^\S|\Z))', content, re.M | re.S)
+    if st_match:
+        block = st_match.group(1)
+        block = re.sub(r'^\s*-\s*warp\s*$\n?', '', block, flags=re.M)
+        block = re.sub(r'^\s*networks:\s*\n(?!\s*-)', '', block, flags=re.M)
+        content = content[:st_match.start(1)] + block + content[st_match.end(1):]
+    with open(path, 'w') as f: f.write(content)
+" 2>/dev/null
+                    fi
+
+                    cd "$project_dir" && $compose_cmd up -d --force-recreate
+                    log_success "自定义代理配置完成！"
+                else
+                    log_error "格式不正确。"
+                fi
+                sleep 2
+                ;;
+            3)
+                log_action "正在禁用并清理代理配置..."
+                sed -i -E "/requestProxy:/,/enabled:/{s/enabled: .*/enabled: false/}" "$config_file"
+                
+                # 优先使用 Python 处理，因为它对多行逻辑更友好
+                if command -v python3 &> /dev/null; then
+                    python3 -c "
+import re, os
+path = '$compose_file'
+if os.path.exists(path):
+    with open(path, 'r') as f: content = f.read()
+    # 1. 清理 sillytavern 服务块内的网络引用
+    st_match = re.search(r'^(\s*sillytavern:.*?\n)(?=(^\S|\Z))', content, re.M | re.S)
+    if st_match:
+        block = st_match.group(1)
+        block = re.sub(r'^\s*-\s*warp\s*$\n?', '', block, flags=re.M)
+        block = re.sub(r'^\s*networks:\s*\n(?!\s*-)', '', block, flags=re.M)
+        content = content[:st_match.start(1)] + block + content[st_match.end(1):]
+    
+    # 2. 检查是否还有其他服务在使用 warp 网络
+    if not re.search(r'^\s+-\s+warp\s*$', content, re.M):
+        # 3. 清理全局 networks 定义块
+        net_match = re.search(r'^networks:.*?\n(?=(^\S|\Z))', content, re.M | re.S)
+        if net_match:
+            net_block = net_match.group(0)
+            net_block = re.sub(r'^\s+warp:\s*\n\s+external:\s*true\s*\n?', '', net_block, flags=re.M)
+            if net_block.strip() == 'networks:':
+                content = content[:net_match.start(0)] + content[net_match.end(0):]
+            else:
+                content = content[:net_match.start(0)] + net_block + content[net_match.end(0):]
+    
+    with open(path, 'w') as f: f.write(content)
+" 2>/dev/null
+                fi
+                
+                # 兜底使用 sed (针对没有 python 的环境)
+                sed -i -E "/^[[:space:]]*sillytavern:/,/^([^[:space:]]|$)/ { /^[[:space:]]*- warp$/d }" "$compose_file"
+                # 如果全局 networks 块中只剩下 warp 且没有其他服务引用，尝试删除全局定义
+                if ! grep -qE "^[[:space:]]+-[[:space:]]+warp" "$compose_file"; then
+                    sed -i "/^networks:/,/^[^[:space:]]/ { /^[[:space:]]*warp:/,+1 d }" "$compose_file"
+                    sed -i "/^networks:[[:space:]]*$/d" "$compose_file"
+                fi
+
+                cd "$project_dir" && $compose_cmd up -d --force-recreate
+                log_success "代理配置及网络连接已禁用并清理。"
+                sleep 2
+                ;;
+            0) break ;;
+        esac
+    done
+}
+
+fn_ais_proxy_manager() {
+    local project_dir=$1
+    local compose_file=$2
+    local compose_cmd=$3
+
+    while true; do
+        tput reset
+        echo -e "${BLUE}=== ais2api 代理配置管理 ===${NC}"
+        local proxy_url=$(grep -E "HTTP_PROXY=" "$compose_file" | head -n 1 | cut -d'=' -f2)
+        
+        echo -e "当前状态: $( [[ -n "$proxy_url" ]] && echo -e "${GREEN}已启用${NC}" || echo -e "${RED}已禁用${NC}" )"
+        echo -e "当前代理: ${CYAN}${proxy_url:-未配置}${NC}"
+        echo -e "------------------------"
+        echo -e "  [1] 自动配置 Warp 代理 (http://warp:1080)"
+        echo -e "  [2] 禁用并删除代理配置"
+        echo -e "  [0] 返回上一级"
+        echo -e "------------------------"
+        read -rp "请输入选项: " ais_proxy_choice < /dev/tty
+        [[ -z "$ais_proxy_choice" ]] && continue
+        
+        case "$ais_proxy_choice" in
+            1)
+                local target_url="http://warp:1080"
+                log_action "正在检查 Warp 环境..."
+                if ! docker ps -a --format '{{.Names}}' | grep -q '^warp$'; then
+                    log_warn "未检测到 Warp 容器。"
+                    read -rp "是否立即安装 Warp？[Y/n]: " confirm_warp < /dev/tty
+                    if [[ "${confirm_warp:-y}" =~ ^[Yy]$ ]]; then
+                        install_warp || continue
+                    else
+                        continue
+                    fi
+                fi
+
+                log_action "正在配置 ais2api 代理..."
+                
+                # 1. 如果是 Warp，确保全局 networks 块存在
+                if [[ "$target_url" == "http://warp:1080" ]]; then
+                    if ! grep -q "^networks:" "$compose_file"; then
+                        echo -e "\nnetworks:\n  warp:\n    external: true" >> "$compose_file"
+                    elif ! sed -n '/^networks:/,$p' "$compose_file" | grep -q "^  warp:"; then
+                        sed -i '/^networks:/a \  warp:\n    external: true' "$compose_file"
+                    fi
+                fi
+
+                # 2. 使用 Python 注入环境变量和网络 (置后放置)
+                if command -v python3 &> /dev/null; then
+                    python3 -c "
+import re, os
+path = '$compose_file'
+target_url = '$target_url'
+if os.path.exists(path):
+    with open(path, 'r') as f: content = f.read()
+    match = re.search(r'^(\s*ais2api:.*?\n)(?=(^\S|\Z))', content, re.M | re.S)
+    if match:
+        block = match.group(1).rstrip()
+        lines = block.split('\n')
+        new_lines = []
+        env_lines = []
+        net_lines = []
+        in_env = False
+        in_net = False
+        
+        for line in lines:
+            if re.match(r'^\s+environment:', line):
+                in_env = True; in_net = False; continue
+            if re.match(r'^\s+networks:', line):
+                in_net = True; in_env = False; continue
+            
+            if in_env:
+                if re.match(r'^\s+-', line):
+                    if not any(x in line for x in ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY']):
+                        env_lines.append(line)
+                    continue
+                elif line.strip(): in_env = False
+            
+            if in_net:
+                if re.match(r'^\s+-', line):
+                    if '- warp' not in line: net_lines.append(line)
+                    continue
+                elif line.strip(): in_net = False
+            
+            if not in_env and not in_net:
+                new_lines.append(line)
+        
+        block = '\n'.join(new_lines).rstrip()
+        # 添加 environment
+        block += '\n    environment:'
+        for el in env_lines: block += '\n' + el
+        block += f'\n      - HTTP_PROXY={target_url}\n      - HTTPS_PROXY={target_url}\n      - ALL_PROXY={target_url}'
+        
+        # 添加 networks
+        if 'warp' in target_url or net_lines:
+            block += '\n    networks:'
+            for nl in net_lines: block += '\n' + nl
+            if 'warp' in target_url: block += '\n      - warp'
+            
+        new_content = content[:match.start(1)] + block + '\n' + content[match.end(1):]
+        with open(path, 'w') as f: f.write(new_content)
+" 2>/dev/null
+                fi
+
+                log_info "正在重启 ais2api 以应用更改..."
+                cd "$project_dir" && $compose_cmd up -d --force-recreate
+                log_success "ais2api 代理配置完成！"
+                sleep 2
+                ;;
+            2)
+                log_action "正在禁用并清理代理配置..."
+                if command -v python3 &> /dev/null; then
+                    python3 -c "
+import re, os
+path = '$compose_file'
+if os.path.exists(path):
+    with open(path, 'r') as f: content = f.read()
+    match = re.search(r'^(\s*ais2api:.*?\n)(?=(^\S|\Z))', content, re.M | re.S)
+    if match:
+        block = match.group(1)
+        block = re.sub(r'^\s*-\s*(HTTP|HTTPS|ALL)_PROXY=.*?\n', '', block, flags=re.M)
+        block = re.sub(r'^\s*environment:\s*\n(?!\s*-)', '', block, flags=re.M)
+        block = re.sub(r'^\s*-\s*warp\s*$\n?', '', block, flags=re.M)
+        block = re.sub(r'^\s*networks:\s*\n(?!\s*-)', '', block, flags=re.M)
+        content = content[:match.start(1)] + block + content[match.end(1):]
+    
+    if not re.search(r'^\s+-\s+warp\s*$', content, re.M):
+        net_match = re.search(r'^networks:.*?\n(?=(^\S|\Z))', content, re.M | re.S)
+        if net_match:
+            net_block = net_match.group(0)
+            net_block = re.sub(r'^\s+warp:\s*\n\s+external:\s*true\s*\n?', '', net_block, flags=re.M)
+            if net_block.strip() == 'networks:':
+                content = content[:net_match.start(0)] + content[net_match.end(0):]
+            else:
+                content = content[:net_match.start(0)] + net_block + content[net_match.end(0):]
+    with open(path, 'w') as f: f.write(content)
+" 2>/dev/null
+                fi
+                cd "$project_dir" && $compose_cmd up -d --force-recreate
+                log_success "代理配置及网络连接已禁用并清理。"
+                sleep 2
+                ;;
+            0) break ;;
+        esac
+    done
+}
+
 fn_st_switch_to_single() {
     local project_dir=$1
     local config_file=$2
@@ -2676,6 +3112,7 @@ fn_st_docker_manager() {
         echo -e "  [6] 查看运行状态 (ps)"
         echo -e "  [7] 查看资源占用 (stats)"
         echo -e "  [8] 查看实时日志 (logs -f)"
+        echo -e "  [9] ${CYAN}代理配置管理${NC}"
         echo -e "  [x] 彻底卸载酒馆"
         echo -e "  [0] 返回上一级"
         echo -e "------------------------"
@@ -2730,8 +3167,100 @@ fn_st_docker_manager() {
                 cd "$project_dir" && $compose_cmd logs -f --tail 1000
                 trap 'exit 0' INT
                 ;;
+            9)
+                fn_st_proxy_manager "$project_dir" "$config_file" "$compose_file" "$compose_cmd"
+                ;;
             x|X)
                 if fn_uninstall_docker_app "sillytavern" "SillyTavern" "$project_dir" "ghcr.io/sillytavern/sillytavern:latest"; then
+                    sleep 2
+                    break
+                fi
+                ;;
+            0) break ;;
+            *) log_warn "无效输入"; sleep 1 ;;
+        esac
+    done
+}
+
+fn_warp_docker_manager() {
+    local container_name="warp"
+    local display_name="Warp-Docker"
+    local compose_cmd=""
+    
+    if command -v docker-compose &> /dev/null; then
+        compose_cmd="docker-compose"
+    elif docker compose version &> /dev/null; then
+        compose_cmd="docker compose"
+    else
+        log_error "未检测到 Docker Compose。" || return 1
+    fi
+
+    local project_dir=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$container_name" 2>/dev/null)
+    
+    if [ -z "$project_dir" ] || [ ! -d "$project_dir" ]; then
+        local target_user="${SUDO_USER:-root}"
+        local user_home
+        if [ "$target_user" = "root" ]; then user_home="/root"; else user_home=$(getent passwd "$target_user" | cut -d: -f6); fi
+        project_dir="${user_home}/warp"
+    fi
+
+    if [ ! -d "$project_dir" ]; then
+        log_error "未能找到项目目录。" || return 1
+    fi
+
+    while true; do
+        tput reset
+        echo -e "${BLUE}=== ${display_name} 运维管理 ===${NC}"
+        echo -e "项目路径: ${CYAN}${project_dir}${NC}"
+        echo -e "------------------------"
+        echo -e "  [1] 查看代理访问地址"
+        echo -e "  [2] 查看 Warp 当前 IP"
+        echo -e "  [3] 更换 Warp IP (Rotate Keys)"
+        echo -e "  [4] 重启服务 (restart)"
+        echo -e "  [5] 查看运行状态 (ps)"
+        echo -e "  [6] 查看实时日志 (logs -f)"
+        echo -e "  [x] 彻底卸载服务"
+        echo -e "  [0] 返回上一级"
+        echo -e "------------------------"
+        read -rp "请输入选项: " warp_choice < /dev/tty
+        [[ -z "$warp_choice" ]] && continue
+        case "$warp_choice" in
+            1)
+                local warp_port=$(grep "127.0.0.1:" "$project_dir/docker-compose.yml" | head -n 1 | sed -E 's/.*127.0.0.1:([0-9]+):1080.*/\1/' | grep -E '^[0-9]+$' || echo "1080")
+                echo -e "\n${CYAN}代理访问地址 (容器间):${NC}"
+                echo -e "  HTTP:   ${GREEN}http://warp:1080${NC}"
+                echo -e "  SOCKS5: ${GREEN}socks5://warp:1080${NC}"
+                echo -e "\n${CYAN}代理访问地址 (宿主机):${NC}"
+                echo -e "  HTTP:   ${GREEN}http://127.0.0.1:${warp_port}${NC}"
+                echo -e "  SOCKS5: ${GREEN}socks5://127.0.0.1:${warp_port}${NC}"
+                echo -e "\n${CYAN}代理访问地址 (Docker网桥):${NC}"
+                echo -e "  HTTP:   ${GREEN}http://172.17.0.1:${warp_port}${NC}"
+                echo -e "  SOCKS5: ${GREEN}socks5://172.17.0.1:${warp_port}${NC}"
+                echo -e "\n${YELLOW}提示: 容器间通信仅限已加入 warp 网络的容器。${NC}"
+                read -rp "按 Enter 继续..." < /dev/tty
+                ;;
+            2)
+                echo -e "\n${CYAN}--- Warp IP 信息 ---${NC}"
+                docker exec "$container_name" sh -c 'printf "IPv4: %s\nIPv6: %s\nLOC:  %s (%s)\n" "$(curl -4s ifconfig.me)" "$(curl -6s ifconfig.me)" "$(curl -s https://www.cloudflare.com/cdn-cgi/trace | grep "loc=" | cut -d= -f2)" "$(curl -s https://www.cloudflare.com/cdn-cgi/trace | grep "colo=" | cut -d= -f2)"'
+                read -rp "按 Enter 继续..." < /dev/tty
+                ;;
+            3)
+                log_action "正在更换 Warp IP..."
+                docker exec "$container_name" warp-cli tunnel rotate-keys
+                log_success "指令已发送，IP 将在几秒内更新。"
+                sleep 2
+                ;;
+            4) cd "$project_dir" && $compose_cmd restart; read -rp "按 Enter 继续..." < /dev/tty ;;
+            5) echo -e "\n${CYAN}--- 状态 ---${NC}"; cd "$project_dir" && $compose_cmd ps; read -rp "按 Enter 继续..." < /dev/tty ;;
+            6)
+                echo -e "\n${CYAN}--- 日志 (Ctrl+C 退出) ---${NC}"
+                trap : INT
+                cd "$project_dir" && $compose_cmd logs -f --tail 100
+                trap 'exit 0' INT
+                ;;
+            x|X)
+                local image_to_remove=$(docker inspect --format '{{.Config.Image}}' "$container_name" 2>/dev/null)
+                if fn_uninstall_docker_app "$container_name" "$display_name" "$project_dir" "$image_to_remove"; then
                     sleep 2
                     break
                 fi
@@ -2761,6 +3290,8 @@ fn_api_docker_manager() {
         log_error "未能找到项目目录。" || return 1
     fi
 
+    local compose_file="${project_dir}/docker-compose.yml"
+
     while true; do
         tput reset
         echo -e "${BLUE}=== ${display_name} 运维管理 ===${NC}"
@@ -2771,6 +3302,9 @@ fn_api_docker_manager() {
         echo -e "  [3] 更新镜像 (pull & up)"
         echo -e "  [4] 查看运行状态 (ps)"
         echo -e "  [5] 查看实时日志 (logs -f)"
+        if [[ "$container_name" == "ais2api" ]]; then
+            echo -e "  [6] ${CYAN}代理配置管理${NC}"
+        fi
         echo -e "  [x] 彻底卸载服务"
         echo -e "  [0] 返回上一级"
         echo -e "------------------------"
@@ -2786,6 +3320,13 @@ fn_api_docker_manager() {
                 trap : INT
                 cd "$project_dir" && $compose_cmd logs -f --tail 100
                 trap 'exit 0' INT
+                ;;
+            6)
+                if [[ "$container_name" == "ais2api" ]]; then
+                    fn_ais_proxy_manager "$project_dir" "$compose_file" "$compose_cmd"
+                else
+                    log_warn "无效输入"
+                fi
                 ;;
             x|X)
                 local image_to_remove=$(docker inspect --format '{{.Config.Image}}' "$container_name" 2>/dev/null)
@@ -2813,16 +3354,18 @@ fn_deploy_menu() {
         echo -e "  [3] 部署 酒馆"
         echo -e "  [4] 部署 gcli2api"
         echo -e "  [5] 部署 ais2api"
+        echo -e "  [6] 部署 Warp"
         echo -e "------------------------------------------------------"
         echo -e "  [0] 返回上一级"
         echo -e "${BLUE}======================================================${NC}"
-        read -rp "请输入选项 [0-5]: " deploy_choice < /dev/tty
+        read -rp "请输入选项 [0-6]: " deploy_choice < /dev/tty
         case "$deploy_choice" in
             1) log_action "正在安装 Docker..."; bash <(curl -sSL https://linuxmirrors.cn/docker.sh); read -rp $'\n操作完成，按 Enter 键返回...' < /dev/tty ;;
             2) [ "$IS_DEBIAN_LIKE" = true ] && install_1panel || log_warn "系统不支持" ;;
             3) install_sillytavern; read -rp $'\n操作完成，按 Enter 键返回...' < /dev/tty ;;
             4) install_gcli2api; read -rp $'\n操作完成，按 Enter 键返回...' < /dev/tty ;;
             5) install_ais2api; read -rp $'\n操作完成，按 Enter 键返回...' < /dev/tty ;;
+            6) install_warp; read -rp $'\n操作完成，按 Enter 键返回...' < /dev/tty ;;
             0) break ;;
             *) log_warn "无效输入"; sleep 1 ;;
         esac
@@ -2857,6 +3400,11 @@ fn_manage_menu() {
             echo -e "  [4] ${GREEN}1Panel 运维管理${NC}"
             has_app=true
         fi
+        # 5. Warp 管理
+        if docker ps -a --format '{{.Names}}' | grep -q '^warp$'; then
+            echo -e "  [5] ${GREEN}Warp 运维管理${NC}"
+            has_app=true
+        fi
 
         if [ "$has_app" = false ]; then
             echo -e "  ${YELLOW}(未检测到已安装的应用)${NC}"
@@ -2871,6 +3419,7 @@ fn_manage_menu() {
             2) docker ps -a --format '{{.Names}}' | grep -q '^gcli2api$' && fn_api_docker_manager "gcli2api" "gcli2api" || log_warn "未安装" ;;
             3) docker ps -a --format '{{.Names}}' | grep -q '^ais2api$' && fn_api_docker_manager "ais2api" "ais2api" || log_warn "未安装" ;;
             4) command -v 1pctl &> /dev/null && fn_1panel_manager || log_warn "未安装" ;;
+            5) docker ps -a --format '{{.Names}}' | grep -q '^warp$' && fn_warp_docker_manager || log_warn "未安装" ;;
             0) break ;;
             *) log_warn "无效输入"; sleep 1 ;;
         esac
