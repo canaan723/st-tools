@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v5.123test"
+readonly SCRIPT_VERSION="v5.124test"
 GUGU_MODE="test"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -2538,15 +2538,52 @@ fn_st_proxy_manager() {
                     sed -i '/^networks:/a \  warp:\n    external: true' "$compose_file"
                 fi
                 
-                # 2. 为 sillytavern 服务添加网络连接 (使用更稳健的范围匹配)
-                # 检查 sillytavern 服务块中是否已存在 - warp
+                # 2. 为 sillytavern 服务添加网络连接 (置后放置)
                 if ! sed -n "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/p" "$compose_file" | grep -q "\- warp"; then
-                    if sed -n "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/p" "$compose_file" | grep -q "networks:"; then
-                        # 如果已有 networks 块但没 warp，在 networks: 之后追加
-                        sed -i "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/ { /networks:/a \      - warp" -e "}" "$compose_file"
+                    if command -v python3 &> /dev/null; then
+                        python3 -c "
+import re, os
+path = '$compose_file'
+if os.path.exists(path):
+    with open(path, 'r') as f: content = f.read()
+    match = re.search(r'^(\s*sillytavern:.*?\n)(?=(^\S|\Z))', content, re.M | re.S)
+    if match:
+        block = match.group(1).rstrip()
+        if 'networks:' not in block:
+            block += '\n    networks:\n      - warp'
+        else:
+            # 如果已有 networks，先移除旧的 networks 块再重新加到最后，确保置后
+            lines = block.split('\n')
+            new_lines = []
+            net_lines = []
+            in_net = False
+            for line in lines:
+                if re.match(r'^\s+networks:', line):
+                    in_net = True
+                    continue
+                if in_net and re.match(r'^\s+-', line):
+                    net_lines.append(line)
+                    continue
+                if in_net and not re.match(r'^\s+-', line) and line.strip():
+                    in_net = False
+                if not in_net:
+                    new_lines.append(line)
+            
+            block = '\n'.join(new_lines).rstrip()
+            block += '\n    networks:'
+            for nl in net_lines: block += '\n' + nl
+            block += '\n      - warp'
+            
+        new_content = content[:match.start(1)] + block + '\n' + content[match.end(1):]
+        with open(path, 'w') as f: f.write(new_content)
+" 2>/dev/null
                     else
-                        # 如果完全没有 networks 块，直接在 sillytavern: 之后插入
-                        sed -i "/^[[:space:]]*sillytavern:/a \    networks:\n      - warp" "$compose_file"
+                        # 兜底 sed 逻辑
+                        if sed -n "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/p" "$compose_file" | grep -q "networks:"; then
+                            sed -i "/^[[:space:]]*sillytavern:/,/^\([a-z]\|$\)/ { /networks:/a \      - warp" -e "}" "$compose_file"
+                        else
+                            sed -i "/^[[:space:]]*sillytavern:/a \    networks:\n      - warp" "$compose_file"
+                        fi
                     fi
                 fi
                 
@@ -2563,6 +2600,24 @@ fn_st_proxy_manager() {
                     sed -i -E "/requestProxy:/,/url:/{s/enabled: .*/enabled: true/}" "$config_file"
                     local safe_url=$(fn_escape_sed_str "$manual_url")
                     sed -i -E "/requestProxy:/,/url:/{s|url: .*|url: \"$safe_url\"|}" "$config_file"
+                    
+                    # 清理可能残留的 warp 网络连接
+                    if command -v python3 &> /dev/null; then
+                        python3 -c "
+import re, os
+path = '$compose_file'
+if os.path.exists(path):
+    with open(path, 'r') as f: content = f.read()
+    st_match = re.search(r'^(\s*sillytavern:.*?\n)(?=(^\S|\Z))', content, re.M | re.S)
+    if st_match:
+        block = st_match.group(1)
+        block = re.sub(r'^\s*-\s*warp\s*$\n?', '', block, flags=re.M)
+        block = re.sub(r'^\s*networks:\s*\n(?!\s*-)', '', block, flags=re.M)
+        content = content[:st_match.start(1)] + block + content[st_match.end(1):]
+    with open(path, 'w') as f: f.write(content)
+" 2>/dev/null
+                    fi
+
                     cd "$project_dir" && $compose_cmd up -d --force-recreate
                     log_success "自定义代理配置完成！"
                 else
@@ -2613,6 +2668,287 @@ if os.path.exists(path):
                     sed -i "/^networks:[[:space:]]*$/d" "$compose_file"
                 fi
 
+                cd "$project_dir" && $compose_cmd up -d --force-recreate
+                log_success "代理配置及网络连接已禁用并清理。"
+                sleep 2
+                ;;
+            0) break ;;
+        esac
+    done
+}
+
+fn_ais_proxy_manager() {
+    local project_dir=$1
+    local compose_file=$2
+    local compose_cmd=$3
+
+    while true; do
+        tput reset
+        echo -e "${BLUE}=== ais2api 代理配置管理 ===${NC}"
+        local proxy_enabled=false
+        if grep -q "HTTP_PROXY=http://warp:1080" "$compose_file" 2>/dev/null; then
+            proxy_enabled=true
+        fi
+        
+        echo -e "当前状态: $( [[ "$proxy_enabled" == "true" ]] && echo -e "${GREEN}已启用 Warp 代理${NC}" || echo -e "${RED}已禁用${NC}" )"
+        echo -e "------------------------"
+        echo -e "  [1] 启用 Warp 代理 (warp:1080)"
+        echo -e "  [2] 禁用并删除代理配置"
+        echo -e "  [0] 返回上一级"
+        echo -e "------------------------"
+        read -rp "请输入选项: " ais_proxy_choice < /dev/tty
+        [[ -z "$ais_proxy_choice" ]] && continue
+        
+        case "$ais_proxy_choice" in
+            1)
+                log_action "正在检查 Warp 环境..."
+                if ! docker ps -a --format '{{.Names}}' | grep -q '^warp$'; then
+                    log_warn "未检测到 Warp 容器。"
+                    read -rp "是否立即安装 Warp？[Y/n]: " confirm_warp < /dev/tty
+                    if [[ "${confirm_warp:-y}" =~ ^[Yy]$ ]]; then
+                        install_warp || continue
+                    else
+                        continue
+                    fi
+                fi
+                
+                log_action "正在配置 ais2api 代理为 Warp..."
+                
+                # 1. 确保全局 networks 块存在
+                if ! grep -q "^networks:" "$compose_file"; then
+                    echo -e "\nnetworks:\n  warp:\n    external: true" >> "$compose_file"
+                elif ! sed -n '/^networks:/,$p' "$compose_file" | grep -q "^  warp:"; then
+                    sed -i '/^networks:/a \  warp:\n    external: true' "$compose_file"
+                fi
+
+                # 2. 使用 Python 注入环境变量和网络 (置后放置)
+                if command -v python3 &> /dev/null; then
+                    python3 -c "
+import re, os
+path = '$compose_file'
+if os.path.exists(path):
+    with open(path, 'r') as f: content = f.read()
+    match = re.search(r'^(\s*ais2api:.*?\n)(?=(^\S|\Z))', content, re.M | re.S)
+    if match:
+        block = match.group(1).rstrip()
+        # 处理 environment
+        if 'environment:' not in block:
+            block += '\n    environment:\n      - HTTP_PROXY=http://warp:1080\n      - HTTPS_PROXY=http://warp:1080\n      - ALL_PROXY=http://warp:1080'
+        elif 'HTTP_PROXY' not in block:
+            block = re.sub(r'(^\s*environment:.*?\n)', r'\1      - HTTP_PROXY=http://warp:1080\n      - HTTPS_PROXY=http://warp:1080\n      - ALL_PROXY=http://warp:1080\n', block, flags=re.M | re.S)
+        
+        # 处理 networks
+        if 'networks:' not in block:
+            block += '\n    networks:\n      - warp'
+        elif '- warp' not in block:
+            block = re.sub(r'(^\s*networks:.*?\n)', r'\1      - warp\n', block, flags=re.M | re.S)
+            
+        new_content = content[:match.start(1)] + block + '\n' + content[match.end(1):]
+        with open(path, 'w') as f: f.write(new_content)
+" 2>/dev/null
+                else
+                    # 兜底 sed 逻辑
+                    if ! grep -q "environment:" "$compose_file"; then
+                        sed -i "/^[[:space:]]*ais2api:/a \    environment:\n      - HTTP_PROXY=http://warp:1080\n      - HTTPS_PROXY=http://warp:1080\n      - ALL_PROXY=http://warp:1080" "$compose_file"
+                    else
+                        sed -i "/environment:/a \      - HTTP_PROXY=http://warp:1080\n      - HTTPS_PROXY=http://warp:1080\n      - ALL_PROXY=http://warp:1080" "$compose_file"
+                    fi
+                    if ! grep -q "networks:" "$compose_file"; then
+                        sed -i "/^[[:space:]]*ais2api:/a \    networks:\n      - warp" "$compose_file"
+                    else
+                        sed -i "/networks:/a \      - warp" "$compose_file"
+                    fi
+                fi
+
+                log_info "正在重启 ais2api 以应用更改..."
+                cd "$project_dir" && $compose_cmd up -d --force-recreate
+                log_success "ais2api Warp 代理配置完成！"
+                sleep 2
+                ;;
+            2)
+                log_action "正在禁用并清理代理配置..."
+                if command -v python3 &> /dev/null; then
+                    python3 -c "
+import re, os
+path = '$compose_file'
+if os.path.exists(path):
+    with open(path, 'r') as f: content = f.read()
+    match = re.search(r'^(\s*ais2api:.*?\n)(?=(^\S|\Z))', content, re.M | re.S)
+    if match:
+        block = match.group(1)
+        block = re.sub(r'^\s*-\s*(HTTP|HTTPS|ALL)_PROXY=.*?\n', '', block, flags=re.M)
+        block = re.sub(r'^\s*environment:\s*\n(?!\s*-)', '', block, flags=re.M)
+        block = re.sub(r'^\s*-\s*warp\s*$\n?', '', block, flags=re.M)
+        block = re.sub(r'^\s*networks:\s*\n(?!\s*-)', '', block, flags=re.M)
+        content = content[:match.start(1)] + block + content[match.end(1):]
+    
+    if not re.search(r'^\s+-\s+warp\s*$', content, re.M):
+        net_match = re.search(r'^networks:.*?\n(?=(^\S|\Z))', content, re.M | re.S)
+        if net_match:
+            net_block = net_match.group(0)
+            net_block = re.sub(r'^\s+warp:\s*\n\s+external:\s*true\s*\n?', '', net_block, flags=re.M)
+            if net_block.strip() == 'networks:':
+                content = content[:net_match.start(0)] + content[net_match.end(0):]
+            else:
+                content = content[:net_match.start(0)] + net_block + content[net_match.end(0):]
+    with open(path, 'w') as f: f.write(content)
+" 2>/dev/null
+                fi
+                cd "$project_dir" && $compose_cmd up -d --force-recreate
+                log_success "代理配置及网络连接已禁用并清理。"
+                sleep 2
+                ;;
+            0) break ;;
+        esac
+    done
+
+fn_ais_proxy_manager() {
+    local project_dir=$1
+    local compose_file=$2
+    local compose_cmd=$3
+
+    while true; do
+        tput reset
+        echo -e "${BLUE}=== ais2api 代理配置管理 ===${NC}"
+        local proxy_url=$(grep -E "HTTP_PROXY=" "$compose_file" | head -n 1 | cut -d'=' -f2)
+        
+        echo -e "当前状态: $( [[ -n "$proxy_url" ]] && echo -e "${GREEN}已启用${NC}" || echo -e "${RED}已禁用${NC}" )"
+        echo -e "当前代理: ${CYAN}${proxy_url:-未配置}${NC}"
+        echo -e "------------------------"
+        echo -e "  [1] 自动配置 Warp 代理 (http://warp:1080)"
+        echo -e "  [2] 手动配置自定义代理"
+        echo -e "  [3] 禁用并删除代理配置"
+        echo -e "  [0] 返回上一级"
+        echo -e "------------------------"
+        read -rp "请输入选项: " ais_proxy_choice < /dev/tty
+        [[ -z "$ais_proxy_choice" ]] && continue
+        
+        case "$ais_proxy_choice" in
+            1|2)
+                local target_url="http://warp:1080"
+                if [[ "$ais_proxy_choice" == "1" ]]; then
+                    log_action "正在检查 Warp 环境..."
+                    if ! docker ps -a --format '{{.Names}}' | grep -q '^warp$'; then
+                        log_warn "未检测到 Warp 容器。"
+                        read -rp "是否立即安装 Warp？[Y/n]: " confirm_warp < /dev/tty
+                        if [[ "${confirm_warp:-y}" =~ ^[Yy]$ ]]; then
+                            install_warp || continue
+                        else
+                            continue
+                        fi
+                    fi
+                else
+                    echo -e "\n${CYAN}请输入代理地址 (格式: http://[用户名:密码@]IP或域名:端口)${NC}"
+                    read -rp "代理地址: " target_url < /dev/tty
+                    if [[ ! "$target_url" =~ ^http://.+:[0-9]+$ ]]; then
+                        log_error "格式不正确 (仅支持 http 协议环境变量)。"
+                        sleep 2
+                        continue
+                    fi
+                fi
+
+                log_action "正在配置 ais2api 代理..."
+                
+                # 1. 如果是 Warp，确保全局 networks 块存在
+                if [[ "$target_url" == "http://warp:1080" ]]; then
+                    if ! grep -q "^networks:" "$compose_file"; then
+                        echo -e "\nnetworks:\n  warp:\n    external: true" >> "$compose_file"
+                    elif ! sed -n '/^networks:/,$p' "$compose_file" | grep -q "^  warp:"; then
+                        sed -i '/^networks:/a \  warp:\n    external: true' "$compose_file"
+                    fi
+                fi
+
+                # 2. 使用 Python 注入环境变量和网络 (置后放置)
+                if command -v python3 &> /dev/null; then
+                    python3 -c "
+import re, os
+path = '$compose_file'
+target_url = '$target_url'
+if os.path.exists(path):
+    with open(path, 'r') as f: content = f.read()
+    match = re.search(r'^(\s*ais2api:.*?\n)(?=(^\S|\Z))', content, re.M | re.S)
+    if match:
+        block = match.group(1).rstrip()
+        lines = block.split('\n')
+        new_lines = []
+        env_lines = []
+        net_lines = []
+        in_env = False
+        in_net = False
+        
+        for line in lines:
+            if re.match(r'^\s+environment:', line):
+                in_env = True; in_net = False; continue
+            if re.match(r'^\s+networks:', line):
+                in_net = True; in_env = False; continue
+            
+            if in_env:
+                if re.match(r'^\s+-', line):
+                    if not any(x in line for x in ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY']):
+                        env_lines.append(line)
+                    continue
+                elif line.strip(): in_env = False
+            
+            if in_net:
+                if re.match(r'^\s+-', line):
+                    if '- warp' not in line: net_lines.append(line)
+                    continue
+                elif line.strip(): in_net = False
+            
+            if not in_env and not in_net:
+                new_lines.append(line)
+        
+        block = '\n'.join(new_lines).rstrip()
+        # 添加 environment
+        block += '\n    environment:'
+        for el in env_lines: block += '\n' + el
+        block += f'\n      - HTTP_PROXY={target_url}\n      - HTTPS_PROXY={target_url}\n      - ALL_PROXY={target_url}'
+        
+        # 添加 networks
+        if 'warp' in target_url or net_lines:
+            block += '\n    networks:'
+            for nl in net_lines: block += '\n' + nl
+            if 'warp' in target_url: block += '\n      - warp'
+            
+        new_content = content[:match.start(1)] + block + '\n' + content[match.end(1):]
+        with open(path, 'w') as f: f.write(new_content)
+" 2>/dev/null
+                fi
+
+                log_info "正在重启 ais2api 以应用更改..."
+                cd "$project_dir" && $compose_cmd up -d --force-recreate
+                log_success "ais2api 代理配置完成！"
+                sleep 2
+                ;;
+            3)
+                log_action "正在禁用并清理代理配置..."
+                if command -v python3 &> /dev/null; then
+                    python3 -c "
+import re, os
+path = '$compose_file'
+if os.path.exists(path):
+    with open(path, 'r') as f: content = f.read()
+    match = re.search(r'^(\s*ais2api:.*?\n)(?=(^\S|\Z))', content, re.M | re.S)
+    if match:
+        block = match.group(1)
+        block = re.sub(r'^\s*-\s*(HTTP|HTTPS|ALL)_PROXY=.*?\n', '', block, flags=re.M)
+        block = re.sub(r'^\s*environment:\s*\n(?!\s*-)', '', block, flags=re.M)
+        block = re.sub(r'^\s*-\s*warp\s*$\n?', '', block, flags=re.M)
+        block = re.sub(r'^\s*networks:\s*\n(?!\s*-)', '', block, flags=re.M)
+        content = content[:match.start(1)] + block + content[match.end(1):]
+    
+    if not re.search(r'^\s+-\s+warp\s*$', content, re.M):
+        net_match = re.search(r'^networks:.*?\n(?=(^\S|\Z))', content, re.M | re.S)
+        if net_match:
+            net_block = net_match.group(0)
+            net_block = re.sub(r'^\s+warp:\s*\n\s+external:\s*true\s*\n?', '', net_block, flags=re.M)
+            if net_block.strip() == 'networks:':
+                content = content[:net_match.start(0)] + content[net_match.end(0):]
+            else:
+                content = content[:net_match.start(0)] + net_block + content[net_match.end(0):]
+    with open(path, 'w') as f: f.write(content)
+" 2>/dev/null
+                fi
                 cd "$project_dir" && $compose_cmd up -d --force-recreate
                 log_success "代理配置及网络连接已禁用并清理。"
                 sleep 2
@@ -3080,6 +3416,8 @@ fn_api_docker_manager() {
         log_error "未能找到项目目录。" || return 1
     fi
 
+    local compose_file="${project_dir}/docker-compose.yml"
+
     while true; do
         tput reset
         echo -e "${BLUE}=== ${display_name} 运维管理 ===${NC}"
@@ -3090,6 +3428,9 @@ fn_api_docker_manager() {
         echo -e "  [3] 更新镜像 (pull & up)"
         echo -e "  [4] 查看运行状态 (ps)"
         echo -e "  [5] 查看实时日志 (logs -f)"
+        if [[ "$container_name" == "ais2api" ]]; then
+            echo -e "  [6] ${CYAN}代理配置管理${NC}"
+        fi
         echo -e "  [x] 彻底卸载服务"
         echo -e "  [0] 返回上一级"
         echo -e "------------------------"
@@ -3105,6 +3446,13 @@ fn_api_docker_manager() {
                 trap : INT
                 cd "$project_dir" && $compose_cmd logs -f --tail 100
                 trap 'exit 0' INT
+                ;;
+            6)
+                if [[ "$container_name" == "ais2api" ]]; then
+                    fn_ais_proxy_manager "$project_dir" "$compose_file" "$compose_cmd"
+                else
+                    log_warn "无效输入"
+                fi
                 ;;
             x|X)
                 local image_to_remove=$(docker inspect --format '{{.Config.Image}}' "$container_name" 2>/dev/null)
