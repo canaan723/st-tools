@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v5.125test"
+readonly SCRIPT_VERSION="v5.126test"
 GUGU_MODE="test"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -1667,6 +1667,7 @@ install_1panel() {
     echo -e "并确保防火墙/安全组中 ${GREEN}已放行 1Panel 的端口${NC}。"
     echo -e "\n${BOLD}可重新运行本脚本，选择【2】进入应用部署中心，再选择【3】来部署 SillyTavern。${NC}"
     log_warn "若刚才有用户被添加到 docker 组，务必先退出并重新登录SSH！"
+    read -rp "请记录好以上信息，按 Enter 键返回..." < /dev/tty
 }
 
 fn_get_public_ip() {
@@ -2182,6 +2183,15 @@ install_ais2api() {
     
     tput reset
     echo -e "${CYAN}ais2api Docker 自动化安装流程${NC}"
+    
+    # 架构检测
+    local arch
+    arch=$(uname -m)
+    if [[ "$arch" != "x86_64" ]]; then
+        log_error "检测到当前系统架构为 ${arch}，而 ais2api 仅支持 x86_64 (amd64) 架构，无法继续安装。"
+        return 1
+    fi
+
     log_warn "注意：此镜像仅支持 x86 架构。"
     
     fn_check_base_deps
@@ -2691,33 +2701,22 @@ fn_ais_proxy_manager() {
         echo -e "当前代理: ${CYAN}${proxy_url:-未配置}${NC}"
         echo -e "------------------------"
         echo -e "  [1] 自动配置 Warp 代理 (http://warp:1080)"
-        echo -e "  [2] 手动配置自定义代理"
-        echo -e "  [3] 禁用并删除代理配置"
+        echo -e "  [2] 禁用并删除代理配置"
         echo -e "  [0] 返回上一级"
         echo -e "------------------------"
         read -rp "请输入选项: " ais_proxy_choice < /dev/tty
         [[ -z "$ais_proxy_choice" ]] && continue
         
         case "$ais_proxy_choice" in
-            1|2)
+            1)
                 local target_url="http://warp:1080"
-                if [[ "$ais_proxy_choice" == "1" ]]; then
-                    log_action "正在检查 Warp 环境..."
-                    if ! docker ps -a --format '{{.Names}}' | grep -q '^warp$'; then
-                        log_warn "未检测到 Warp 容器。"
-                        read -rp "是否立即安装 Warp？[Y/n]: " confirm_warp < /dev/tty
-                        if [[ "${confirm_warp:-y}" =~ ^[Yy]$ ]]; then
-                            install_warp || continue
-                        else
-                            continue
-                        fi
-                    fi
-                else
-                    echo -e "\n${CYAN}请输入代理地址 (格式: http://[用户名:密码@]IP或域名:端口)${NC}"
-                    read -rp "代理地址: " target_url < /dev/tty
-                    if [[ ! "$target_url" =~ ^http://.+:[0-9]+$ ]]; then
-                        log_error "格式不正确 (仅支持 http 协议环境变量)。"
-                        sleep 2
+                log_action "正在检查 Warp 环境..."
+                if ! docker ps -a --format '{{.Names}}' | grep -q '^warp$'; then
+                    log_warn "未检测到 Warp 容器。"
+                    read -rp "是否立即安装 Warp？[Y/n]: " confirm_warp < /dev/tty
+                    if [[ "${confirm_warp:-y}" =~ ^[Yy]$ ]]; then
+                        install_warp || continue
+                    else
                         continue
                     fi
                 fi
@@ -2795,7 +2794,7 @@ if os.path.exists(path):
                 log_success "ais2api 代理配置完成！"
                 sleep 2
                 ;;
-            3)
+            2)
                 log_action "正在禁用并清理代理配置..."
                 if command -v python3 &> /dev/null; then
                     python3 -c "
