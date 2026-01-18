@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v5.13"
+$ScriptVersion = "v5.14"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -548,9 +548,11 @@ function Find-AvailableMirrors {
     }
 
     if ($successfulUrls.Count -gt 0) {
-        Write-Success "`n测试完成，共找到 $($successfulUrls.Count) 条可用 $($testTypeDescription[$TestType]) 线路。"
+        Write-Host ""
+        Write-Success "测试完成，共找到 $($successfulUrls.Count) 条可用 $($testTypeDescription[$TestType]) 线路。"
     } else {
-        Write-Error "`n所有 $($testTypeDescription[$TestType]) 线路均测试失败。"
+        Write-Host ""
+        Write-Error "所有 $($testTypeDescription[$TestType]) 线路均测试失败。"
     }
     return $successfulUrls.ToArray()
 }
@@ -760,7 +762,8 @@ function Restore-FromCloud {
         if ($syncConfigYaml -eq "true" -and (Test-Path (Join-Path $tempDir "config.yaml"))) {
             Copy-Item (Join-Path $tempDir "config.yaml") $ST_Dir -Force
         }
-        Write-Success "`n数据已从云端成功恢复！"
+        Write-Host ""
+        Write-Success "数据已从云端成功恢复！"
     } finally {
         if (Test-Path $tempDir){ Remove-Item $tempDir -Recurse -Force }
     }
@@ -1196,24 +1199,49 @@ function Update-SillyTavern {
             $mirrorHost = ($mirrorUrl -split '/')[2]
             Write-Warning "正在尝试使用线路 [$($mirrorHost)] 更新..."
             git remote set-url origin $mirrorUrl
-            $gitOutput = git -c credential.helper='' pull origin $Repo_Branch --allow-unrelated-histories 2>&1
+            $gitOutput = git -c credential.helper='' pull origin $Repo_Branch --allow-unrelated-histories --no-rebase 2>&1
             if ($LASTEXITCODE -eq 0) {
                 if ($gitOutput -match "Already up to date") { Write-Success "代码已是最新，无需更新。" } else { Write-Success "代码更新成功。" }
                 $pullSucceeded = $true; break
-            } elseif ($gitOutput -match "Your local changes to the following files would be overwritten|conflict|error: Pulling is not possible because you have unmerged files.") {
+            } elseif ($gitOutput -match "Your local changes to the following files would be overwritten|conflict|error: Pulling is not possible because you have unmerged files.|divergent branches|reconcile|index\.lock") {
                 Clear-Host
                 Write-Header "检测到更新冲突"
-                Write-Warning "原因: 您可能修改过酒馆的文件，导致无法自动合并新版本。"
-                Write-Host "`n--- 冲突文件预览 ---`n$($gitOutput | Select-String -Pattern '^\s+' | Select -First 5)`n--------------------"
-                Write-Host "`n此操作将放弃您对代码文件的修改，但不会影响您的用户数据 (如聊天记录、角色卡等)。" -ForegroundColor Cyan
+                
+                $reason = "未知原因"
+                $actionDesc = "放弃代码修改并清理环境"
+                
+                if ($gitOutput -match "Your local changes") {
+                    if ($gitOutput -match "package-lock\.json") {
+                        $reason = "依赖配置文件 (package-lock.json) 发生冲突。这通常是由于安装扩展或自动更新依赖引起的，并非您的错误。"
+                        $actionDesc = "重置系统配置文件以确保更新顺利进行"
+                    } else {
+                        $reason = "本地代码文件被修改（可能是您手动修改过，或某些插件自动改动了文件）。"
+                        $actionDesc = "放弃本地代码修改并清理环境"
+                    }
+                } elseif ($gitOutput -match "divergent branches|reconcile") {
+                    $reason = "本地版本与远程版本存在分叉（通常是由于非正常的更新中断引起）。"
+                    $actionDesc = "同步版本状态并清理环境"
+                } elseif ($gitOutput -match "index\.lock") {
+                    $reason = "Git 环境被锁定（可能有其他 Git 进程正在运行或上次操作异常中断）。"
+                    $actionDesc = "解除锁定并清理环境"
+                } elseif ($gitOutput -match "conflict|unmerged files") {
+                    $reason = "代码合并时发生冲突。"
+                    $actionDesc = "放弃冲突的修改并清理环境"
+                }
+
+                Write-Warning "原因: $reason"
+                Write-Host "`n--- 冲突/错误预览 ---`n$($gitOutput | Select-String -Pattern '^\s+|hint:|fatal:' | Select -First 8)`n--------------------"
+                Write-Host "`n此操作将$($actionDesc)，【不会】影响您的聊天记录、角色卡等用户数据。" -ForegroundColor Cyan
                 $confirmChoice = Read-Host "是否要强制覆盖本地修改以完成更新？(直接回车=是, 输入n=否)"
                 if ($confirmChoice -eq 'n' -or $confirmChoice -eq 'N') {
                     Write-Warning "已取消更新。"; Press-Any-Key; return
                 }
                 
-                Write-Warning "正在执行强制覆盖 (git reset --hard)..."
+                Write-Warning "正在清理环境并执行强制覆盖 (git reset --hard)..."
+                if (Test-Path ".git/index.lock") { Remove-Item ".git/index.lock" -Force }
                 git reset --hard "origin/$Repo_Branch"
-                git -c credential.helper='' pull origin $Repo_Branch --allow-unrelated-histories
+                git clean -fd
+                git -c credential.helper='' pull origin $Repo_Branch --allow-unrelated-histories --no-rebase
                 if ($LASTEXITCODE -eq 0) {
                     Write-Success "强制更新成功。"
                     $pullSucceeded = $true
@@ -2185,7 +2213,8 @@ function Select-UnifiedMirror {
         return $null
     }
     
-    Write-Success "`n测试完成，共找到 $($successfulCandidates.Count) 条可用线路。"
+    Write-Host ""
+    Write-Success "测试完成，共找到 $($successfulCandidates.Count) 条可用线路。"
 
     $successful = @{}
     for ($i = 0; $i -lt $successfulCandidates.Count; $i++) {
