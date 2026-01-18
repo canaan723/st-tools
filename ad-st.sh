@@ -55,7 +55,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v5.11${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v5.15${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
     echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
 }
@@ -1309,7 +1309,8 @@ fn_update_st() {
         git remote set-url origin "$mirror_url" >/dev/null 2>&1
 
         local git_output
-        git_output=$(git pull origin "$REPO_BRANCH" --allow-unrelated-histories 2>&1)
+        # 使用 --no-rebase 策略并捕获输出
+        git_output=$(git pull origin "$REPO_BRANCH" --no-rebase --allow-unrelated-histories 2>&1)
         local exit_code=$?
 
         if [ $exit_code -eq 0 ]; then
@@ -1320,23 +1321,42 @@ fn_update_st() {
             fi
             pull_succeeded=true
             break
-        elif echo "$git_output" | grep -qE "overwritten by merge|Please commit|unmerged files|Pulling is not possible"; then
+        elif echo "$git_output" | grep -qE "overwritten by merge|Please commit|unmerged files|Pulling is not possible|divergent branches|reconcile|index.lock"; then
+            # 智能诊断冲突原因
+            local reason="您可能修改过酒馆的文件，导致无法自动合并新版本。"
+            local actionDesc="放弃本地代码修改"
+            
+            if echo "$git_output" | grep -q "package-lock.json"; then
+                reason="依赖配置文件 (package-lock.json) 冲突，这是系统自动行为。"
+                actionDesc="重置系统配置文件"
+            elif echo "$git_output" | grep -qE "divergent branches|reconcile"; then
+                reason="本地版本与云端版本状态不一致 (分叉)。"
+                actionDesc="同步版本状态"
+            elif echo "$git_output" | grep -q "index.lock"; then
+                reason="Git 环境被锁定 (可能是上次操作意外中断)。"
+                actionDesc="解除锁定"
+            fi
+
             clear
             fn_print_header "检测到更新冲突"
-            fn_print_warning "原因: 您可能修改过酒馆的文件，导致无法自动合并新版本。"
+            fn_print_warning "原因: $reason"
             echo -e "\n--- 冲突文件预览 ---\n$(echo "$git_output" | grep -E '^\s+' | head -n 5)\n--------------------"
-            echo -e "\n${CYAN}此操作将放弃您对代码文件的修改，但不会影响您的用户数据 (如聊天记录、角色卡等)。${NC}"
-            read -p "是否要强制覆盖本地修改以完成更新？(直接回车=是, 输入n=否): " confirm_choice
+            echo -e "\n${CYAN}此操作将${BOLD}${actionDesc}${NC}，但${GREEN}绝对不会${NC}影响您的聊天记录、角色卡等个人数据。${NC}"
+            read -p "是否执行修复以完成更新？(直接回车=是, 输入n=否): " confirm_choice
             
             if [[ "$confirm_choice" =~ ^[nN]$ ]]; then
                 fn_print_warning "已取消更新。"
                 break
             fi
 
-            fn_print_warning "正在执行强制覆盖 (git reset --hard)..."
+            fn_print_warning "正在执行深度修复与强制覆盖..."
+            # 自动解锁
+            rm -f .git/index.lock
             if git reset --hard "origin/$REPO_BRANCH" >/dev/null 2>&1; then
+                # 彻底清理未追踪文件
+                git clean -fd >/dev/null 2>&1
                 fn_print_warning "正在重新拉取最新代码..."
-                if git pull origin "$REPO_BRANCH" --allow-unrelated-histories >/dev/null 2>&1; then
+                if git pull origin "$REPO_BRANCH" --no-rebase --allow-unrelated-histories >/dev/null 2>&1; then
                     fn_print_success "强制更新成功。"
                     pull_succeeded=true
                 else
@@ -1487,16 +1507,29 @@ fn_rollback_st() {
         if [ $exit_code -eq 0 ]; then
             fn_print_success "版本已成功切换到 ${selected_tag}"
             checkout_succeeded=true
-        elif echo "$checkout_output" | grep -qE "overwritten by checkout|Please commit"; then
+        elif echo "$checkout_output" | grep -qE "overwritten by checkout|Please commit|index.lock"; then
+            # 智能诊断切换冲突
+            local reason="您有本地文件修改，与目标版本冲突。"
+            local actionDesc="放弃本地代码修改"
+
+            if echo "$checkout_output" | grep -q "index.lock"; then
+                reason="Git 环境被锁定 (可能是上次操作意外中断)。"
+                actionDesc="解除锁定"
+            fi
+
             fn_print_header "检测到切换冲突"
-            fn_print_warning "原因: 您有本地文件修改，与目标版本冲突。"
-            echo -e "\n${CYAN}此操作将放弃您对代码文件的修改，但不会影响您的用户数据。${NC}"
+            fn_print_warning "原因: $reason"
+            echo -e "\n${CYAN}此操作将${BOLD}${actionDesc}${NC}，但${GREEN}绝对不会${NC}影响您的聊天记录、角色卡等个人数据。${NC}"
             read -p "是否要强制覆盖本地修改以完成切换？(直接回车=是, 输入n=否): " force_confirm
             if [[ "$force_confirm" =~ ^[nN]$ ]]; then
                 fn_print_warning "已取消版本切换。"
             else
-                fn_print_warning "正在执行强制切换 (git checkout -f)..."
+                fn_print_warning "正在执行深度修复与强制切换..."
+                # 自动解锁
+                rm -f .git/index.lock
                 if git checkout -f "tags/$selected_tag" >/dev/null 2>&1; then
+                    # 彻底清理未追踪文件
+                    git clean -fd >/dev/null 2>&1
                     fn_print_success "版本已成功强制切换到 ${selected_tag}"
                     checkout_succeeded=true
                 else

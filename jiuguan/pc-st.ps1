@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v5.14"
+$ScriptVersion = "v5.15"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1317,6 +1317,7 @@ function Rollback-SillyTavern {
             $mirrorHost = ($mirrorUrl -split '/')[2]
             Write-Warning "正在尝试使用线路 [$($mirrorHost)] 获取版本列表..."
             git remote set-url origin $mirrorUrl
+            if (Test-Path ".git/index.lock") { Remove-Item ".git/index.lock" -Force }
             git -c credential.helper='' fetch --all --tags 2>$null
             if ($LASTEXITCODE -eq 0) { $fetchSuccess = $true; break }
             Write-Error "使用线路 [$($mirrorHost)] 获取失败！正在切换下一条..."
@@ -1332,6 +1333,7 @@ function Rollback-SillyTavern {
         }
     }
 
+    Write-Host ""
     Write-Success "版本信息获取成功。"
     $allTags = git tag --sort=-v:refname | Where-Object { $_ -match '^\d' }
     if ($allTags.Count -eq 0) {
@@ -1381,13 +1383,17 @@ function Rollback-SillyTavern {
                 if ($confirm -eq 'n' -or $confirm -eq 'N') { Write-Warning "操作已取消。"; continue }
 
                 Write-Warning "正在切换到版本 $selectedTag ..."
+                if (Test-Path ".git/index.lock") { Remove-Item ".git/index.lock" -Force }
                 $checkoutOutput = git checkout -f "tags/$selectedTag" 2>&1
                 if ($LASTEXITCODE -ne 0) {
-                    Write-Error "切换版本时发生未知错误：$($checkoutOutput | Out-String)"; Press-Any-Key; return
+                    Write-Error "切换版本失败！Git输出: $($checkoutOutput | Out-String)"; Press-Any-Key; return
                 }
+                git clean -fd
                 
+                Write-Host ""
                 Write-Success "版本已成功切换到 $selectedTag"
                 if (Run-NpmInstallWithRetry) {
+                    Write-Host ""
                     Write-Success "版本回退完成！"
                 } else {
                     Write-Error "版本已切换，但依赖安装失败。请尝试手动修复。"
