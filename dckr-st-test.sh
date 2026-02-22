@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v5.12989test"
+readonly SCRIPT_VERSION="v5.1299test"
 GUGU_MODE="test"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -2268,6 +2268,12 @@ install_sillytavern() {
     read -rp "安装路径: SillyTavern 将被安装在 <上级目录>/sillytavern 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
     local parent_path="${custom_parent_path:-$default_parent_path}"
     INSTALL_DIR="${parent_path}/sillytavern"
+
+    # 路径安全检查：禁止安装到系统关键目录
+    if [[ "$INSTALL_DIR" =~ ^/(bin|boot|dev|etc|lib|lib64|proc|root|sbin|sys|usr)(/|$) ]]; then
+        log_error "安全限制：不允许安装到系统关键目录 ($INSTALL_DIR)。请选择其他路径。" || return 1
+    fi
+
     log_info "安装路径最终设置为: ${INSTALL_DIR}"
 
     fn_prompt_port_in_range ST_PORT "请输入酒馆访问端口 (1-65535) [默认 8000]: " "8000" 1 65535
@@ -2329,6 +2335,11 @@ EOF
     while [ ! -f "$CONFIG_FILE" ]; do
         if [ $timeout -eq 0 ]; then
             fn_print_error "等待配置文件生成超时！请检查日志输出：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)" || return 1
+        fi
+        # 检查容器状态，避免容器已退出但仍在等待
+        local status=$(docker inspect --format '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "unknown")
+        if [[ "$status" == "exited" || "$status" == "dead" ]]; then
+            fn_print_error "容器启动失败（状态: $status）！请检查日志：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)" || return 1
         fi
         sleep 1
         ((timeout--))
@@ -2427,7 +2438,12 @@ install_gcli2api() {
     read -rp "安装路径: gcli2api 将被安装在 <上级目录>/gcli2api 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
     local parent_path="${custom_parent_path:-$default_parent_path}"
     local INSTALL_DIR="${parent_path}/gcli2api"
-    
+
+    # 路径安全检查：禁止安装到系统关键目录
+    if [[ "$INSTALL_DIR" =~ ^/(bin|boot|dev|etc|lib|lib64|proc|root|sbin|sys|usr)(/|$) ]]; then
+        log_error "安全限制：不允许安装到系统关键目录 ($INSTALL_DIR)。请选择其他路径。" || return 1
+    fi
+
     fn_prompt_port_in_range GCLI_PORT "请输入访问端口 (1-65535) [默认 7861]: " "7861" 1 65535
 
     local random_pwd=$(fn_generate_password 34)
@@ -2647,7 +2663,12 @@ install_ais2api() {
     read -rp "安装路径: ais2api 将被安装在 <上级目录>/ais2api 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
     local parent_path="${custom_parent_path:-$default_parent_path}"
     local INSTALL_DIR="${parent_path}/ais2api"
-    
+
+    # 路径安全检查：禁止安装到系统关键目录
+    if [[ "$INSTALL_DIR" =~ ^/(bin|boot|dev|etc|lib|lib64|proc|root|sbin|sys|usr)(/|$) ]]; then
+        log_error "安全限制：不允许安装到系统关键目录 ($INSTALL_DIR)。请选择其他路径。" || return 1
+    fi
+
     fn_prompt_port_in_range AIS_PORT "请输入访问端口 (1-65535) [默认 8889]: " "8889" 1 65535
 
     local random_key=$(fn_generate_password 34)
@@ -2709,6 +2730,11 @@ install_warp() {
     read -rp "安装路径: Warp 将被安装在 <上级目录>/warp 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
     local parent_path="${custom_parent_path:-$default_parent_path}"
     local INSTALL_DIR="${parent_path}/warp"
+
+    # 路径安全检查：禁止安装到系统关键目录
+    if [[ "$INSTALL_DIR" =~ ^/(bin|boot|dev|etc|lib|lib64|proc|root|sbin|sys|usr)(/|$) ]]; then
+        log_error "安全限制：不允许安装到系统关键目录 ($INSTALL_DIR)。请选择其他路径。" || return 1
+    fi
 
     fn_prompt_port_in_range WARP_PORT "请输入 Warp 代理映射到宿主机的端口 (1-65535) [默认 1080]: " "1080" 1 65535
 
@@ -3580,11 +3606,15 @@ fn_st_switch_to_multi() {
     local compose_cmd=$3
 
     log_action "正在切换为多用户模式..."
-    
+
     # 获取当前单用户凭据用于引导
     local current_user=""
     local current_pass=""
-    fn_st_get_basic_auth_credentials "$config_file" current_user current_pass
+    if ! fn_st_get_basic_auth_credentials "$config_file" current_user current_pass; then
+        log_warn "无法读取当前凭据，将使用默认凭据引导。"
+        current_user="user"
+        current_pass="password"
+    fi
     
     log_info "正在开启多用户模式并重启服务..."
     sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # 启用多用户模式/" "$config_file"
@@ -3628,7 +3658,9 @@ fn_st_change_credentials() {
 
     local current_user=""
     local current_pass=""
-    fn_st_get_basic_auth_credentials "$config_file" current_user current_pass
+    if ! fn_st_get_basic_auth_credentials "$config_file" current_user current_pass; then
+        log_warn "无法读取当前凭据，配置文件可能不存在或格式错误。"
+    fi
     local display_user="${current_user:-（未读取到）}"
     local display_pass="${current_pass:-（未读取到）}"
 

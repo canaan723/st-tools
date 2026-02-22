@@ -13,6 +13,7 @@ ehthumbs.db
 *.swo
 lib/
 .history
+.claude
 
 # 忽略临时的配置文件或备份文件
 *.bak
