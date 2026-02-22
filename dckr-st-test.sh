@@ -334,6 +334,74 @@ fn_print_error() { echo -e "\n${RED}✗ 错误: $1${NC}\n" >&2; return 1 2>/dev/
 
 fn_get_cleaned_version_num() { echo "$1" | grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1; }
 
+fn_detect_compose_cmd() {
+    if command -v docker-compose &> /dev/null; then
+        echo "docker-compose"
+        return 0
+    fi
+    if docker compose version &> /dev/null; then
+        echo "docker compose"
+        return 0
+    fi
+    return 1
+}
+
+fn_resolve_project_dir() {
+    local container_name="$1"
+    local fallback_subdir="$2"
+    local project_dir=""
+    project_dir=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$container_name" 2>/dev/null || true)
+
+    if [ -n "$project_dir" ] && [ -d "$project_dir" ]; then
+        echo "$project_dir"
+        return 0
+    fi
+
+    if [ -n "$fallback_subdir" ]; then
+        echo "${USER_HOME}/${fallback_subdir}"
+        return 0
+    fi
+
+    return 1
+}
+
+fn_prompt_port_in_range() {
+    local __result_var="$1"
+    local prompt="$2"
+    local default_port="$3"
+    local min_port="$4"
+    local max_port="$5"
+    local input_port=""
+
+    while true; do
+        read -rp "$prompt" input_port < /dev/tty
+        input_port=${input_port:-$default_port}
+        if [[ "$input_port" =~ ^[0-9]+$ ]] && [ "$input_port" -ge "$min_port" ] && [ "$input_port" -le "$max_port" ]; then
+            printf -v "$__result_var" '%s' "$input_port"
+            return 0
+        fi
+        log_warn "端口无效。请输入 ${min_port}-${max_port} 之间的数字。"
+    done
+}
+
+fn_confirm_remove_existing_container() {
+    local container_name="$1"
+    local confirm_text="${2:-是否停止并移除现有容器？[y/N]: }"
+
+    if docker ps -a -q -f "name=^${container_name}$" | grep -q .; then
+        log_warn "检测到已存在名为 '${container_name}' 的容器。"
+        read -rp "$confirm_text" confirm_rm < /dev/tty
+        if [[ "$confirm_rm" =~ ^[Yy]$ ]]; then
+            docker stop "$container_name" >/dev/null 2>&1 || true
+            docker rm "$container_name" >/dev/null 2>&1 || true
+        else
+            log_info "操作已取消。"
+            return 1
+        fi
+    fi
+    return 0
+}
+
 fn_report_dependencies() {
     fn_print_info "--- Docker 环境诊断摘要 ---"
     printf "${BOLD}%-18s %-20s %-20s${NC}\n" "工具" "检测到的版本" "状态"
@@ -359,12 +427,18 @@ fn_check_dependencies() {
         else
             DOCKER_VER=$(fn_get_cleaned_version_num "$(docker --version)"); DOCKER_STATUS="正常"
         fi
-        if command -v docker-compose &> /dev/null; then
-            DOCKER_COMPOSE_CMD="docker-compose"; COMPOSE_VER="v$(fn_get_cleaned_version_num "$($DOCKER_COMPOSE_CMD version)")"; COMPOSE_STATUS="正常 (v1)"
-        elif docker compose version &> /dev/null; then
-            DOCKER_COMPOSE_CMD="docker compose"; COMPOSE_VER=$(docker compose version | grep -oE 'v[0-9]+(\.[0-9]+)+' | head -n 1); COMPOSE_STATUS="正常 (v2)"
+        DOCKER_COMPOSE_CMD=$(fn_detect_compose_cmd || true)
+        if [ -n "$DOCKER_COMPOSE_CMD" ]; then
+            if [ "$DOCKER_COMPOSE_CMD" = "docker-compose" ]; then
+                COMPOSE_VER="v$(fn_get_cleaned_version_num "$($DOCKER_COMPOSE_CMD version)")"
+                COMPOSE_STATUS="正常 (v1)"
+            else
+                COMPOSE_VER=$(docker compose version | grep -oE 'v[0-9]+(\.[0-9]+)+' | head -n 1)
+                COMPOSE_STATUS="正常 (v2)"
+            fi
         else
-            DOCKER_COMPOSE_CMD=""; COMPOSE_STATUS="未安装"
+            COMPOSE_VER="-"
+            COMPOSE_STATUS="未安装"
         fi
 
         if [[ "$DOCKER_STATUS" == "未安装" || "$COMPOSE_STATUS" == "未安装" ]]; then
@@ -1042,8 +1116,8 @@ fn_1panel_manager() {
                 sleep 2
                 ;;
             4)
-                read -rp "请输入新的面板端口号 (1024-49151): " new_1p_port < /dev/tty
-                if [[ "$new_1p_port" =~ ^[0-9]+$ ]] && [ "$new_1p_port" -ge 1024 ] && [ "$new_1p_port" -le 49151 ]; then
+                local new_1p_port=""
+                if fn_prompt_port_in_range new_1p_port "请输入新的面板端口号 (1024-49151): " "" 1024 49151; then
                     log_action "正在修改面板端口为 ${new_1p_port}..."
                     1pctl update port "$new_1p_port"
                     if ufw status | grep -q "Status: active"; then
@@ -1052,8 +1126,6 @@ fn_1panel_manager() {
                         ufw --force reload
                         log_success "UFW 规则已更新。"
                     fi
-                else
-                    log_warn "无效端口号，请输入 1024-49151 之间的数字。"
                 fi
                 sleep 2
                 ;;
@@ -1972,15 +2044,7 @@ EOF
     INSTALL_DIR="${parent_path}/sillytavern"
     log_info "安装路径最终设置为: ${INSTALL_DIR}"
 
-    while true; do
-        read -rp "请输入酒馆访问端口 (1024-49151) [默认 8000]: " ST_PORT < /dev/tty
-        ST_PORT=${ST_PORT:-8000}
-        if [[ "$ST_PORT" =~ ^[0-9]+$ ]] && [ "$ST_PORT" -ge 1024 ] && [ "$ST_PORT" -le 49151 ]; then
-            break
-        else
-            log_warn "端口无效。请输入 1024-49151 之间的数字。"
-        fi
-    done
+    fn_prompt_port_in_range ST_PORT "请输入酒馆访问端口 (1024-49151) [默认 8000]: " "8000" 1024 49151
 
     CONFIG_FILE="$INSTALL_DIR/config/config.yaml"
     COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
@@ -2131,32 +2195,14 @@ install_gcli2api() {
     fn_check_base_deps
     fn_check_dependencies
     
-    if docker ps -a -q -f "name=^${CONTAINER_NAME}$" | grep -q .; then
-        log_warn "检测到已存在名为 '${CONTAINER_NAME}' 的容器。"
-        read -rp "是否停止并移除现有容器？[y/N]: " confirm_rm < /dev/tty
-        if [[ "$confirm_rm" =~ ^[Yy]$ ]]; then
-            docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
-            docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
-        else
-            log_info "操作已取消。"
-            return 1
-        fi
-    fi
+    fn_confirm_remove_existing_container "$CONTAINER_NAME" || return 1
 
     local default_parent_path="${USER_HOME}"
     read -rp "安装路径: gcli2api 将被安装在 <上级目录>/gcli2api 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
     local parent_path="${custom_parent_path:-$default_parent_path}"
     local INSTALL_DIR="${parent_path}/gcli2api"
     
-    while true; do
-        read -rp "请输入访问端口 (1024-49151) [默认 7861]: " GCLI_PORT < /dev/tty
-        GCLI_PORT=${GCLI_PORT:-7861}
-        if [[ "$GCLI_PORT" =~ ^[0-9]+$ ]] && [ "$GCLI_PORT" -ge 1024 ] && [ "$GCLI_PORT" -le 49151 ]; then
-            break
-        else
-            log_warn "端口无效。请输入 1024-49151 之间的数字。"
-        fi
-    done
+    fn_prompt_port_in_range GCLI_PORT "请输入访问端口 (1024-49151) [默认 7861]: " "7861" 1024 49151
 
     local random_pwd=$(fn_generate_password 34)
     read -rp "请输入管理密码 [直接回车=随机生成]: " GCLI_PWD < /dev/tty
@@ -2189,7 +2235,7 @@ services:
 EOF
 
     log_action "正在启动服务..."
-    cd "$INSTALL_DIR" && docker compose up -d
+    cd "$INSTALL_DIR" && $DOCKER_COMPOSE_CMD up -d
     
     fn_verify_container_health "$CONTAINER_NAME"
     
@@ -2369,32 +2415,14 @@ install_ais2api() {
     fn_check_base_deps
     fn_check_dependencies
     
-    if docker ps -a -q -f "name=^${CONTAINER_NAME}$" | grep -q .; then
-        log_warn "检测到已存在名为 '${CONTAINER_NAME}' 的容器。"
-        read -rp "是否停止并移除现有容器？[y/N]: " confirm_rm < /dev/tty
-        if [[ "$confirm_rm" =~ ^[Yy]$ ]]; then
-            docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
-            docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
-        else
-            log_info "操作已取消。"
-            return 1
-        fi
-    fi
+    fn_confirm_remove_existing_container "$CONTAINER_NAME" || return 1
 
     local default_parent_path="${USER_HOME}"
     read -rp "安装路径: ais2api 将被安装在 <上级目录>/ais2api 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
     local parent_path="${custom_parent_path:-$default_parent_path}"
     local INSTALL_DIR="${parent_path}/ais2api"
     
-    while true; do
-        read -rp "请输入访问端口 (1024-49151) [默认 8889]: " AIS_PORT < /dev/tty
-        AIS_PORT=${AIS_PORT:-8889}
-        if [[ "$AIS_PORT" =~ ^[0-9]+$ ]] && [ "$AIS_PORT" -ge 1024 ] && [ "$AIS_PORT" -le 49151 ]; then
-            break
-        else
-            log_warn "端口无效。请输入 1024-49151 之间的数字。"
-        fi
-    done
+    fn_prompt_port_in_range AIS_PORT "请输入访问端口 (1024-49151) [默认 8889]: " "8889" 1024 49151
 
     local random_key=$(fn_generate_password 34)
     read -rp "请输入 API Key [直接回车=随机生成]: " AIS_KEY < /dev/tty
@@ -2449,32 +2477,14 @@ install_warp() {
     fn_check_base_deps
     fn_check_dependencies
 
-    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-        log_warn "检测到已存在名为 '${CONTAINER_NAME}' 的容器。"
-        read -rp "是否停止并移除现有容器？[y/N]: " confirm_rm < /dev/tty
-        if [[ "$confirm_rm" =~ ^[Yy]$ ]]; then
-            docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
-            docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
-        else
-            log_info "操作已取消。"
-            return 1
-        fi
-    fi
+    fn_confirm_remove_existing_container "$CONTAINER_NAME" || return 1
 
     local default_parent_path="${USER_HOME}"
     read -rp "安装路径: Warp 将被安装在 <上级目录>/warp 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
     local parent_path="${custom_parent_path:-$default_parent_path}"
     local INSTALL_DIR="${parent_path}/warp"
 
-    while true; do
-        read -rp "请输入 Warp 代理映射到宿主机的端口 (1024-49151) [默认 1080]: " WARP_PORT < /dev/tty
-        WARP_PORT=${WARP_PORT:-1080}
-        if [[ "$WARP_PORT" =~ ^[0-9]+$ ]] && [ "$WARP_PORT" -ge 1024 ] && [ "$WARP_PORT" -le 49151 ]; then
-            break
-        else
-            log_warn "端口无效。请输入 1024-49151 之间的数字。"
-        fi
-    done
+    fn_prompt_port_in_range WARP_PORT "请输入 Warp 代理映射到宿主机的端口 (1024-49151) [默认 1080]: " "1080" 1024 49151
 
     log_action "正在创建目录结构..."
     mkdir -p "$INSTALL_DIR/data"
@@ -3490,33 +3500,14 @@ fn_st_toggle_beautify() {
 
 fn_st_docker_manager() {
     local container_name="sillytavern"
-    local compose_cmd=""
-    
-    # 自动检测 docker-compose 命令
-    if command -v docker-compose &> /dev/null; then
-        compose_cmd="docker-compose"
-    elif docker compose version &> /dev/null; then
-        compose_cmd="docker compose"
-    else
+    local compose_cmd
+    compose_cmd=$(fn_detect_compose_cmd || true)
+    if [ -z "$compose_cmd" ]; then
         log_error "未检测到 docker-compose 或 docker compose，请确认 Docker 环境是否正常。" || return 1
     fi
 
-    # 尝试获取项目目录
-    local project_dir=""
-    # 1. 尝试从容器标签获取 (如果是用 compose 启动的，通常会有这个标签)
-    project_dir=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$container_name" 2>/dev/null)
-    
-    # 2. 如果标签获取失败，回退到脚本默认安装路径
-    if [ -z "$project_dir" ] || [ ! -d "$project_dir" ]; then
-        local target_user="${SUDO_USER:-root}"
-        local user_home
-        if [ "$target_user" = "root" ]; then
-            user_home="/root"
-        else
-            user_home=$(getent passwd "$target_user" | cut -d: -f6)
-        fi
-        project_dir="${user_home}/sillytavern"
-    fi
+    local project_dir
+    project_dir=$(fn_resolve_project_dir "$container_name" "sillytavern")
 
     local config_file="${project_dir}/config/config.yaml"
     local compose_file="${project_dir}/docker-compose.yml"
@@ -3646,24 +3637,14 @@ fn_st_docker_manager() {
 fn_warp_docker_manager() {
     local container_name="warp"
     local display_name="Warp-Docker"
-    local compose_cmd=""
-    
-    if command -v docker-compose &> /dev/null; then
-        compose_cmd="docker-compose"
-    elif docker compose version &> /dev/null; then
-        compose_cmd="docker compose"
-    else
+    local compose_cmd
+    compose_cmd=$(fn_detect_compose_cmd || true)
+    if [ -z "$compose_cmd" ]; then
         log_error "未检测到 Docker Compose。" || return 1
     fi
 
-    local project_dir=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$container_name" 2>/dev/null)
-    
-    if [ -z "$project_dir" ] || [ ! -d "$project_dir" ]; then
-        local target_user="${SUDO_USER:-root}"
-        local user_home
-        if [ "$target_user" = "root" ]; then user_home="/root"; else user_home=$(getent passwd "$target_user" | cut -d: -f6); fi
-        project_dir="${user_home}/warp"
-    fi
+    local project_dir
+    project_dir=$(fn_resolve_project_dir "$container_name" "warp")
 
     if [ ! -d "$project_dir" ]; then
         log_error "未能找到项目目录。" || return 1
@@ -3750,27 +3731,14 @@ fn_api_docker_manager() {
     local container_name=$1
     local display_name=$2
     local service_type="${3:-$container_name}"
-    local compose_cmd=""
-    
-    if command -v docker-compose &> /dev/null; then
-        compose_cmd="docker-compose"
-    elif docker compose version &> /dev/null; then
-        compose_cmd="docker compose"
-    else
+    local compose_cmd
+    compose_cmd=$(fn_detect_compose_cmd || true)
+    if [ -z "$compose_cmd" ]; then
         log_error "未检测到 Docker Compose。" || return 1
     fi
 
-    local project_dir=""
-    project_dir=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$container_name" 2>/dev/null)
-    
-    if [ -z "$project_dir" ] || [ ! -d "$project_dir" ]; then
-        if [[ "$service_type" == "ais2api" ]]; then
-            local target_user="${SUDO_USER:-root}"
-            local user_home
-            if [ "$target_user" = "root" ]; then user_home="/root"; else user_home=$(getent passwd "$target_user" | cut -d: -f6); fi
-            project_dir="${user_home}/ais2api"
-        fi
-    fi
+    local project_dir
+    project_dir=$(fn_resolve_project_dir "$container_name" "$service_type")
 
     if [ -z "$project_dir" ] || [ ! -d "$project_dir" ]; then
         log_error "未能找到项目目录。" || return 1
