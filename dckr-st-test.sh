@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v5.129test"
+readonly SCRIPT_VERSION="v5.1291test"
 GUGU_MODE="test"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -1995,9 +1995,24 @@ fn_st_get_basic_auth_credentials() {
     local __pass_var="$3"
     local current_user=""
     local current_pass=""
+    local block=""
 
-    current_user=$(grep -A 2 "basicAuthUser:" "$config_file" | grep "username:" | cut -d'"' -f2)
-    current_pass=$(grep -A 2 "basicAuthUser:" "$config_file" | grep "password:" | cut -d'"' -f2)
+    block=$(sed -n '/^[[:space:]]*basicAuthUser:[[:space:]]*$/,/^[^[:space:]]/p' "$config_file")
+    current_user=$(echo "$block" | sed -n 's/^[[:space:]]*username:[[:space:]]*//p' | head -n 1)
+    current_pass=$(echo "$block" | sed -n 's/^[[:space:]]*password:[[:space:]]*//p' | head -n 1)
+
+    current_user=$(echo "$current_user" | sed -E 's/[[:space:]]+#.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//')
+    current_pass=$(echo "$current_pass" | sed -E 's/[[:space:]]+#.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//')
+
+    current_user="${current_user#\"}"
+    current_user="${current_user%\"}"
+    current_user="${current_user#\'}"
+    current_user="${current_user%\'}"
+
+    current_pass="${current_pass#\"}"
+    current_pass="${current_pass%\"}"
+    current_pass="${current_pass#\'}"
+    current_pass="${current_pass%\'}"
 
     printf -v "$__user_var" '%s' "$current_user"
     printf -v "$__pass_var" '%s' "$current_pass"
@@ -3610,10 +3625,12 @@ fn_st_change_credentials() {
     local current_user=""
     local current_pass=""
     fn_st_get_basic_auth_credentials "$config_file" current_user current_pass
+    local display_user="${current_user:-（未读取到）}"
+    local display_pass="${current_pass:-（未读取到）}"
 
     echo -e "\n${CYAN}--- 更改用户名密码 ---${NC}"
-    echo -e "当前用户名: ${YELLOW}${current_user}${NC}"
-    echo -e "当前密码: ${YELLOW}${current_pass}${NC}"
+    echo -e "当前用户名: ${YELLOW}${display_user}${NC}"
+    echo -e "当前密码: ${YELLOW}${display_pass}${NC}"
     echo -e "------------------------"
     echo -e "  [1] 修改用户名和密码"
     echo -e "  [2] 仅修改用户名"
