@@ -1199,6 +1199,8 @@ fn_1panel_manager() {
                 sleep 2
                 ;;
             4)
+                local old_1p_port=""
+                old_1p_port=$(fn_get_1panel_actual_port || true)
                 log_info "即将进入 1Panel 官方端口修改流程，请按提示输入新端口。"
                 local port_update_output=""
                 if fn_1pctl_run_capture port_update_output update port; then
@@ -1212,6 +1214,10 @@ fn_1panel_manager() {
                         if ufw status | grep -q "Status: active"; then
                             log_info "检测到 UFW 活跃，正在自动放行端口 ${final_1p_port}..."
                             ufw allow "$final_1p_port/tcp"
+                            if [[ "$old_1p_port" =~ ^[0-9]+$ ]] && [ "$old_1p_port" -ge 1 ] && [ "$old_1p_port" -le 65535 ] && [ "$old_1p_port" != "$final_1p_port" ]; then
+                                log_info "正在清理旧端口规则 ${old_1p_port}/tcp ..."
+                                ufw delete allow "$old_1p_port/tcp" >/dev/null 2>&1 || true
+                            fi
                             ufw --force reload
                             log_success "UFW 规则已更新。"
                         fi
@@ -1236,6 +1242,10 @@ fn_1panel_manager() {
                             if ufw status | grep -q "Status: active"; then
                                 log_info "检测到 UFW 活跃，正在自动放行端口 ${final_1p_port}..."
                                 ufw allow "$final_1p_port/tcp"
+                                if [[ "$old_1p_port" =~ ^[0-9]+$ ]] && [ "$old_1p_port" -ge 1 ] && [ "$old_1p_port" -le 65535 ] && [ "$old_1p_port" != "$final_1p_port" ]; then
+                                    log_info "正在清理旧端口规则 ${old_1p_port}/tcp ..."
+                                    ufw delete allow "$old_1p_port/tcp" >/dev/null 2>&1 || true
+                                fi
                                 ufw --force reload
                                 log_success "UFW 规则已更新。"
                             fi
