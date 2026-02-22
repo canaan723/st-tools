@@ -1087,6 +1087,31 @@ fn_1pctl_run() {
     fi
 }
 
+fn_get_1panel_actual_port() {
+    local port=""
+
+    # 优先从 1pctl user-info 输出中提取端口
+    port=$(1pctl user-info 2>/dev/null | grep -Eoi '([Pp]anel[[:space:]_-]*[Pp]ort|[Pp]ort)[^0-9]{0,20}[0-9]{1,5}' | grep -oE '[0-9]{1,5}' | tail -n 1)
+    if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+        echo "$port"
+        return 0
+    fi
+
+    # 回退：尝试从常见配置文件中读取
+    local cfg_file=""
+    for cfg_file in /opt/1panel/conf/app.yaml /opt/1panel/conf/app.yml /opt/1panel/conf/config.yaml; do
+        if [ -f "$cfg_file" ]; then
+            port=$(grep -E '^[[:space:]]*port:[[:space:]]*[0-9]+' "$cfg_file" | head -n 1 | grep -oE '[0-9]+' | head -n 1)
+            if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+                echo "$port"
+                return 0
+            fi
+        fi
+    done
+
+    return 1
+}
+
 fn_1panel_manager() {
     while true; do
         tput reset
@@ -1133,18 +1158,41 @@ fn_1panel_manager() {
                 sleep 2
                 ;;
             4)
-                local new_1p_port=""
-                if fn_prompt_port_in_range new_1p_port "请输入新的面板端口号 (1-65535): " "" 1 65535; then
-                    log_action "正在修改面板端口为 ${new_1p_port}..."
-                    if fn_1pctl_run update port "$new_1p_port"; then
+                log_info "即将进入 1Panel 官方端口修改流程，请按提示输入新端口。"
+                if fn_1pctl_run update port; then
+                    local final_1p_port=""
+                    final_1p_port=$(fn_get_1panel_actual_port || true)
+                    if [[ "$final_1p_port" =~ ^[0-9]+$ ]] && [ "$final_1p_port" -ge 1 ] && [ "$final_1p_port" -le 65535 ]; then
+                        log_info "检测到 1Panel 当前端口: ${final_1p_port}"
                         if ufw status | grep -q "Status: active"; then
-                            log_info "检测到 UFW 活跃，正在自动放行新端口 ${new_1p_port}..."
-                            ufw allow "$new_1p_port/tcp"
+                            log_info "检测到 UFW 活跃，正在自动放行端口 ${final_1p_port}..."
+                            ufw allow "$final_1p_port/tcp"
                             ufw --force reload
                             log_success "UFW 规则已更新。"
                         fi
                     else
-                        log_warn "1Panel 端口修改失败，已跳过 UFW 自动放行。"
+                        log_warn "未能自动识别 1Panel 当前端口，已跳过 UFW 自动放行。"
+                    fi
+                else
+                    log_warn "官方交互失败，正在尝试兼容参数模式。"
+                    local new_1p_port=""
+                    if fn_prompt_port_in_range new_1p_port "请输入新的面板端口号 (1-65535): " "" 1 65535; then
+                        if fn_1pctl_run update port "$new_1p_port"; then
+                            local final_1p_port="$new_1p_port"
+                            local detected_1p_port=""
+                            detected_1p_port=$(fn_get_1panel_actual_port || true)
+                            if [[ "$detected_1p_port" =~ ^[0-9]+$ ]] && [ "$detected_1p_port" -ge 1 ] && [ "$detected_1p_port" -le 65535 ]; then
+                                final_1p_port="$detected_1p_port"
+                            fi
+                            if ufw status | grep -q "Status: active"; then
+                                log_info "检测到 UFW 活跃，正在自动放行端口 ${final_1p_port}..."
+                                ufw allow "$final_1p_port/tcp"
+                                ufw --force reload
+                                log_success "UFW 规则已更新。"
+                            fi
+                        else
+                            log_warn "1Panel 端口修改失败，已跳过 UFW 自动放行。"
+                        fi
                     fi
                 fi
                 sleep 2
