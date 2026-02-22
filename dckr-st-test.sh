@@ -1079,6 +1079,14 @@ fn_ufw_manager() {
     done
 }
 
+fn_1pctl_run() {
+    if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+        1pctl "$@" < /dev/tty > /dev/tty 2>&1
+    else
+        1pctl "$@"
+    fi
+}
+
 fn_1panel_manager() {
     while true; do
         tput reset
@@ -1101,14 +1109,14 @@ fn_1panel_manager() {
         case "$op_1panel" in
             1)
                 echo -e "\n${CYAN}--- 服务状态 ---${NC}"
-                1pctl status
+                fn_1pctl_run status
                 echo -e "\n${CYAN}--- 版本信息 ---${NC}"
-                1pctl version
+                fn_1pctl_run version
                 read -rp "按 Enter 继续..." < /dev/tty
                 ;;
             2)
                 echo -e "\n${CYAN}--- 面板登录信息 ---${NC}"
-                1pctl user-info
+                fn_1pctl_run user-info
                 read -rp "按 Enter 继续..." < /dev/tty
                 ;;
             3)
@@ -1117,23 +1125,26 @@ fn_1panel_manager() {
                 echo -e "  [3] 重启服务 (restart)"
                 read -rp "请选择 [1-3]: " svc_op < /dev/tty
                 case "$svc_op" in
-                    1) log_action "正在启动 1Panel 服务..."; 1pctl start all ;;
-                    2) log_action "正在停止 1Panel 服务..."; 1pctl stop all ;;
-                    3) log_action "正在重启 1Panel 服务..."; 1pctl restart all ;;
+                    1) log_action "正在启动 1Panel 服务..."; fn_1pctl_run start all ;;
+                    2) log_action "正在停止 1Panel 服务..."; fn_1pctl_run stop all ;;
+                    3) log_action "正在重启 1Panel 服务..."; fn_1pctl_run restart all ;;
                     *) log_warn "无效选项" ;;
                 esac
                 sleep 2
                 ;;
             4)
                 local new_1p_port=""
-                if fn_prompt_port_in_range new_1p_port "请输入新的面板端口号 (1024-49151): " "" 1024 49151; then
+                if fn_prompt_port_in_range new_1p_port "请输入新的面板端口号 (1-65535): " "" 1 65535; then
                     log_action "正在修改面板端口为 ${new_1p_port}..."
-                    1pctl update port "$new_1p_port"
-                    if ufw status | grep -q "Status: active"; then
-                        log_info "检测到 UFW 活跃，正在自动放行新端口 ${new_1p_port}..."
-                        ufw allow "$new_1p_port/tcp"
-                        ufw --force reload
-                        log_success "UFW 规则已更新。"
+                    if fn_1pctl_run update port "$new_1p_port"; then
+                        if ufw status | grep -q "Status: active"; then
+                            log_info "检测到 UFW 活跃，正在自动放行新端口 ${new_1p_port}..."
+                            ufw allow "$new_1p_port/tcp"
+                            ufw --force reload
+                            log_success "UFW 规则已更新。"
+                        fi
+                    else
+                        log_warn "1Panel 端口修改失败，已跳过 UFW 自动放行。"
                     fi
                 fi
                 sleep 2
@@ -1144,13 +1155,11 @@ fn_1panel_manager() {
                 read -rp "请选择 [1-2]: " up_choice < /dev/tty
                 if [[ "$up_choice" == "1" ]]; then
                     log_info "即将进入 1Panel 官方用户名修改流程，请按提示操作。"
-                    local user_update_output=""
-                    user_update_output=$(1pctl update username 2>&1 | tee /dev/tty)
-                    if echo "$user_update_output" | grep -qi "panel user is empty"; then
-                        log_warn "检测到当前 1Panel 版本需要直接传入用户名，正在切换兼容模式。"
+                    if ! fn_1pctl_run update username; then
+                        log_warn "官方交互失败，正在尝试兼容参数模式。"
                         read -rp "请输入新用户名: " new_1p_user < /dev/tty
                         if [ -n "$new_1p_user" ]; then
-                            1pctl update username "$new_1p_user"
+                            fn_1pctl_run update username "$new_1p_user" || log_warn "兼容参数模式也失败，请执行 '1pctl update username' 手动修改。"
                         else
                             log_warn "用户名为空，已取消。"
                         fi
@@ -1158,14 +1167,12 @@ fn_1panel_manager() {
                 elif [[ "$up_choice" == "2" ]]; then
                     log_info "即将进入 1Panel 官方密码修改流程。"
                     log_warn "输入密码时屏幕不会显示字符，这是终端的安全设计，属于正常现象。"
-                    local pass_update_output=""
-                    pass_update_output=$(1pctl update password 2>&1 | tee /dev/tty)
-                    if echo "$pass_update_output" | grep -qi "panel password is empty"; then
-                        log_warn "检测到当前 1Panel 版本需要直接传入密码，正在切换兼容模式。"
+                    if ! fn_1pctl_run update password; then
+                        log_warn "官方交互失败，正在尝试兼容参数模式。"
                         read -rsp "请输入新密码: " new_1p_pass < /dev/tty
                         echo ""
                         if [ -n "$new_1p_pass" ]; then
-                            1pctl update password "$new_1p_pass"
+                            fn_1pctl_run update password "$new_1p_pass" || log_warn "兼容参数模式也失败，请执行 '1pctl update password' 手动修改。"
                         else
                             log_warn "密码为空，已取消。"
                         fi
@@ -1179,11 +1186,11 @@ fn_1panel_manager() {
                 echo -e "${YELLOW}即将重置安全设置，包括取消域名绑定、安全入口、HTTPS、IP限制和两步验证。${NC}"
                 read -rp "确定要继续吗？[y/N]: " confirm_reset < /dev/tty
                 if [[ "$confirm_reset" =~ ^[Yy]$ ]]; then
-                    1pctl reset domain
-                    1pctl reset entrance
-                    1pctl reset https
-                    1pctl reset ips
-                    1pctl reset mfa
+                    fn_1pctl_run reset domain
+                    fn_1pctl_run reset entrance
+                    fn_1pctl_run reset https
+                    fn_1pctl_run reset ips
+                    fn_1pctl_run reset mfa
                     log_success "安全设置已重置。"
                 fi
                 sleep 2
@@ -1193,9 +1200,9 @@ fn_1panel_manager() {
                 echo -e "  [2] 监听 IPv6"
                 read -rp "请选择 [1-2]: " ip_choice < /dev/tty
                 if [[ "$ip_choice" == "1" ]]; then
-                    1pctl listen-ip ipv4
+                    fn_1pctl_run listen-ip ipv4
                 elif [[ "$ip_choice" == "2" ]]; then
-                    1pctl listen-ip ipv6
+                    fn_1pctl_run listen-ip ipv6
                 fi
                 sleep 2
                 ;;
@@ -2053,7 +2060,7 @@ EOF
     INSTALL_DIR="${parent_path}/sillytavern"
     log_info "安装路径最终设置为: ${INSTALL_DIR}"
 
-    fn_prompt_port_in_range ST_PORT "请输入酒馆访问端口 (1024-49151) [默认 8000]: " "8000" 1024 49151
+    fn_prompt_port_in_range ST_PORT "请输入酒馆访问端口 (1-65535) [默认 8000]: " "8000" 1 65535
 
     CONFIG_FILE="$INSTALL_DIR/config/config.yaml"
     COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
@@ -2211,7 +2218,7 @@ install_gcli2api() {
     local parent_path="${custom_parent_path:-$default_parent_path}"
     local INSTALL_DIR="${parent_path}/gcli2api"
     
-    fn_prompt_port_in_range GCLI_PORT "请输入访问端口 (1024-49151) [默认 7861]: " "7861" 1024 49151
+    fn_prompt_port_in_range GCLI_PORT "请输入访问端口 (1-65535) [默认 7861]: " "7861" 1 65535
 
     local random_pwd=$(fn_generate_password 34)
     read -rp "请输入管理密码 [直接回车=随机生成]: " GCLI_PWD < /dev/tty
@@ -2431,7 +2438,7 @@ install_ais2api() {
     local parent_path="${custom_parent_path:-$default_parent_path}"
     local INSTALL_DIR="${parent_path}/ais2api"
     
-    fn_prompt_port_in_range AIS_PORT "请输入访问端口 (1024-49151) [默认 8889]: " "8889" 1024 49151
+    fn_prompt_port_in_range AIS_PORT "请输入访问端口 (1-65535) [默认 8889]: " "8889" 1 65535
 
     local random_key=$(fn_generate_password 34)
     read -rp "请输入 API Key [直接回车=随机生成]: " AIS_KEY < /dev/tty
@@ -2493,7 +2500,7 @@ install_warp() {
     local parent_path="${custom_parent_path:-$default_parent_path}"
     local INSTALL_DIR="${parent_path}/warp"
 
-    fn_prompt_port_in_range WARP_PORT "请输入 Warp 代理映射到宿主机的端口 (1024-49151) [默认 1080]: " "1080" 1024 49151
+    fn_prompt_port_in_range WARP_PORT "请输入 Warp 代理映射到宿主机的端口 (1-65535) [默认 1080]: " "1080" 1 65535
 
     log_action "正在创建目录结构..."
     mkdir -p "$INSTALL_DIR/data"
