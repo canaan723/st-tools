@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v5.12"
+readonly SCRIPT_VERSION="v5.15"
 GUGU_MODE="prod"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -64,6 +64,10 @@ fi
 
 CUSTOM_PROXY_IMAGE=""
 USER_HOME=""
+readonly AIS2API_OLD_IMAGE_REPO="ellinalopez/cloud-studio"
+readonly AIS2API_OLD_IMAGE="ellinalopez/cloud-studio:latest"
+readonly AIS2API_NEW_IMAGE_REPO="ghcr.io/ibuhub/aistudio-to-api"
+readonly AIS2API_NEW_IMAGE="ghcr.io/ibuhub/aistudio-to-api:latest"
 
 fn_init_user_home() {
     local target_user
@@ -78,6 +82,14 @@ fn_init_user_home() {
             USER_HOME="/home/$target_user"
         fi
     fi
+}
+
+fn_ensure_valid_cwd() {
+    if ! pwd -P >/dev/null 2>&1; then
+        log_warn "检测到当前工作目录不可用，已自动切换到用户主目录。"
+        cd "$USER_HOME" 2>/dev/null || cd /root 2>/dev/null || cd / || return 1
+    fi
+    return 0
 }
 
 fn_ssh_rollback() {
@@ -330,6 +342,92 @@ fn_print_error() { echo -e "\n${RED}✗ 错误: $1${NC}\n" >&2; return 1 2>/dev/
 
 fn_get_cleaned_version_num() { echo "$1" | grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1; }
 
+fn_detect_compose_cmd() {
+    if command -v docker-compose &> /dev/null; then
+        echo "docker-compose"
+        return 0
+    fi
+    if docker compose version &> /dev/null; then
+        echo "docker compose"
+        return 0
+    fi
+    return 1
+}
+
+fn_resolve_project_dir() {
+    local container_name="$1"
+    local fallback_subdir="$2"
+    local project_dir=""
+    project_dir=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$container_name" 2>/dev/null || true)
+
+    if [ -n "$project_dir" ] && [ -d "$project_dir" ]; then
+        echo "$project_dir"
+        return 0
+    fi
+
+    if [ -n "$fallback_subdir" ]; then
+        echo "${USER_HOME}/${fallback_subdir}"
+        return 0
+    fi
+
+    return 1
+}
+
+fn_prompt_port_in_range() {
+    local __result_var="$1"
+    local prompt="$2"
+    local default_port="$3"
+    local min_port="$4"
+    local max_port="$5"
+    local input_port=""
+
+    while true; do
+        read -rp "$prompt" input_port < /dev/tty
+        input_port=${input_port:-$default_port}
+        if [[ "$input_port" =~ ^[0-9]+$ ]] && [ "$input_port" -ge "$min_port" ] && [ "$input_port" -le "$max_port" ]; then
+            printf -v "$__result_var" '%s' "$input_port"
+            return 0
+        fi
+        log_warn "端口无效。请输入 ${min_port}-${max_port} 之间的数字。"
+    done
+}
+
+fn_prompt_safe_password() {
+    local __result_var="$1"
+    local prompt="${2:-请输入密码: }"
+    local input_pass=""
+
+    while true; do
+        read -rp "$prompt" input_pass < /dev/tty
+        if [ -z "$input_pass" ]; then
+            log_warn "密码不能为空。"
+        elif ! fn_check_password_safe "$input_pass"; then
+            log_warn "密码中包含不支持的特殊字符 (\\ / \" &)，请使用纯数字、字母或常规符号。"
+        else
+            printf -v "$__result_var" '%s' "$input_pass"
+            return 0
+        fi
+    done
+}
+
+fn_confirm_remove_existing_container() {
+    local container_name="$1"
+    local confirm_text="${2:-是否停止并移除现有容器？[y/N]: }"
+
+    if docker ps -a -q -f "name=^${container_name}$" | grep -q .; then
+        log_warn "检测到已存在名为 '${container_name}' 的容器。"
+        read -rp "$confirm_text" confirm_rm < /dev/tty
+        if [[ "$confirm_rm" =~ ^[Yy]$ ]]; then
+            docker stop "$container_name" >/dev/null 2>&1 || true
+            docker rm "$container_name" >/dev/null 2>&1 || true
+        else
+            log_info "操作已取消。"
+            return 1
+        fi
+    fi
+    return 0
+}
+
 fn_report_dependencies() {
     fn_print_info "--- Docker 环境诊断摘要 ---"
     printf "${BOLD}%-18s %-20s %-20s${NC}\n" "工具" "检测到的版本" "状态"
@@ -346,6 +444,7 @@ fn_report_dependencies() {
 }
 
 fn_check_dependencies() {
+    fn_ensure_valid_cwd || true
     fn_print_info "--- Docker 环境诊断开始 ---"
     
     local docker_check_needed=true
@@ -355,12 +454,18 @@ fn_check_dependencies() {
         else
             DOCKER_VER=$(fn_get_cleaned_version_num "$(docker --version)"); DOCKER_STATUS="正常"
         fi
-        if command -v docker-compose &> /dev/null; then
-            DOCKER_COMPOSE_CMD="docker-compose"; COMPOSE_VER="v$(fn_get_cleaned_version_num "$($DOCKER_COMPOSE_CMD version)")"; COMPOSE_STATUS="正常 (v1)"
-        elif docker compose version &> /dev/null; then
-            DOCKER_COMPOSE_CMD="docker compose"; COMPOSE_VER=$(docker compose version | grep -oE 'v[0-9]+(\.[0-9]+)+' | head -n 1); COMPOSE_STATUS="正常 (v2)"
+        DOCKER_COMPOSE_CMD=$(fn_detect_compose_cmd || true)
+        if [ -n "$DOCKER_COMPOSE_CMD" ]; then
+            if [ "$DOCKER_COMPOSE_CMD" = "docker-compose" ]; then
+                COMPOSE_VER="v$(fn_get_cleaned_version_num "$($DOCKER_COMPOSE_CMD version)")"
+                COMPOSE_STATUS="正常 (v1)"
+            else
+                COMPOSE_VER=$(docker compose version | grep -oE 'v[0-9]+(\.[0-9]+)+' | head -n 1)
+                COMPOSE_STATUS="正常 (v2)"
+            fi
         else
-            DOCKER_COMPOSE_CMD=""; COMPOSE_STATUS="未安装"
+            COMPOSE_VER="-"
+            COMPOSE_STATUS="未安装"
         fi
 
         if [[ "$DOCKER_STATUS" == "未安装" || "$COMPOSE_STATUS" == "未安装" ]]; then
@@ -941,7 +1046,7 @@ fn_ufw_manager() {
             2) ufw --force enable; sleep 1 ;;
             3) ufw disable; sleep 1 ;;
             4)
-                read -rp "请输入要放行的端口号: " p_allow < /dev/tty
+                read -rp "请输入要放行的端口号 (1-65535): " p_allow < /dev/tty
                 if [[ "$p_allow" =~ ^[0-9]+$ ]] && [ "$p_allow" -ge 1 ] && [ "$p_allow" -le 65535 ]; then
                     echo -e "选择协议: [1] TCP (默认)  [2] UDP  [3] TCP & UDP"
                     read -rp "请输入选项 [1-3]: " p_proto < /dev/tty
@@ -992,6 +1097,111 @@ fn_ufw_manager() {
     done
 }
 
+fn_1pctl_run() {
+    if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+        1pctl "$@" < /dev/tty > /dev/tty 2>&1
+    else
+        1pctl "$@"
+    fi
+}
+
+fn_strip_ansi() {
+    sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g'
+}
+
+fn_1pctl_run_capture() {
+    local __result_var="$1"
+    shift
+    local tmp_file
+    local cmd_status=1
+    local output=""
+
+    tmp_file=$(mktemp) || return 1
+    if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+        1pctl "$@" < /dev/tty 2>&1 | tee "$tmp_file" > /dev/tty
+        cmd_status=${PIPESTATUS[0]}
+    else
+        1pctl "$@" 2>&1 | tee "$tmp_file"
+        cmd_status=${PIPESTATUS[0]}
+    fi
+
+    output=$(cat "$tmp_file")
+    rm -f "$tmp_file"
+    printf -v "$__result_var" '%s' "$output"
+    return "$cmd_status"
+}
+
+fn_extract_1panel_port_from_text() {
+    local text="$1"
+    local port=""
+    # 仅匹配“标签后直接跟端口数字”的场景，避免从错误提示中误抓 1/65535
+    port=$(printf '%s\n' "$text" \
+        | fn_strip_ansi \
+        | grep -Eoi '([Pp]anel[[:space:]_-]*[Pp]ort|面板端口)[[:space:]]*:[[:space:]]*[0-9]{1,5}' \
+        | grep -oE '[0-9]{1,5}' \
+        | tail -n 1)
+    if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+        port=$(printf '%s\n' "$text" \
+            | fn_strip_ansi \
+            | grep -Eoi '([Uu]pdate[[:space:]_-]*[Pp]anel[[:space:]_-]*[Pp]ort|更新面板端口)[[:space:]]*:[[:space:]]*[0-9]{1,5}' \
+            | grep -oE '[0-9]{1,5}' \
+            | tail -n 1)
+    fi
+    if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+        echo "$port"
+        return 0
+    fi
+    return 1
+}
+
+fn_1panel_port_update_succeeded() {
+    local text="$1"
+    local cleaned=""
+    cleaned=$(printf '%s\n' "$text" | fn_strip_ansi)
+
+    # 显式错误优先判失败
+    if echo "$cleaned" | grep -qiE '(^|[[:space:]])error:'; then
+        return 1
+    fi
+
+    # 包含明确成功词或可解析的端口结果，判定为成功
+    if echo "$cleaned" | grep -qiE 'update[[:space:]_-]*successful|更新成功'; then
+        return 0
+    fi
+    if fn_extract_1panel_port_from_text "$cleaned" >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+fn_get_1panel_actual_port() {
+    local port=""
+
+    # 优先从 1pctl user-info 输出中提取端口
+    port=$(1pctl user-info 2>/dev/null | fn_strip_ansi | grep -Eoi '([Pp]anel[[:space:]_-]*[Pp]ort|面板端口)[[:space:]]*:[[:space:]]*[0-9]{1,5}' | grep -oE '[0-9]{1,5}' | tail -n 1)
+    if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+        port=$(1pctl user-info 2>/dev/null | fn_strip_ansi | grep -Eoi 'https?://[^[:space:]]+:[0-9]{1,5}' | grep -oE '[0-9]{1,5}' | tail -n 1)
+    fi
+    if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+        echo "$port"
+        return 0
+    fi
+
+    # 回退：尝试从常见配置文件中读取
+    local cfg_file=""
+    for cfg_file in /opt/1panel/conf/app.yaml /opt/1panel/conf/app.yml /opt/1panel/conf/config.yaml; do
+        if [ -f "$cfg_file" ]; then
+            port=$(grep -E '^[[:space:]]*port:[[:space:]]*[0-9]+' "$cfg_file" | head -n 1 | grep -oE '[0-9]+' | head -n 1)
+            if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+                echo "$port"
+                return 0
+            fi
+        fi
+    done
+
+    return 1
+}
+
 fn_1panel_manager() {
     while true; do
         tput reset
@@ -1014,14 +1224,14 @@ fn_1panel_manager() {
         case "$op_1panel" in
             1)
                 echo -e "\n${CYAN}--- 服务状态 ---${NC}"
-                1pctl status
+                fn_1pctl_run status
                 echo -e "\n${CYAN}--- 版本信息 ---${NC}"
-                1pctl version
+                fn_1pctl_run version
                 read -rp "按 Enter 继续..." < /dev/tty
                 ;;
             2)
                 echo -e "\n${CYAN}--- 面板登录信息 ---${NC}"
-                1pctl user-info
+                fn_1pctl_run user-info
                 read -rp "按 Enter 继续..." < /dev/tty
                 ;;
             3)
@@ -1030,39 +1240,111 @@ fn_1panel_manager() {
                 echo -e "  [3] 重启服务 (restart)"
                 read -rp "请选择 [1-3]: " svc_op < /dev/tty
                 case "$svc_op" in
-                    1) log_action "正在启动 1Panel 服务..."; 1pctl start all ;;
-                    2) log_action "正在停止 1Panel 服务..."; 1pctl stop all ;;
-                    3) log_action "正在重启 1Panel 服务..."; 1pctl restart all ;;
+                    1) log_action "正在启动 1Panel 服务..."; fn_1pctl_run start all ;;
+                    2) log_action "正在停止 1Panel 服务..."; fn_1pctl_run stop all ;;
+                    3) log_action "正在重启 1Panel 服务..."; fn_1pctl_run restart all ;;
                     *) log_warn "无效选项" ;;
                 esac
                 sleep 2
                 ;;
             4)
-                read -rp "请输入新的面板端口号: " new_1p_port < /dev/tty
-                if [[ "$new_1p_port" =~ ^[0-9]+$ ]] && [ "$new_1p_port" -ge 1 ] && [ "$new_1p_port" -le 65535 ]; then
-                    log_action "正在修改面板端口为 ${new_1p_port}..."
-                    1pctl update port "$new_1p_port"
-                    if ufw status | grep -q "Status: active"; then
-                        log_info "检测到 UFW 活跃，正在自动放行新端口 ${new_1p_port}..."
-                        ufw allow "$new_1p_port/tcp"
-                        ufw --force reload
-                        log_success "UFW 规则已更新。"
+                local old_1p_port=""
+                old_1p_port=$(fn_get_1panel_actual_port || true)
+                log_info "即将进入 1Panel 官方端口修改流程，请按提示输入新端口。"
+                local port_update_output=""
+                if fn_1pctl_run_capture port_update_output update port; then
+                    if ! fn_1panel_port_update_succeeded "$port_update_output"; then
+                        log_warn "1Panel 端口修改未成功，已跳过 UFW 自动放行。"
+                        sleep 2
+                        continue
+                    fi
+                    local final_1p_port=""
+                    final_1p_port=$(fn_extract_1panel_port_from_text "$port_update_output" || true)
+                    if [[ ! "$final_1p_port" =~ ^[0-9]+$ ]]; then
+                        final_1p_port=$(fn_get_1panel_actual_port || true)
+                    fi
+                    if [[ "$final_1p_port" =~ ^[0-9]+$ ]] && [ "$final_1p_port" -ge 1 ] && [ "$final_1p_port" -le 65535 ]; then
+                        log_info "检测到 1Panel 当前端口: ${final_1p_port}"
+                        if ufw status | grep -q "Status: active"; then
+                            log_info "检测到 UFW 活跃，正在自动放行端口 ${final_1p_port}..."
+                            ufw allow "$final_1p_port/tcp"
+                            if [[ "$old_1p_port" =~ ^[0-9]+$ ]] && [ "$old_1p_port" -ge 1 ] && [ "$old_1p_port" -le 65535 ] && [ "$old_1p_port" != "$final_1p_port" ]; then
+                                log_info "正在清理旧端口规则 ${old_1p_port}/tcp ..."
+                                ufw delete allow "$old_1p_port/tcp" >/dev/null 2>&1 || true
+                            fi
+                            ufw --force reload
+                            log_success "UFW 规则已更新。"
+                        fi
+                    else
+                        log_warn "未能自动识别 1Panel 当前端口，已跳过 UFW 自动放行。"
                     fi
                 else
-                    log_warn "无效端口号。"
+                    log_warn "官方交互失败，正在尝试兼容参数模式。"
+                    local new_1p_port=""
+                    if fn_prompt_port_in_range new_1p_port "请输入新的面板端口号 (1-65535): " "" 1 65535; then
+                        local port_update_output_compat=""
+                        if fn_1pctl_run_capture port_update_output_compat update port "$new_1p_port"; then
+                            if ! fn_1panel_port_update_succeeded "$port_update_output_compat"; then
+                                log_warn "1Panel 端口修改未成功，已跳过 UFW 自动放行。"
+                                sleep 2
+                                continue
+                            fi
+                            local final_1p_port="$new_1p_port"
+                            local detected_1p_port=""
+                            detected_1p_port=$(fn_extract_1panel_port_from_text "$port_update_output_compat" || true)
+                            if [[ ! "$detected_1p_port" =~ ^[0-9]+$ ]]; then
+                                detected_1p_port=$(fn_get_1panel_actual_port || true)
+                            fi
+                            if [[ "$detected_1p_port" =~ ^[0-9]+$ ]] && [ "$detected_1p_port" -ge 1 ] && [ "$detected_1p_port" -le 65535 ]; then
+                                final_1p_port="$detected_1p_port"
+                            fi
+                            if ufw status | grep -q "Status: active"; then
+                                log_info "检测到 UFW 活跃，正在自动放行端口 ${final_1p_port}..."
+                                ufw allow "$final_1p_port/tcp"
+                                if [[ "$old_1p_port" =~ ^[0-9]+$ ]] && [ "$old_1p_port" -ge 1 ] && [ "$old_1p_port" -le 65535 ] && [ "$old_1p_port" != "$final_1p_port" ]; then
+                                    log_info "正在清理旧端口规则 ${old_1p_port}/tcp ..."
+                                    ufw delete allow "$old_1p_port/tcp" >/dev/null 2>&1 || true
+                                fi
+                                ufw --force reload
+                                log_success "UFW 规则已更新。"
+                            fi
+                        else
+                            log_warn "1Panel 端口修改失败，已跳过 UFW 自动放行。"
+                        fi
+                    fi
                 fi
                 sleep 2
                 ;;
             5)
-                echo -e "  [1] 修改用户名"
-                echo -e "  [2] 修改密码"
+                echo -e "  [1] 修改用户名 (调用 1Panel 官方交互)"
+                echo -e "  [2] 修改密码 (调用 1Panel 官方交互)"
                 read -rp "请选择 [1-2]: " up_choice < /dev/tty
                 if [[ "$up_choice" == "1" ]]; then
-                    read -rp "请输入新用户名: " new_1p_user < /dev/tty
-                    1pctl update username "$new_1p_user"
+                    log_info "即将进入 1Panel 官方用户名修改流程，请按提示操作。"
+                    if ! fn_1pctl_run update username; then
+                        log_warn "官方交互失败，正在尝试兼容参数模式。"
+                        read -rp "请输入新用户名: " new_1p_user < /dev/tty
+                        if [ -n "$new_1p_user" ]; then
+                            fn_1pctl_run update username "$new_1p_user" || log_warn "兼容参数模式也失败，请执行 '1pctl update username' 手动修改。"
+                        else
+                            log_warn "用户名为空，已取消。"
+                        fi
+                    fi
                 elif [[ "$up_choice" == "2" ]]; then
-                    read -rp "请输入新密码: " new_1p_pass < /dev/tty
-                    1pctl update password "$new_1p_pass"
+                    log_info "即将进入 1Panel 官方密码修改流程。"
+                    log_warn "输入密码时屏幕不会显示字符，这是终端的安全设计，属于正常现象。"
+                    if ! fn_1pctl_run update password; then
+                        log_warn "官方交互失败，正在尝试兼容参数模式。"
+                        read -rsp "请输入新密码: " new_1p_pass < /dev/tty
+                        echo ""
+                        if [ -n "$new_1p_pass" ]; then
+                            fn_1pctl_run update password "$new_1p_pass" || log_warn "兼容参数模式也失败，请执行 '1pctl update password' 手动修改。"
+                        else
+                            log_warn "密码为空，已取消。"
+                        fi
+                    fi
+                else
+                    log_warn "无效选项。"
                 fi
                 sleep 2
                 ;;
@@ -1070,11 +1352,11 @@ fn_1panel_manager() {
                 echo -e "${YELLOW}即将重置安全设置，包括取消域名绑定、安全入口、HTTPS、IP限制和两步验证。${NC}"
                 read -rp "确定要继续吗？[y/N]: " confirm_reset < /dev/tty
                 if [[ "$confirm_reset" =~ ^[Yy]$ ]]; then
-                    1pctl reset domain
-                    1pctl reset entrance
-                    1pctl reset https
-                    1pctl reset ips
-                    1pctl reset mfa
+                    fn_1pctl_run reset domain
+                    fn_1pctl_run reset entrance
+                    fn_1pctl_run reset https
+                    fn_1pctl_run reset ips
+                    fn_1pctl_run reset mfa
                     log_success "安全设置已重置。"
                 fi
                 sleep 2
@@ -1084,9 +1366,9 @@ fn_1panel_manager() {
                 echo -e "  [2] 监听 IPv6"
                 read -rp "请选择 [1-2]: " ip_choice < /dev/tty
                 if [[ "$ip_choice" == "1" ]]; then
-                    1pctl listen-ip ipv4
+                    fn_1pctl_run listen-ip ipv4
                 elif [[ "$ip_choice" == "2" ]]; then
-                    1pctl listen-ip ipv6
+                    fn_1pctl_run listen-ip ipv6
                 fi
                 sleep 2
                 ;;
@@ -1707,100 +1989,141 @@ fn_generate_password() {
     tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "$length"
 }
 
-install_sillytavern() {
-    # 初始化变量供全局检查函数使用
-    local DOCKER_VER="-" DOCKER_STATUS="-"
-    local COMPOSE_VER="-" COMPOSE_STATUS="-"
-    local DOCKER_COMPOSE_CMD=""
-    local CONTAINER_NAME="sillytavern"
-    local IMAGE_NAME="ghcr.io/sillytavern/sillytavern:latest"
+fn_st_trim_credential_value() {
+    local raw_value="$1"
+    local cleaned=""
 
-    fn_check_existing_container() {
-        if docker ps -a -q -f "name=^${CONTAINER_NAME}$" | grep -q .; then
-            log_warn "检测到服务器上已存在一个名为 '${CONTAINER_NAME}' 的 Docker 容器。"
-            log_info "这可能来自之前的安装。若要继续，必须先处理现有容器。"
-            echo -e "请选择操作："
-            echo -e "  [1] ${YELLOW}停止并移除现有容器，然后继续全新安装${NC}"
-            echo -e "  [2] ${RED}退出脚本，由我手动处理${NC}"
-            
-            local choice=""
-            while [[ "$choice" != "1" && "$choice" != "2" ]]; do
-                read -p "请输入选项 [1 或 2]: " choice < /dev/tty
-            done
-            
-            case "$choice" in
-                1)
-                    log_action "正在停止并移除现有容器 '${CONTAINER_NAME}'..."
-                    docker stop "${CONTAINER_NAME}" > /dev/null 2>&1 || true
-                    docker rm "${CONTAINER_NAME}" > /dev/null 2>&1 || true
-                    log_success "现有容器已成功移除。"
-                    ;;
-                2)
-                    log_info "操作已取消。请手动执行 'docker ps -a' 查看容器状态。"
-                    return 1
-                    ;;
-            esac
-        fi
-    }
+    cleaned=$(echo "$raw_value" | sed -E 's/\r$//; s/[[:space:]]+#.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//')
+    cleaned="${cleaned#\"}"
+    cleaned="${cleaned%\"}"
+    cleaned="${cleaned#\'}"
+    cleaned="${cleaned%\'}"
+    printf '%s' "$cleaned"
+}
 
+fn_st_get_basic_auth_credentials() {
+    local config_file="$1"
+    local __user_var="$2"
+    local __pass_var="$3"
+    local _user=""
+    local _pass=""
 
-    fn_apply_config_changes() {
-        sed -i '1i# ✦ 咕咕助手 · 作者：清绝 | 博客：https://blog.qjyg.de' "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # 允许外部访问/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false # 关闭IP白名单模式/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400 # 24小时退出登录/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)lazyLoadCharacters: .*/\1lazyLoadCharacters: true # 懒加载、点击角色卡才加载/" "$CONFIG_FILE"
-        sed -i -E "s/^([[:space:]]*)memoryCacheCapacity: .*/\1memoryCacheCapacity: '${ST_CACHE_MEM}mb' # 角色卡内存缓存/" "$CONFIG_FILE"
-        if [[ "$run_mode" == "1" ]]; then
-            local safe_user
-            local safe_pass
-            safe_user=$(fn_escape_sed_str "$single_user")
-            safe_pass=$(fn_escape_sed_str "$single_pass")
+    if [ ! -f "$config_file" ]; then
+        printf -v "$__user_var" '%s' ""
+        printf -v "$__pass_var" '%s' ""
+        return 1
+    fi
 
-            sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 启用基础认证/" "$CONFIG_FILE"
-            sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$safe_user\"/}" "$CONFIG_FILE"
-            sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$safe_pass\"/}" "$CONFIG_FILE"
-        elif [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
-            sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 临时开启基础认证以设置管理员/" "$CONFIG_FILE"
-            sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # 启用多用户模式/" "$CONFIG_FILE"
-        fi
-    }
+    # 直接使用与正式版本完全相同的方法
+    _user=$(grep -A 2 "basicAuthUser:" "$config_file" | grep "username:" | cut -d'"' -f2)
+    _pass=$(grep -A 2 "basicAuthUser:" "$config_file" | grep "password:" | cut -d'"' -f2)
 
+    printf -v "$__user_var" '%s' "$_user"
+    printf -v "$__pass_var" '%s' "$_pass"
+}
 
+fn_st_set_basic_auth_credentials() {
+    local config_file="$1"
+    local new_user="$2"
+    local new_pass="$3"
+    local safe_user=""
+    local safe_pass=""
 
+    safe_user=$(fn_escape_sed_str "$new_user")
+    safe_pass=$(fn_escape_sed_str "$new_pass")
 
-    
-    fn_confirm_and_delete_dir() {
-        local dir_to_delete="$1"
-        local container_name="$2"
-        log_warn "目录 '$dir_to_delete' 已存在，可能包含之前的聊天记录和角色卡。"
-        read -r -p "确定要【彻底清理】并继续安装吗？此操作会停止并删除旧容器。[Y/n]: " c1 < /dev/tty
-        if [[ ! "${c1:-y}" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。" || return 1; fi
-        read -r -p "$(echo -e "${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 [Y/n]: ${NC}")" c2 < /dev/tty
-        if [[ ! "${c2:-y}" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。" || return 1; fi
-        read -r -p "$(echo -e "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}")" c3 < /dev/tty
-        if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。" || return 1; fi
-        fn_print_info "正在停止并移除旧容器: $container_name..."
-        docker stop "$container_name" > /dev/null 2>&1 || true
-        docker rm "$container_name" > /dev/null 2>&1 || true
-        log_success "旧容器已停止并移除。"
-        fn_print_info "正在删除旧目录: $dir_to_delete..."
-        rm -rf "$dir_to_delete"
-        log_success "旧目录已彻底清理。"
-    }
+    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$safe_user\"/}" "$config_file"
+    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$safe_pass\"/}" "$config_file"
+}
 
-    fn_create_project_structure() {
-        fn_print_info "正在创建项目目录结构..."
-        mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/plugins" "$INSTALL_DIR/third-party" "$INSTALL_DIR/config" "$INSTALL_DIR/.gugu"
-        fn_print_info "正在设置文件所有权..."
-        chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
-        log_success "项目目录创建并授权成功！"
-    }
+fn_st_install_check_existing_container() {
+    local container_name="$1"
+    if docker ps -a -q -f "name=^${container_name}$" | grep -q .; then
+        log_warn "检测到服务器上已存在一个名为 '${container_name}' 的 Docker 容器。"
+        log_info "这可能来自之前的安装。若要继续，必须先处理现有容器。"
+        echo -e "请选择操作："
+        echo -e "  [1] ${YELLOW}停止并移除现有容器，然后继续全新安装${NC}"
+        echo -e "  [2] ${RED}退出脚本，由我手动处理${NC}"
 
-    fn_create_git_sync_config() {
-        fn_print_info "正在创建 Git 同步配置文件 (.gugu/git_sync.conf)..."
-        mkdir -p "$INSTALL_DIR/.gugu"
-        cat <<EOF > "$INSTALL_DIR/.gugu/git_sync.conf"
+        local choice=""
+        while [[ "$choice" != "1" && "$choice" != "2" ]]; do
+            read -p "请输入选项 [1 或 2]: " choice < /dev/tty
+        done
+
+        case "$choice" in
+            1)
+                log_action "正在停止并移除现有容器 '${container_name}'..."
+                docker stop "${container_name}" > /dev/null 2>&1 || true
+                docker rm "${container_name}" > /dev/null 2>&1 || true
+                log_success "现有容器已成功移除。"
+                ;;
+            2)
+                log_info "操作已取消。请手动执行 'docker ps -a' 查看容器状态。"
+                return 1
+                ;;
+        esac
+    fi
+    return 0
+}
+
+fn_st_install_apply_config_changes() {
+    local config_file="$1"
+    local st_cache_mem="$2"
+    local run_mode="$3"
+    local single_user="$4"
+    local single_pass="$5"
+
+    sed -i '1i# ✦ 咕咕助手 · 作者：清绝 | 博客：https://blog.qjyg.de' "$config_file"
+    sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # 允许外部访问/" "$config_file"
+    sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false # 关闭IP白名单模式/" "$config_file"
+    sed -i -E "/^[[:space:]]*hostWhitelist:/,/^[[:space:]]*hosts:/{s/^([[:space:]]*)enabled: .*/\1enabled: true # 启用 Host 白名单/}" "$config_file"
+    sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400 # 24小时退出登录/" "$config_file"
+    sed -i -E "s/^([[:space:]]*)lazyLoadCharacters: .*/\1lazyLoadCharacters: true # 懒加载、点击角色卡才加载/" "$config_file"
+    sed -i -E "s/^([[:space:]]*)memoryCacheCapacity: .*/\1memoryCacheCapacity: '${st_cache_mem}mb' # 角色卡内存缓存/" "$config_file"
+    if [[ "$run_mode" == "1" ]]; then
+        sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 启用基础认证/" "$config_file"
+        fn_st_set_basic_auth_credentials "$config_file" "$single_user" "$single_pass"
+    elif [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
+        sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 临时开启基础认证以设置管理员/" "$config_file"
+        sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # 启用多用户模式/" "$config_file"
+    fi
+}
+
+fn_st_install_confirm_and_delete_dir() {
+    local dir_to_delete="$1"
+    local container_name="$2"
+    log_warn "目录 '$dir_to_delete' 已存在，可能包含之前的聊天记录和角色卡。"
+    read -r -p "确定要【彻底清理】并继续安装吗？此操作会停止并删除旧容器。[Y/n]: " c1 < /dev/tty
+    if [[ ! "${c1:-y}" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。" || return 1; fi
+    read -r -p "$(echo -e "${YELLOW}警告：此操作将永久删除该目录下的所有数据！请再次确认 [Y/n]: ${NC}")" c2 < /dev/tty
+    if [[ ! "${c2:-y}" =~ ^[Yy]$ ]]; then fn_print_error "操作被用户取消。" || return 1; fi
+    read -r -p "$(echo -e "${RED}最后警告：数据将无法恢复！请输入 'yes' 以确认删除: ${NC}")" c3 < /dev/tty
+    if [[ "$c3" != "yes" ]]; then fn_print_error "操作被用户取消。" || return 1; fi
+    fn_print_info "正在停止并移除旧容器: $container_name..."
+    docker stop "$container_name" > /dev/null 2>&1 || true
+    docker rm "$container_name" > /dev/null 2>&1 || true
+    log_success "旧容器已停止并移除。"
+    fn_print_info "正在删除旧目录: $dir_to_delete..."
+    rm -rf "$dir_to_delete"
+    log_success "旧目录已彻底清理。"
+}
+
+fn_st_install_create_project_structure() {
+    local install_dir="$1"
+    local target_user="$2"
+    fn_print_info "正在创建项目目录结构..."
+    mkdir -p "$install_dir/data" "$install_dir/plugins" "$install_dir/third-party" "$install_dir/config" "$install_dir/.gugu"
+    fn_print_info "正在设置文件所有权..."
+    chown -R "$target_user:$target_user" "$install_dir"
+    log_success "项目目录创建并授权成功！"
+}
+
+fn_st_install_create_git_sync_config() {
+    local install_dir="$1"
+    local target_user="$2"
+    fn_print_info "正在创建 Git 同步配置文件 (.gugu/git_sync.conf)..."
+    mkdir -p "$install_dir/.gugu"
+    cat <<EOF > "$install_dir/.gugu/git_sync.conf"
 # ✦ 咕咕助手 · 作者：清绝 | 博客：https://blog.qjyg.de
 REPO_URL="仓库"
 REPO_TOKEN="令牌"
@@ -1814,53 +2137,66 @@ SYNC_CONFIG_YAML=""
 # 用户数据映射规则 ("本地用户名:云端用户名"，使用英文冒号分隔，默认用户名是 default-user)
 USER_MAP=""
 EOF
-        chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR/.gugu"
-        log_success "Git 同步配置文件创建成功！"
-    }
+    chown -R "$target_user:$target_user" "$install_dir/.gugu"
+    log_success "Git 同步配置文件创建成功！"
+}
 
-    fn_pull_with_progress_bar() {
-        local target_image="$1"
-        
-        log_info "正在拉取镜像: ${target_image} ..."
-        if docker pull "$target_image"; then
-            log_success "镜像拉取成功！"
-        else
-            fn_print_error "镜像拉取失败。请检查网络或镜像源。" || return 1
-        fi
-    }
+fn_pull_with_progress_bar() {
+    local target_image="$1"
+    log_info "正在拉取镜像: ${target_image} ..."
+    if docker pull "$target_image"; then
+        log_success "镜像拉取成功！"
+    else
+        fn_print_error "镜像拉取失败。请检查网络或镜像源。" || return 1
+    fi
+}
 
+fn_st_install_check_and_explain_status() {
+    local container_name="$1"
+    echo -e "\n${YELLOW}--- 容器当前状态 ---${NC}"
+    docker ps -a --filter "name=${container_name}"
+    local status
+    status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || echo "未找到")
+    echo -e "\n${CYAN}--- 状态解读 ---${NC}"
+    case "$status" in
+        running) log_success "状态正常：容器正在健康运行。";;
+        restarting) log_warn "状态异常：容器正在无限重启。"; fn_print_info "通常意味着程序内部崩溃。请使用 [2] 查看日志定位错误。";;
+        exited) echo -e "${RED}状态错误：容器已停止运行。${NC}"; fn_print_info "通常是由于启动时发生致命错误。请使用 [2] 查看日志获取错误信息。";;
+        未找到) echo -e "${RED}未能找到名为 '${container_name}' 的容器。${NC}";;
+        *) log_warn "状态未知：容器处于 '${status}' 状态。"; fn_print_info "建议使用 [2] 查看日志进行诊断。";;
+    esac
+}
 
-    fn_check_and_explain_status() {
-        local container_name="$1"
-        echo -e "\n${YELLOW}--- 容器当前状态 ---${NC}"
-        docker ps -a --filter "name=${container_name}"
-        local status
-        status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || echo "未找到")
-        echo -e "\n${CYAN}--- 状态解读 ---${NC}"
-        case "$status" in
-            running) log_success "状态正常：容器正在健康运行。";;
-            restarting) log_warn "状态异常：容器正在无限重启。"; fn_print_info "通常意味着程序内部崩溃。请使用 [2] 查看日志定位错误。";;
-            exited) echo -e "${RED}状态错误：容器已停止运行。${NC}"; fn_print_info "通常是由于启动时发生致命错误。请使用 [2] 查看日志获取错误信息。";;
-            未找到) echo -e "${RED}未能找到名为 '${container_name}' 的容器。${NC}";;
-            *) log_warn "状态未知：容器处于 '${status}' 状态。"; fn_print_info "建议使用 [2] 查看日志进行诊断。";;
-        esac
-    }
+fn_st_install_display_final_info() {
+    local server_ip="$1"
+    local st_port="$2"
+    local run_mode="$3"
+    local single_user="$4"
+    local single_pass="$5"
+    local install_dir="$6"
 
-    fn_display_final_info() {
-        echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "║                   ${BOLD}部署成功！尽情享受吧！${NC}                   ║"
-        echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
-        echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${SERVER_IP}:${ST_PORT}${NC}"
-        
-        if [[ "$run_mode" == "1" ]]; then
-            echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"
-            echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"
-        elif [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
-            echo -e "  ${YELLOW}登录页面:${NC} ${GREEN}http://${SERVER_IP}:${ST_PORT}/login${NC}"
-        fi
-        
-        echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
-    }
+    echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "║                   ${BOLD}部署成功！尽情享受吧！${NC}                   ║"
+    echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "\n  ${CYAN}访问地址:${NC} ${GREEN}http://${server_ip}:${st_port}${NC}"
+
+    if [[ "$run_mode" == "1" ]]; then
+        echo -e "  ${CYAN}登录账号:${NC} ${YELLOW}${single_user}${NC}"
+        echo -e "  ${CYAN}登录密码:${NC} ${YELLOW}${single_pass}${NC}"
+    elif [[ "$run_mode" == "2" || "$run_mode" == "3" ]]; then
+        echo -e "  ${YELLOW}登录页面:${NC} ${GREEN}http://${server_ip}:${st_port}/login${NC}"
+    fi
+
+    echo -e "  ${CYAN}项目路径:${NC} $install_dir"
+}
+
+install_sillytavern() {
+    # 初始化变量供全局检查函数使用
+    local DOCKER_VER="-" DOCKER_STATUS="-"
+    local COMPOSE_VER="-" COMPOSE_STATUS="-"
+    local DOCKER_COMPOSE_CMD=""
+    local CONTAINER_NAME="sillytavern"
+    local IMAGE_NAME="ghcr.io/sillytavern/sillytavern:latest"
 
 
     tput reset
@@ -1878,7 +2214,7 @@ EOF
     COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
     
     fn_check_dependencies
-    fn_check_existing_container
+    fn_st_install_check_existing_container "$CONTAINER_NAME" || return 1
     fn_optimize_docker
     
     SERVER_IP=$(fn_get_public_ip)
@@ -1918,16 +2254,7 @@ EOF
     case "$run_mode" in
         1)
             read -p "请输入自定义用户名: " single_user < /dev/tty
-            while true; do
-                read -p "请输入自定义密码: " single_pass < /dev/tty
-                if [ -z "$single_pass" ]; then
-                    log_warn "密码不能为空。"
-                elif ! fn_check_password_safe "$single_pass"; then
-                    log_warn "密码中包含不支持的特殊字符 (\\ / \" &)，请使用纯数字、字母或常规符号。"
-                else
-                    break
-                fi
-            done
+            fn_prompt_safe_password single_pass "请输入自定义密码: "
             if [ -z "$single_user" ]; then fn_print_error "用户名不能为空！"; fi
             ;;
         2)
@@ -1941,29 +2268,27 @@ EOF
     read -rp "安装路径: SillyTavern 将被安装在 <上级目录>/sillytavern 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
     local parent_path="${custom_parent_path:-$default_parent_path}"
     INSTALL_DIR="${parent_path}/sillytavern"
+
+    # 路径安全检查：禁止安装到系统关键目录
+    if [[ "$INSTALL_DIR" =~ ^/(bin|boot|dev|etc|lib|lib64|proc|root|sbin|sys|usr)(/|$) ]]; then
+        log_error "安全限制：不允许安装到系统关键目录 ($INSTALL_DIR)。请选择其他路径。" || return 1
+    fi
+
     log_info "安装路径最终设置为: ${INSTALL_DIR}"
 
-    while true; do
-        read -rp "请输入酒馆访问端口 [默认 8000]: " ST_PORT < /dev/tty
-        ST_PORT=${ST_PORT:-8000}
-        if [[ "$ST_PORT" =~ ^[0-9]+$ ]] && [ "$ST_PORT" -ge 1 ] && [ "$ST_PORT" -le 65535 ]; then
-            break
-        else
-            log_warn "端口无效。请输入 1-65535 之间的数字。"
-        fi
-    done
+    fn_prompt_port_in_range ST_PORT "请输入酒馆访问端口 (1-65535) [默认 8000]: " "8000" 1 65535
 
     CONFIG_FILE="$INSTALL_DIR/config/config.yaml"
     COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 
     fn_print_step "[ 3/5 ] 创建项目文件"
     if [ -d "$INSTALL_DIR" ]; then
-        fn_confirm_and_delete_dir "$INSTALL_DIR" "$CONTAINER_NAME"
+        fn_st_install_confirm_and_delete_dir "$INSTALL_DIR" "$CONTAINER_NAME" || return 1
     fi
 
-    fn_create_project_structure
+    fn_st_install_create_project_structure "$INSTALL_DIR" "$TARGET_USER" || return 1
 
-    fn_create_git_sync_config
+    fn_st_install_create_git_sync_config "$INSTALL_DIR" "$TARGET_USER" || return 1
 
     cd "$INSTALL_DIR"
     fn_print_info "工作目录已切换至: $(pwd)"
@@ -2011,13 +2336,18 @@ EOF
         if [ $timeout -eq 0 ]; then
             fn_print_error "等待配置文件生成超时！请检查日志输出：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)" || return 1
         fi
+        # 检查容器状态，避免容器已退出但仍在等待
+        local status=$(docker inspect --format '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "unknown")
+        if [[ "$status" == "exited" || "$status" == "dead" ]]; then
+            fn_print_error "容器启动失败（状态: $status）！请检查日志：\n$($DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" logs --tail 50)" || return 1
+        fi
         sleep 1
         ((timeout--))
     done
     $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down > /dev/null 2>&1
     log_success "config.yaml 文件已生成！"
     
-    fn_apply_config_changes
+    fn_st_install_apply_config_changes "$CONFIG_FILE" "$ST_CACHE_MEM" "$run_mode" "$single_user" "$single_pass" || return 1
     if [[ "$run_mode" == "1" ]]; then
         log_success "单用户模式配置写入完成！"
     else
@@ -2063,7 +2393,7 @@ EOF
     fn_verify_container_health "$CONTAINER_NAME"
     fn_wait_for_service
 
-    fn_display_final_info
+    fn_st_install_display_final_info "$SERVER_IP" "$ST_PORT" "$run_mode" "$single_user" "$single_pass" "$INSTALL_DIR"
 
     while true; do
         echo -e "\n${CYAN}--- 部署后操作 ---${NC}"
@@ -2074,14 +2404,14 @@ EOF
         read -p "请输入选项: " choice < /dev/tty
         [[ -z "$choice" ]] && continue
         case "$choice" in
-            1) fn_check_and_explain_status "$CONTAINER_NAME";;
+            1) fn_st_install_check_and_explain_status "$CONTAINER_NAME";;
             2)
                 echo -e "\n${YELLOW}--- 实时日志 (按 Ctrl+C 停止) ---${NC}"
                 trap : INT
                 docker logs -f "$CONTAINER_NAME" || true
                 trap 'exit 0' INT
                 ;;
-            3) fn_display_final_info;;
+            3) fn_st_install_display_final_info "$SERVER_IP" "$ST_PORT" "$run_mode" "$single_user" "$single_pass" "$INSTALL_DIR";;
             q|Q) echo -e "\n已退出部署后菜单。"; break;;
             *) log_warn "无效输入，请输入 1, 2, 3 或 q。";;
         esac
@@ -2102,32 +2432,19 @@ install_gcli2api() {
     fn_check_base_deps
     fn_check_dependencies
     
-    if docker ps -a -q -f "name=^${CONTAINER_NAME}$" | grep -q .; then
-        log_warn "检测到已存在名为 '${CONTAINER_NAME}' 的容器。"
-        read -rp "是否停止并移除现有容器？[y/N]: " confirm_rm < /dev/tty
-        if [[ "$confirm_rm" =~ ^[Yy]$ ]]; then
-            docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
-            docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
-        else
-            log_info "操作已取消。"
-            return 1
-        fi
-    fi
+    fn_confirm_remove_existing_container "$CONTAINER_NAME" || return 1
 
     local default_parent_path="${USER_HOME}"
     read -rp "安装路径: gcli2api 将被安装在 <上级目录>/gcli2api 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
     local parent_path="${custom_parent_path:-$default_parent_path}"
     local INSTALL_DIR="${parent_path}/gcli2api"
-    
-    while true; do
-        read -rp "请输入访问端口 [默认 7861]: " GCLI_PORT < /dev/tty
-        GCLI_PORT=${GCLI_PORT:-7861}
-        if [[ "$GCLI_PORT" =~ ^[0-9]+$ ]] && [ "$GCLI_PORT" -ge 1 ] && [ "$GCLI_PORT" -le 65535 ]; then
-            break
-        else
-            log_warn "端口无效。"
-        fi
-    done
+
+    # 路径安全检查：禁止安装到系统关键目录
+    if [[ "$INSTALL_DIR" =~ ^/(bin|boot|dev|etc|lib|lib64|proc|root|sbin|sys|usr)(/|$) ]]; then
+        log_error "安全限制：不允许安装到系统关键目录 ($INSTALL_DIR)。请选择其他路径。" || return 1
+    fi
+
+    fn_prompt_port_in_range GCLI_PORT "请输入访问端口 (1-65535) [默认 7861]: " "7861" 1 65535
 
     local random_pwd=$(fn_generate_password 34)
     read -rp "请输入管理密码 [直接回车=随机生成]: " GCLI_PWD < /dev/tty
@@ -2160,7 +2477,7 @@ services:
 EOF
 
     log_action "正在启动服务..."
-    cd "$INSTALL_DIR" && docker compose up -d
+    cd "$INSTALL_DIR" && $DOCKER_COMPOSE_CMD up -d
     
     fn_verify_container_health "$CONTAINER_NAME"
     
@@ -2173,56 +2490,186 @@ EOF
     echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
 }
 
+fn_write_ais_official_env() {
+    local env_file="$1"
+    local api_keys="$2"
+
+    cat <<EOF > "$env_file"
+# ===================================
+# Server Configuration
+# ===================================
+PORT=7860
+HOST=0.0.0.0
+WS_PORT=9998
+
+# ===================================
+# Authentication Configuration
+# ===================================
+API_KEYS=${api_keys}
+
+# ===================================
+# Security Configuration
+# ===================================
+SECURE_COOKIES=false
+RATE_LIMIT_MAX_ATTEMPTS=5
+RATE_LIMIT_WINDOW_MINUTES=15
+INITIAL_AUTH_INDEX=0
+
+# ===================================
+# UI Configuration
+# ===================================
+ICON_URL=
+CHECK_UPDATE=true
+
+# ===================================
+# Browser Configuration
+# ===================================
+CAMOUFOX_EXECUTABLE_PATH=
+TARGET_DOMAIN=
+
+# ===================================
+# Request Handling Configuration
+# ===================================
+STREAMING_MODE=real
+MAX_RETRIES=3
+RETRY_DELAY=2000
+FORCE_THINKING=false
+FORCE_WEB_SEARCH=false
+FORCE_URL_CONTEXT=false
+
+# ===================================
+# Account Switching Configuration
+# ===================================
+SWITCH_ON_USES=40
+FAILURE_THRESHOLD=3
+IMMEDIATE_SWITCH_STATUS_CODES=429,503
+
+# ===================================
+# Timezone Configuration
+# ===================================
+TZ=
+
+# ===================================
+# Proxy Configuration
+# ===================================
+HTTP_PROXY=
+HTTPS_PROXY=
+NO_PROXY=
+EOF
+}
+
+fn_migrate_ais2api_to_ibuhub() {
+    local project_dir="$1"
+    local compose_file="$2"
+    local compose_cmd="$3"
+    local container_name="${4:-ais2api}"
+    local env_file="${project_dir}/app.env"
+
+    if [ ! -d "$project_dir" ] || [ ! -f "$compose_file" ]; then
+        log_error "未找到 ais2api 项目目录或 docker-compose.yml。" || return 1
+    fi
+
+    local current_image=""
+    if docker ps -a --format '{{.Names}}' | grep -qx "$container_name"; then
+        current_image=$(docker inspect --format '{{.Config.Image}}' "$container_name" 2>/dev/null || true)
+    fi
+    if [ -z "$current_image" ] && [ -f "$compose_file" ]; then
+        current_image=$(grep -E '^[[:space:]]*image:[[:space:]]*' "$compose_file" | head -n 1 | awk '{print $2}')
+    fi
+    if [ -z "$current_image" ]; then
+        log_error "未能获取当前 ais2api 镜像信息，请确认项目配置是否完整。" || return 1
+    fi
+
+    if [[ "$current_image" != ${AIS2API_OLD_IMAGE_REPO}* ]]; then
+        if [[ "$current_image" == ${AIS2API_NEW_IMAGE_REPO}* ]]; then
+            log_success "当前已使用新镜像 (${current_image})，无需迁移。"
+            return 0
+        fi
+        log_warn "当前镜像为 ${current_image}，不属于旧镜像 ${AIS2API_OLD_IMAGE_REPO}，已跳过迁移。"
+        return 1
+    fi
+
+    local ts
+    ts=$(date +%Y%m%d_%H%M%S)
+    local compose_bak="${compose_file}.bak_${ts}"
+    cp -f "$compose_file" "$compose_bak"
+    log_info "已备份 compose 文件: ${compose_bak}"
+
+    local old_api_keys=""
+    if [ -f "$env_file" ]; then
+        local env_bak="${env_file}.bak_${ts}"
+        cp -f "$env_file" "$env_bak"
+        log_info "已备份环境文件: ${env_bak}"
+        old_api_keys=$(grep -E '^API_KEYS=' "$env_file" | tail -n 1 | cut -d= -f2-)
+    fi
+
+    mkdir -p "${project_dir}/auth"
+
+    log_action "正在写入新镜像官方 app.env 配置..."
+    fn_write_ais_official_env "$env_file" "$old_api_keys"
+
+    log_action "正在更新 docker-compose.yml..."
+    sed -i -E "0,/^[[:space:]]*image:[[:space:]]*/s|^[[:space:]]*image:[[:space:]].*|    image: ${AIS2API_NEW_IMAGE}|" "$compose_file"
+    sed -i -E 's#(\./auth:/app/)auth#\1configs/auth#g' "$compose_file"
+
+    if ! grep -q "/app/configs/auth" "$compose_file"; then
+        if grep -q "^[[:space:]]*volumes:[[:space:]]*$" "$compose_file"; then
+            sed -i -E '0,/^[[:space:]]*volumes:[[:space:]]*$/s|^[[:space:]]*volumes:[[:space:]]*$|    volumes:\n      - ./auth:/app/configs/auth|' "$compose_file"
+        else
+            sed -i -E '0,/^[[:space:]]*-[[:space:]]*app\.env[[:space:]]*$/s|^[[:space:]]*-[[:space:]]*app\.env[[:space:]]*$|      - app.env\n    volumes:\n      - ./auth:/app/configs/auth|' "$compose_file"
+        fi
+    fi
+
+    log_action "正在拉取新镜像并重建服务..."
+    if ! (cd "$project_dir" && $compose_cmd pull && $compose_cmd up -d --force-recreate); then
+        log_error "迁移失败：重建服务未成功，请检查日志。" || return 1
+    fi
+
+    local health_container="$container_name"
+    if ! docker ps -a --format '{{.Names}}' | grep -qx "$health_container"; then
+        health_container=$(grep -E '^[[:space:]]*container_name:[[:space:]]*' "$compose_file" | head -n 1 | awk '{print $2}')
+    fi
+    health_container="${health_container:-ais2api}"
+    fn_verify_container_health "$health_container"
+
+    log_action "正在清理旧镜像..."
+    if docker rmi "$current_image" >/dev/null 2>&1 || docker rmi "$AIS2API_OLD_IMAGE" >/dev/null 2>&1; then
+        log_success "旧镜像清理完成。"
+    else
+        log_warn "旧镜像删除失败（可能被占用或不存在），请按需手动清理。"
+    fi
+
+    log_success "ais2api 已完成迁移到新镜像：${AIS2API_NEW_IMAGE}"
+    return 0
+}
+
 install_ais2api() {
     # 初始化变量供全局检查函数使用
     local DOCKER_VER="-" DOCKER_STATUS="-"
     local COMPOSE_VER="-" COMPOSE_STATUS="-"
     local DOCKER_COMPOSE_CMD=""
     local CONTAINER_NAME="ais2api"
-    local IMAGE_NAME="ellinalopez/cloud-studio:latest"
+    local IMAGE_NAME="$AIS2API_NEW_IMAGE"
     
     tput reset
     echo -e "${CYAN}ais2api Docker 自动化安装流程${NC}"
     
-    # 架构检测
-    local arch
-    arch=$(uname -m)
-    if [[ "$arch" != "x86_64" ]]; then
-        log_error "检测到当前系统架构为 ${arch}，而 ais2api 仅支持 x86_64 (amd64) 架构，无法继续安装。"
-        return 1
-    fi
-
-    log_warn "注意：此镜像仅支持 x86 架构。"
-    
     fn_check_base_deps
     fn_check_dependencies
     
-    if docker ps -a -q -f "name=^${CONTAINER_NAME}$" | grep -q .; then
-        log_warn "检测到已存在名为 '${CONTAINER_NAME}' 的容器。"
-        read -rp "是否停止并移除现有容器？[y/N]: " confirm_rm < /dev/tty
-        if [[ "$confirm_rm" =~ ^[Yy]$ ]]; then
-            docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
-            docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
-        else
-            log_info "操作已取消。"
-            return 1
-        fi
-    fi
+    fn_confirm_remove_existing_container "$CONTAINER_NAME" || return 1
 
     local default_parent_path="${USER_HOME}"
     read -rp "安装路径: ais2api 将被安装在 <上级目录>/ais2api 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
     local parent_path="${custom_parent_path:-$default_parent_path}"
     local INSTALL_DIR="${parent_path}/ais2api"
-    
-    while true; do
-        read -rp "请输入访问端口 [默认 8889]: " AIS_PORT < /dev/tty
-        AIS_PORT=${AIS_PORT:-8889}
-        if [[ "$AIS_PORT" =~ ^[0-9]+$ ]] && [ "$AIS_PORT" -ge 1 ] && [ "$AIS_PORT" -le 65535 ]; then
-            break
-        else
-            log_warn "端口无效。"
-        fi
-    done
+
+    # 路径安全检查：禁止安装到系统关键目录
+    if [[ "$INSTALL_DIR" =~ ^/(bin|boot|dev|etc|lib|lib64|proc|root|sbin|sys|usr)(/|$) ]]; then
+        log_error "安全限制：不允许安装到系统关键目录 ($INSTALL_DIR)。请选择其他路径。" || return 1
+    fi
+
+    fn_prompt_port_in_range AIS_PORT "请输入访问端口 (1-65535) [默认 8889]: " "8889" 1 65535
 
     local random_key=$(fn_generate_password 34)
     read -rp "请输入 API Key [直接回车=随机生成]: " AIS_KEY < /dev/tty
@@ -2230,54 +2677,10 @@ install_ais2api() {
 
     log_action "正在创建目录结构..."
     mkdir -p "$INSTALL_DIR/auth"
-
-    while true; do
-        if [ "$(ls -A "$INSTALL_DIR/auth" 2>/dev/null)" ]; then
-            log_success "检测到认证文件，继续安装..."
-            break
-        else
-            echo -e "\n${YELLOW}---【 重要：请放入认证文件 】---${NC}"
-            echo -e "ais2api 需要至少一个认证文件才能启动。"
-            echo -e "请将您的认证文件（如 ${CYAN}auth-1${NC}、${CYAN}auth-2${NC} ……）放入以下目录："
-            echo -e "路径: ${GREEN}$INSTALL_DIR/auth${NC}"
-            echo -e "--------------------------------"
-            read -rp "放入完成后按【回车键】重新检测，或输入 [q] 退出安装: " auth_check < /dev/tty
-            if [[ "$auth_check" == "q" ]]; then
-                log_info "操作已取消。"
-                return 1
-            fi
-        fi
-    done
+    log_info "新镜像支持在 Web 面板中进行认证配置，无需预先放入认证文件。"
     
     log_action "正在生成 app.env..."
-    cat <<EOF > "$INSTALL_DIR/app.env"
-# ✦ 咕咕助手 · 作者：清绝 | 博客：https://blog.qjyg.de
-# 自定义密钥
-API_KEYS=${AIS_KEY}
-
-# 如果你需要使用【app.env】加载认证信息，删除下面的 # 以去除注释，并填入之前获取的认证文件auth_single里的全部内容！
-# AUTH_JSON_1=
-# 如果还需要添加更多账号，依此类推增加 AUTH_JSON_2、AUTH_JSON_3
-
-# 以下为可选参数
-# （选填）账号使用40次后切换到下一个账号（建议用50或以下，太高导致内存占用高，然后卡顿）
-SWITCH_ON_USES=40
-
-# （选填）服务器端重试次数1次
-MAX_RETRIES=1
-
-# （选填）失败3次后重试
-FAILURE_THRESHOLD=3
-
-# （选填）遇到429和503报错立刻切换账号
-IMMEDIATE_SWITCH_STATUS_CODES=429,503
-
-# （选填）起始账号，默认是第一个
-INITIAL_AUTH_INDEX=null
-
-# 使用假流式
-STREAMING_MODE=real
-EOF
+    fn_write_ais_official_env "$INSTALL_DIR/app.env" "$AIS_KEY"
 
     log_action "正在生成 docker-compose.yml..."
     cat <<EOF > "$INSTALL_DIR/docker-compose.yml"
@@ -2290,12 +2693,12 @@ services:
     env_file:
       - app.env
     volumes:
-      - ./auth:/app/auth
+      - ./auth:/app/configs/auth
     restart: unless-stopped
 EOF
 
     log_action "正在启动服务..."
-    cd "$INSTALL_DIR" && docker compose up -d
+    cd "$INSTALL_DIR" && $DOCKER_COMPOSE_CMD up -d
     
     fn_verify_container_health "$CONTAINER_NAME"
     
@@ -2321,32 +2724,19 @@ install_warp() {
     fn_check_base_deps
     fn_check_dependencies
 
-    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-        log_warn "检测到已存在名为 '${CONTAINER_NAME}' 的容器。"
-        read -rp "是否停止并移除现有容器？[y/N]: " confirm_rm < /dev/tty
-        if [[ "$confirm_rm" =~ ^[Yy]$ ]]; then
-            docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
-            docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
-        else
-            log_info "操作已取消。"
-            return 1
-        fi
-    fi
+    fn_confirm_remove_existing_container "$CONTAINER_NAME" || return 1
 
     local default_parent_path="${USER_HOME}"
     read -rp "安装路径: Warp 将被安装在 <上级目录>/warp 中。请输入上级目录 [直接回车=默认: $USER_HOME]:" custom_parent_path < /dev/tty
     local parent_path="${custom_parent_path:-$default_parent_path}"
     local INSTALL_DIR="${parent_path}/warp"
 
-    while true; do
-        read -rp "请输入 Warp 代理映射到宿主机的端口 [默认 1080]: " WARP_PORT < /dev/tty
-        WARP_PORT=${WARP_PORT:-1080}
-        if [[ "$WARP_PORT" =~ ^[0-9]+$ ]] && [ "$WARP_PORT" -ge 1 ] && [ "$WARP_PORT" -le 65535 ]; then
-            break
-        else
-            log_warn "端口无效。"
-        fi
-    done
+    # 路径安全检查：禁止安装到系统关键目录
+    if [[ "$INSTALL_DIR" =~ ^/(bin|boot|dev|etc|lib|lib64|proc|root|sbin|sys|usr)(/|$) ]]; then
+        log_error "安全限制：不允许安装到系统关键目录 ($INSTALL_DIR)。请选择其他路径。" || return 1
+    fi
+
+    fn_prompt_port_in_range WARP_PORT "请输入 Warp 代理映射到宿主机的端口 (1-65535) [默认 1080]: " "1080" 1 65535
 
     log_action "正在创建目录结构..."
     mkdir -p "$INSTALL_DIR/data"
@@ -2492,6 +2882,361 @@ fn_test_llm_api() {
                 
                 echo -e "\n"
                 read -rp "测试完成，按 Enter 继续..." < /dev/tty
+                ;;
+            0) break ;;
+            *) log_warn "无效输入"; sleep 1 ;;
+        esac
+    done
+}
+
+# --- [酒馆 Host 白名单辅助函数] ---
+fn_st_validate_host_entry() {
+    local host="$1"
+
+    # 去除首尾引号，兼容误输入
+    host="${host#\"}"
+    host="${host%\"}"
+    host="${host#\'}"
+    host="${host%\'}"
+
+    # 禁止协议、路径、端口、IP 与 localhost
+    if [[ -z "$host" || "$host" =~ :// || "$host" == */* || "$host" == *:* ]]; then
+        return 1
+    fi
+    if [[ "$host" == "localhost" || "$host" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        return 1
+    fi
+
+    # 普通域名：test.com
+    if [[ "$host" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]; then
+        return 0
+    fi
+    # 子域匹配：.test.com（前导点）
+    if [[ "$host" =~ ^\.([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
+fn_st_get_host_whitelist_enabled() {
+    local config_file="$1"
+    awk '
+        /^[[:space:]]*hostWhitelist:[[:space:]]*$/ { in_block=1; next }
+        in_block && /^[[:space:]]*enabled:[[:space:]]*/ {
+            if ($0 ~ /true/) print "true"; else print "false";
+            found=1; exit
+        }
+        in_block && /^[^[:space:]]/ { in_block=0 }
+        END { if (!found) print "false" }
+    ' "$config_file"
+}
+
+fn_st_load_host_whitelist_hosts() {
+    local config_file="$1"
+    ST_HOSTS=()
+
+    local parsed=""
+    parsed=$(awk '
+        /^[[:space:]]*hostWhitelist:[[:space:]]*$/ { in_block=1; next }
+        in_block && /^[^[:space:]]/ { in_block=0 }
+        in_block && /^[[:space:]]*hosts:[[:space:]]*\[/ {
+            line=$0
+            sub(/^[[:space:]]*hosts:[[:space:]]*\[/, "", line)
+            sub(/\][[:space:]]*$/, "", line)
+            gsub(/"/, "", line)
+            gsub(/\047/, "", line)
+            n=split(line, arr, ",")
+            for (i=1; i<=n; i++) {
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", arr[i])
+                if (arr[i] != "") print arr[i]
+            }
+        }
+        in_block && /^[[:space:]]*-[[:space:]]*/ {
+            line=$0
+            sub(/^[[:space:]]*-[[:space:]]*/, "", line)
+            gsub(/"/, "", line)
+            gsub(/\047/, "", line)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+            if (line != "") print line
+        }
+    ' "$config_file")
+
+    if [ -n "$parsed" ]; then
+        while IFS= read -r host; do
+            [ -n "$host" ] && ST_HOSTS+=("$host")
+        done <<< "$parsed"
+    fi
+}
+
+fn_st_build_hosts_inline() {
+    if [ ${#ST_HOSTS[@]} -eq 0 ]; then
+        echo "[]"
+        return
+    fi
+
+    local out="["
+    local h
+    for h in "${ST_HOSTS[@]}"; do
+        h="${h//\\/\\\\}"
+        h="${h//\"/\\\"}"
+        out+="\"$h\", "
+    done
+    out="${out%, }]"
+    echo "$out"
+}
+
+fn_st_write_host_whitelist_config() {
+    local config_file="$1"
+    local hosts_inline="$2"
+    local tmp_file
+    tmp_file=$(mktemp)
+
+    awk -v hosts_inline="$hosts_inline" '
+        BEGIN {
+            in_block=0
+            block_found=0
+            enabled_found=0
+            hosts_found=0
+        }
+        {
+            if ($0 ~ /^[[:space:]]*hostWhitelist:[[:space:]]*$/) {
+                in_block=1
+                block_found=1
+                enabled_found=0
+                hosts_found=0
+                print
+                next
+            }
+
+            if (in_block && $0 ~ /^[^[:space:]]/) {
+                if (!enabled_found) print "  enabled: true"
+                if (!hosts_found) print "  hosts: " hosts_inline
+                in_block=0
+            }
+
+            if (in_block) {
+                if ($0 ~ /^[[:space:]]*enabled:[[:space:]]*/) {
+                    print "  enabled: true"
+                    enabled_found=1
+                    next
+                }
+                if ($0 ~ /^[[:space:]]*hosts:[[:space:]]*/) {
+                    print "  hosts: " hosts_inline
+                    hosts_found=1
+                    next
+                }
+                # 清理旧的多行 hosts 列表项，防止残留
+                if (hosts_found && $0 ~ /^[[:space:]]*-[[:space:]]+/) {
+                    next
+                }
+            }
+
+            print
+        }
+        END {
+            if (in_block) {
+                if (!enabled_found) print "  enabled: true"
+                if (!hosts_found) print "  hosts: " hosts_inline
+            }
+
+            if (!block_found) {
+                print ""
+                print "# Host whitelist configuration. Recommended if you are using a listen mode"
+                print "hostWhitelist:"
+                print "  enabled: true"
+                print "  scan: true"
+                print "  hosts: " hosts_inline
+            }
+        }
+    ' "$config_file" > "$tmp_file"
+
+    if [ $? -ne 0 ]; then
+        rm -f "$tmp_file"
+        log_error "写入 Host 白名单配置失败。"
+        return 1
+    fi
+
+    mv "$tmp_file" "$config_file"
+}
+
+fn_st_compose_restart_checked() {
+    local project_dir="$1"
+    local compose_cmd="$2"
+    local fail_message="$3"
+
+    if ! (cd "$project_dir" && $compose_cmd restart); then
+        log_error "${fail_message:-酒馆重启失败。}"
+        return 1
+    fi
+    return 0
+}
+
+fn_st_compose_recreate_checked() {
+    local project_dir="$1"
+    local compose_cmd="$2"
+    local fail_message="$3"
+
+    if ! (cd "$project_dir" && $compose_cmd up -d --force-recreate); then
+        log_error "${fail_message:-酒馆重建并启动失败。}"
+        return 1
+    fi
+    return 0
+}
+
+fn_st_apply_host_whitelist_and_restart() {
+    local project_dir="$1"
+    local config_file="$2"
+    local compose_cmd="$3"
+    local hosts_inline="$4"
+    local success_message="$5"
+
+    fn_st_write_host_whitelist_config "$config_file" "$hosts_inline" || return 1
+    log_info "正在重启酒馆以应用白名单配置..."
+    fn_st_compose_restart_checked "$project_dir" "$compose_cmd" "酒馆重启失败，白名单配置未生效。" || return 1
+    log_success "$success_message"
+    return 0
+}
+
+fn_st_host_whitelist_manager() {
+    local project_dir="$1"
+    local config_file="$2"
+    local compose_cmd="$3"
+
+    while true; do
+        fn_st_load_host_whitelist_hosts "$config_file"
+        local current_enabled
+        current_enabled=$(fn_st_get_host_whitelist_enabled "$config_file")
+
+        tput reset
+        echo -e "${BLUE}=== 酒馆 Host 白名单管理 ===${NC}"
+        echo -e "状态: $( [[ "$current_enabled" == "true" ]] && echo -e "${GREEN}已启用${NC}" || echo -e "${YELLOW}未启用${NC}" )"
+        echo -e "${YELLOW}安全提醒：Host 白名单属于关键安全防护，必须保持开启。${NC}"
+        echo -e "填写方式："
+        echo -e "  1) 只放行一个域名：填写 ${CYAN}test.com${NC}"
+        echo -e "  2) 放行该域名下所有子域：填写 ${CYAN}.test.com${NC}（前面有一个点）"
+        echo -e "  3) 多个域名可用空格、英文逗号或中文逗号分隔"
+        echo -e "  4) 不要填写网址前缀、端口、路径或 IP"
+        echo -e "------------------------"
+        if [ ${#ST_HOSTS[@]} -eq 0 ]; then
+            echo -e "当前白名单域名: ${YELLOW}(空)${NC}"
+        else
+            echo -e "当前白名单域名:"
+            local i=1
+            local host_item
+            for host_item in "${ST_HOSTS[@]}"; do
+                echo -e "  [$i] ${CYAN}${host_item}${NC}"
+                ((i++))
+            done
+        fi
+        echo -e "------------------------"
+        echo -e "  [1] 添加域名 (支持多个，空格/逗号分隔)"
+        echo -e "  [2] 删除指定域名 (按编号)"
+        echo -e "  [3] 清空全部域名"
+        echo -e "  [4] 重新开启白名单防护（安全必须开启）"
+        echo -e "  [0] 返回上一级"
+        echo -e "------------------------"
+        read -rp "请输入选项: " host_choice < /dev/tty
+        [[ -z "$host_choice" ]] && continue
+
+        case "$host_choice" in
+            1)
+                read -rp "请输入要放行的域名（可多个）: " host_input < /dev/tty
+                if [ -z "$host_input" ]; then
+                    log_warn "输入为空，已取消。"
+                    sleep 1
+                    continue
+                fi
+
+                local normalized_input
+                normalized_input=$(echo "$host_input" | tr ',，;；、' '     ')
+                read -ra host_candidates <<< "$normalized_input"
+
+                local added_count=0
+                local invalid_hosts=()
+                local candidate
+                for candidate in "${host_candidates[@]}"; do
+                    candidate=$(echo "$candidate" | xargs)
+                    candidate="${candidate#\"}"
+                    candidate="${candidate%\"}"
+                    candidate="${candidate#\'}"
+                    candidate="${candidate%\'}"
+                    candidate=${candidate,,}
+                    [ -z "$candidate" ] && continue
+
+                    if ! fn_st_validate_host_entry "$candidate"; then
+                        invalid_hosts+=("$candidate")
+                        continue
+                    fi
+
+                    local exists=false
+                    local existing
+                    for existing in "${ST_HOSTS[@]}"; do
+                        if [ "$existing" = "$candidate" ]; then
+                            exists=true
+                            break
+                        fi
+                    done
+                    if [ "$exists" = false ]; then
+                        ST_HOSTS+=("$candidate")
+                        ((added_count++))
+                    fi
+                done
+
+                if [ $added_count -eq 0 ] && [ ${#invalid_hosts[@]} -eq 0 ]; then
+                    log_warn "没有可新增的域名（可能全部重复）。"
+                    sleep 1
+                    continue
+                fi
+
+                local hosts_inline
+                hosts_inline=$(fn_st_build_hosts_inline)
+                fn_st_apply_host_whitelist_and_restart "$project_dir" "$config_file" "$compose_cmd" "$hosts_inline" "已更新白名单配置。" || { sleep 2; continue; }
+                if [ ${#invalid_hosts[@]} -gt 0 ]; then
+                    log_warn "以下内容未识别为有效域名，已跳过: ${invalid_hosts[*]}"
+                    log_info "提示：子域匹配请写成 .test.com（前面带点），且不要填写协议、端口或路径。"
+                fi
+                sleep 2
+                ;;
+            2)
+                if [ ${#ST_HOSTS[@]} -eq 0 ]; then
+                    log_warn "当前无可删除域名。"
+                    sleep 1
+                    continue
+                fi
+
+                read -rp "请输入要删除的编号: " del_index < /dev/tty
+                if [[ ! "$del_index" =~ ^[0-9]+$ ]] || [ "$del_index" -lt 1 ] || [ "$del_index" -gt ${#ST_HOSTS[@]} ]; then
+                    log_warn "编号无效。"
+                    sleep 1
+                    continue
+                fi
+
+                unset 'ST_HOSTS[del_index-1]'
+                ST_HOSTS=("${ST_HOSTS[@]}")
+
+                local hosts_inline
+                hosts_inline=$(fn_st_build_hosts_inline)
+                fn_st_apply_host_whitelist_and_restart "$project_dir" "$config_file" "$compose_cmd" "$hosts_inline" "域名已删除。" || { sleep 2; continue; }
+                sleep 2
+                ;;
+            3)
+                read -rp "确认清空全部白名单域名？[y/N]: " confirm_clear < /dev/tty
+                if [[ ! "$confirm_clear" =~ ^[Yy]$ ]]; then
+                    log_info "操作已取消。"
+                    sleep 1
+                    continue
+                fi
+
+                ST_HOSTS=()
+                fn_st_apply_host_whitelist_and_restart "$project_dir" "$config_file" "$compose_cmd" "[]" "白名单域名已清空。" || { sleep 2; continue; }
+                sleep 2
+                ;;
+            4)
+                local hosts_inline
+                hosts_inline=$(fn_st_build_hosts_inline)
+                fn_st_apply_host_whitelist_and_restart "$project_dir" "$config_file" "$compose_cmd" "$hosts_inline" "白名单防护已开启。" || { sleep 2; continue; }
+                sleep 2
                 ;;
             0) break ;;
             *) log_warn "无效输入"; sleep 1 ;;
@@ -2839,34 +3584,19 @@ fn_st_switch_to_single() {
     
     log_action "正在切换为单用户模式..."
     read -rp "请输入新的用户名: " new_user < /dev/tty
-    while true; do
-        read -rp "请输入新的密码: " new_pass < /dev/tty
-        if [ -z "$new_pass" ]; then
-            log_warn "密码不能为空。"
-        elif ! fn_check_password_safe "$new_pass"; then
-            log_warn "密码中包含不支持的特殊字符 (\\ / \" &)，请使用纯数字、字母或常规符号。"
-        else
-            break
-        fi
-    done
+    fn_prompt_safe_password new_pass "请输入新的密码: "
 
     if [ -z "$new_user" ]; then
         log_error "用户名不能为空，操作已取消。"
         return 1
     fi
 
-    local safe_user
-    local safe_pass
-    safe_user=$(fn_escape_sed_str "$new_user")
-    safe_pass=$(fn_escape_sed_str "$new_pass")
-
     sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: false # 禁用多用户模式/" "$config_file"
     sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: true # 启用基础认证/" "$config_file"
-    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$safe_user\"/}" "$config_file"
-    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$safe_pass\"/}" "$config_file"
+    fn_st_set_basic_auth_credentials "$config_file" "$new_user" "$new_pass"
     
     log_info "正在重启容器以应用更改..."
-    cd "$project_dir" && $compose_cmd up -d --force-recreate
+    fn_st_compose_recreate_checked "$project_dir" "$compose_cmd" "切换单用户模式失败：酒馆重建并启动失败。" || return 1
     log_success "已成功切换为单用户模式！"
 }
 
@@ -2874,18 +3604,22 @@ fn_st_switch_to_multi() {
     local project_dir=$1
     local config_file=$2
     local compose_cmd=$3
-    local container_name="sillytavern"
 
     log_action "正在切换为多用户模式..."
-    
+
     # 获取当前单用户凭据用于引导
-    local current_user=$(grep -A 2 "basicAuthUser:" "$config_file" | grep "username:" | cut -d'"' -f2)
-    local current_pass=$(grep -A 2 "basicAuthUser:" "$config_file" | grep "password:" | cut -d'"' -f2)
+    local current_user=""
+    local current_pass=""
+    if ! fn_st_get_basic_auth_credentials "$config_file" current_user current_pass; then
+        log_warn "无法读取当前凭据，将使用默认凭据引导。"
+        current_user="user"
+        current_pass="password"
+    fi
     
     log_info "正在开启多用户模式并重启服务..."
     sed -i -E "s/^([[:space:]]*)enableUserAccounts: .*/\1enableUserAccounts: true # 启用多用户模式/" "$config_file"
     
-    cd "$project_dir" && $compose_cmd up -d --force-recreate
+    fn_st_compose_recreate_checked "$project_dir" "$compose_cmd" "切换多用户模式失败：酒馆重建并启动失败。" || return 1
     
     # 获取公网IP和端口
     local SERVER_IP=$(fn_get_public_ip)
@@ -2913,7 +3647,7 @@ EOF
     sed -i -E "s/^([[:space:]]*)basicAuthMode: .*/\1basicAuthMode: false # 关闭基础认证，启用登录页/" "$config_file"
     sed -i -E "s/^([[:space:]]*)enableDiscreetLogin: .*/\1enableDiscreetLogin: true # 隐藏登录用户列表/" "$config_file"
     
-    cd "$project_dir" && $compose_cmd up -d --force-recreate
+    fn_st_compose_recreate_checked "$project_dir" "$compose_cmd" "切换登录页模式失败：酒馆重建并启动失败。" || return 1
     log_success "已成功切换为多用户模式！"
 }
 
@@ -2922,12 +3656,17 @@ fn_st_change_credentials() {
     local compose_cmd=$2
     local project_dir=$3
 
-    local current_user=$(grep -A 2 "basicAuthUser:" "$config_file" | grep "username:" | cut -d'"' -f2)
-    local current_pass=$(grep -A 2 "basicAuthUser:" "$config_file" | grep "password:" | cut -d'"' -f2)
+    local current_user=""
+    local current_pass=""
+    if ! fn_st_get_basic_auth_credentials "$config_file" current_user current_pass; then
+        log_warn "无法读取当前凭据，配置文件可能不存在或格式错误。"
+    fi
+    local display_user="${current_user:-（未读取到）}"
+    local display_pass="${current_pass:-（未读取到）}"
 
     echo -e "\n${CYAN}--- 更改用户名密码 ---${NC}"
-    echo -e "当前用户名: ${YELLOW}${current_user}${NC}"
-    echo -e "当前密码: ${YELLOW}${current_pass}${NC}"
+    echo -e "当前用户名: ${YELLOW}${display_user}${NC}"
+    echo -e "当前密码: ${YELLOW}${display_pass}${NC}"
     echo -e "------------------------"
     echo -e "  [1] 修改用户名和密码"
     echo -e "  [2] 仅修改用户名"
@@ -2941,31 +3680,13 @@ fn_st_change_credentials() {
     case "$cred_choice" in
         1)
             read -rp "请输入新用户名: " new_user < /dev/tty
-            while true; do
-                read -rp "请输入新密码: " new_pass < /dev/tty
-                if [ -z "$new_pass" ]; then
-                    log_warn "密码不能为空。"
-                elif ! fn_check_password_safe "$new_pass"; then
-                    log_warn "密码中包含不支持的特殊字符 (\\ / \" &)，请使用纯数字、字母或常规符号。"
-                else
-                    break
-                fi
-            done
+            fn_prompt_safe_password new_pass "请输入新密码: "
             ;;
         2)
             read -rp "请输入新用户名: " new_user < /dev/tty
             ;;
         3)
-            while true; do
-                read -rp "请输入新密码: " new_pass < /dev/tty
-                if [ -z "$new_pass" ]; then
-                    log_warn "密码不能为空。"
-                elif ! fn_check_password_safe "$new_pass"; then
-                    log_warn "密码中包含不支持的特殊字符 (\\ / \" &)，请使用纯数字、字母或常规符号。"
-                else
-                    break
-                fi
-            done
+            fn_prompt_safe_password new_pass "请输入新密码: "
             ;;
         *) return 0 ;;
     esac
@@ -2975,16 +3696,10 @@ fn_st_change_credentials() {
         return 1
     fi
 
-    local safe_user
-    local safe_pass
-    safe_user=$(fn_escape_sed_str "$new_user")
-    safe_pass=$(fn_escape_sed_str "$new_pass")
-
-    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)username:/{s/^([[:space:]]*)username: .*/\1username: \"$safe_user\"/}" "$config_file"
-    sed -i -E "/^([[:space:]]*)basicAuthUser:/,/^([[:space:]]*)password:/{s/^([[:space:]]*)password: .*/\1password: \"$safe_pass\"/}" "$config_file"
+    fn_st_set_basic_auth_credentials "$config_file" "$new_user" "$new_pass"
     
     log_info "正在重启容器以应用更改..."
-    cd "$project_dir" && $compose_cmd restart
+    fn_st_compose_restart_checked "$project_dir" "$compose_cmd" "凭据修改失败：酒馆重启失败。" || return 1
     log_success "凭据修改成功！"
 }
 
@@ -3033,33 +3748,14 @@ fn_st_toggle_beautify() {
 
 fn_st_docker_manager() {
     local container_name="sillytavern"
-    local compose_cmd=""
-    
-    # 自动检测 docker-compose 命令
-    if command -v docker-compose &> /dev/null; then
-        compose_cmd="docker-compose"
-    elif docker compose version &> /dev/null; then
-        compose_cmd="docker compose"
-    else
+    local compose_cmd
+    compose_cmd=$(fn_detect_compose_cmd || true)
+    if [ -z "$compose_cmd" ]; then
         log_error "未检测到 docker-compose 或 docker compose，请确认 Docker 环境是否正常。" || return 1
     fi
 
-    # 尝试获取项目目录
-    local project_dir=""
-    # 1. 尝试从容器标签获取 (如果是用 compose 启动的，通常会有这个标签)
-    project_dir=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$container_name" 2>/dev/null)
-    
-    # 2. 如果标签获取失败，回退到脚本默认安装路径
-    if [ -z "$project_dir" ] || [ ! -d "$project_dir" ]; then
-        local target_user="${SUDO_USER:-root}"
-        local user_home
-        if [ "$target_user" = "root" ]; then
-            user_home="/root"
-        else
-            user_home=$(getent passwd "$target_user" | cut -d: -f6)
-        fi
-        project_dir="${user_home}/sillytavern"
-    fi
+    local project_dir
+    project_dir=$(fn_resolve_project_dir "$container_name" "sillytavern")
 
     local config_file="${project_dir}/config/config.yaml"
     local compose_file="${project_dir}/docker-compose.yml"
@@ -3113,6 +3809,7 @@ fn_st_docker_manager() {
         echo -e "  [7] 查看资源占用 (stats)"
         echo -e "  [8] 查看实时日志 (logs -f)"
         echo -e "  [9] ${CYAN}代理配置管理${NC}"
+        echo -e "  [10] ${CYAN}Host 白名单域名管理${NC}"
         echo -e "  [x] 彻底卸载酒馆"
         echo -e "  [0] 返回上一级"
         echo -e "------------------------"
@@ -3170,6 +3867,9 @@ fn_st_docker_manager() {
             9)
                 fn_st_proxy_manager "$project_dir" "$config_file" "$compose_file" "$compose_cmd"
                 ;;
+            10)
+                fn_st_host_whitelist_manager "$project_dir" "$config_file" "$compose_cmd"
+                ;;
             x|X)
                 if fn_uninstall_docker_app "sillytavern" "SillyTavern" "$project_dir" "ghcr.io/sillytavern/sillytavern:latest"; then
                     sleep 2
@@ -3185,24 +3885,14 @@ fn_st_docker_manager() {
 fn_warp_docker_manager() {
     local container_name="warp"
     local display_name="Warp-Docker"
-    local compose_cmd=""
-    
-    if command -v docker-compose &> /dev/null; then
-        compose_cmd="docker-compose"
-    elif docker compose version &> /dev/null; then
-        compose_cmd="docker compose"
-    else
+    local compose_cmd
+    compose_cmd=$(fn_detect_compose_cmd || true)
+    if [ -z "$compose_cmd" ]; then
         log_error "未检测到 Docker Compose。" || return 1
     fi
 
-    local project_dir=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$container_name" 2>/dev/null)
-    
-    if [ -z "$project_dir" ] || [ ! -d "$project_dir" ]; then
-        local target_user="${SUDO_USER:-root}"
-        local user_home
-        if [ "$target_user" = "root" ]; then user_home="/root"; else user_home=$(getent passwd "$target_user" | cut -d: -f6); fi
-        project_dir="${user_home}/warp"
-    fi
+    local project_dir
+    project_dir=$(fn_resolve_project_dir "$container_name" "warp")
 
     if [ ! -d "$project_dir" ]; then
         log_error "未能找到项目目录。" || return 1
@@ -3271,26 +3961,41 @@ fn_warp_docker_manager() {
     done
 }
 
+fn_find_ais2api_container_name() {
+    # 1) 优先固定名
+    if docker ps -a --format '{{.Names}}' | grep -q '^ais2api$'; then
+        echo "ais2api"
+        return
+    fi
+
+    # 2) 回退按镜像识别
+    docker ps -a --format '{{.Names}}|{{.Image}}' | awk -F'|' '
+        tolower($2) ~ /ghcr\.io\/ibuhub\/aistudio-to-api/ { print $1; exit }
+        tolower($2) ~ /ellinalopez\/cloud-studio/ { print $1; exit }
+    '
+}
+
 fn_api_docker_manager() {
     local container_name=$1
     local display_name=$2
-    local compose_cmd=""
-    
-    if command -v docker-compose &> /dev/null; then
-        compose_cmd="docker-compose"
-    elif docker compose version &> /dev/null; then
-        compose_cmd="docker compose"
-    else
+    local service_type="${3:-$container_name}"
+    local compose_cmd
+    compose_cmd=$(fn_detect_compose_cmd || true)
+    if [ -z "$compose_cmd" ]; then
         log_error "未检测到 Docker Compose。" || return 1
     fi
 
-    local project_dir=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$container_name" 2>/dev/null)
-    
+    local project_dir
+    project_dir=$(fn_resolve_project_dir "$container_name" "$service_type")
+
     if [ -z "$project_dir" ] || [ ! -d "$project_dir" ]; then
         log_error "未能找到项目目录。" || return 1
     fi
 
     local compose_file="${project_dir}/docker-compose.yml"
+    if [ ! -f "$compose_file" ]; then
+        log_error "未找到 docker-compose.yml: ${compose_file}" || return 1
+    fi
 
     while true; do
         tput reset
@@ -3302,8 +4007,9 @@ fn_api_docker_manager() {
         echo -e "  [3] 更新镜像 (pull & up)"
         echo -e "  [4] 查看运行状态 (ps)"
         echo -e "  [5] 查看实时日志 (logs -f)"
-        if [[ "$container_name" == "ais2api" ]]; then
+        if [[ "$service_type" == "ais2api" ]]; then
             echo -e "  [6] ${CYAN}代理配置管理${NC}"
+            echo -e "  [7] ${CYAN}迁移到新镜像 (ibuhub)${NC}"
         fi
         echo -e "  [x] 彻底卸载服务"
         echo -e "  [0] 返回上一级"
@@ -3322,8 +4028,16 @@ fn_api_docker_manager() {
                 trap 'exit 0' INT
                 ;;
             6)
-                if [[ "$container_name" == "ais2api" ]]; then
+                if [[ "$service_type" == "ais2api" ]]; then
                     fn_ais_proxy_manager "$project_dir" "$compose_file" "$compose_cmd"
+                else
+                    log_warn "无效输入"
+                fi
+                ;;
+            7)
+                if [[ "$service_type" == "ais2api" ]]; then
+                    fn_migrate_ais2api_to_ibuhub "$project_dir" "$compose_file" "$compose_cmd" "$container_name"
+                    read -rp "操作完成，按 Enter 继续..." < /dev/tty
                 else
                     log_warn "无效输入"
                 fi
@@ -3391,7 +4105,9 @@ fn_manage_menu() {
             has_app=true
         fi
         # 3. ais2api 管理
-        if docker ps -a --format '{{.Names}}' | grep -q '^ais2api$'; then
+        local ais_container_name=""
+        ais_container_name=$(fn_find_ais2api_container_name)
+        if [ -n "$ais_container_name" ] || [ -f "${USER_HOME}/ais2api/docker-compose.yml" ]; then
             echo -e "  [3] ${GREEN}ais2api 运维管理${NC}"
             has_app=true
         fi
@@ -3417,7 +4133,17 @@ fn_manage_menu() {
         case "$manage_choice" in
             1) docker ps -a --format '{{.Names}}' | grep -q '^sillytavern$' && fn_st_docker_manager || log_warn "未安装" ;;
             2) docker ps -a --format '{{.Names}}' | grep -q '^gcli2api$' && fn_api_docker_manager "gcli2api" "gcli2api" || log_warn "未安装" ;;
-            3) docker ps -a --format '{{.Names}}' | grep -q '^ais2api$' && fn_api_docker_manager "ais2api" "ais2api" || log_warn "未安装" ;;
+            3)
+                local ais_runtime_name=""
+                ais_runtime_name=$(fn_find_ais2api_container_name)
+                if [ -n "$ais_runtime_name" ]; then
+                    fn_api_docker_manager "$ais_runtime_name" "ais2api" "ais2api"
+                elif [ -f "${USER_HOME}/ais2api/docker-compose.yml" ]; then
+                    fn_api_docker_manager "ais2api" "ais2api" "ais2api"
+                else
+                    log_warn "未安装"
+                fi
+                ;;
             4) command -v 1pctl &> /dev/null && fn_1panel_manager || log_warn "未安装" ;;
             5) docker ps -a --format '{{.Names}}' | grep -q '^warp$' && fn_warp_docker_manager || log_warn "未安装" ;;
             0) break ;;
@@ -3512,6 +4238,7 @@ main_menu() {
 
 # --- [启动逻辑] ---
 fn_init_user_home
+fn_ensure_valid_cwd || true
 fn_auto_install
 # 仅在已安装模式下启动时检查更新，避免干扰初次运行
 [[ "$0" == "$GUGU_PATH" ]] && fn_check_update
