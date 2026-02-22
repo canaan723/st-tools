@@ -1087,11 +1087,52 @@ fn_1pctl_run() {
     fi
 }
 
+fn_strip_ansi() {
+    sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g'
+}
+
+fn_1pctl_run_capture() {
+    local __result_var="$1"
+    shift
+    local tmp_file
+    local cmd_status=1
+    local output=""
+
+    tmp_file=$(mktemp) || return 1
+    if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+        1pctl "$@" < /dev/tty 2>&1 | tee "$tmp_file" > /dev/tty
+        cmd_status=${PIPESTATUS[0]}
+    else
+        1pctl "$@" 2>&1 | tee "$tmp_file"
+        cmd_status=${PIPESTATUS[0]}
+    fi
+
+    output=$(cat "$tmp_file")
+    rm -f "$tmp_file"
+    printf -v "$__result_var" '%s' "$output"
+    return "$cmd_status"
+}
+
+fn_extract_1panel_port_from_text() {
+    local text="$1"
+    local port=""
+    port=$(printf '%s\n' "$text" \
+        | fn_strip_ansi \
+        | grep -Eoi '([Pp]anel[[:space:]_-]*[Pp]ort|[Uu]pdate[[:space:]]*[Pp]anel[[:space:]_-]*[Pp]ort|[Pp]ort)[^0-9]{0,30}[0-9]{1,5}' \
+        | grep -oE '[0-9]{1,5}' \
+        | tail -n 1)
+    if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+        echo "$port"
+        return 0
+    fi
+    return 1
+}
+
 fn_get_1panel_actual_port() {
     local port=""
 
     # 优先从 1pctl user-info 输出中提取端口
-    port=$(1pctl user-info 2>/dev/null | grep -Eoi '([Pp]anel[[:space:]_-]*[Pp]ort|[Pp]ort)[^0-9]{0,20}[0-9]{1,5}' | grep -oE '[0-9]{1,5}' | tail -n 1)
+    port=$(1pctl user-info 2>/dev/null | fn_strip_ansi | grep -Eoi '([Pp]anel[[:space:]_-]*[Pp]ort|[Pp]ort)[^0-9]{0,20}[0-9]{1,5}' | grep -oE '[0-9]{1,5}' | tail -n 1)
     if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
         echo "$port"
         return 0
@@ -1159,9 +1200,13 @@ fn_1panel_manager() {
                 ;;
             4)
                 log_info "即将进入 1Panel 官方端口修改流程，请按提示输入新端口。"
-                if fn_1pctl_run update port; then
+                local port_update_output=""
+                if fn_1pctl_run_capture port_update_output update port; then
                     local final_1p_port=""
-                    final_1p_port=$(fn_get_1panel_actual_port || true)
+                    final_1p_port=$(fn_extract_1panel_port_from_text "$port_update_output" || true)
+                    if [[ ! "$final_1p_port" =~ ^[0-9]+$ ]]; then
+                        final_1p_port=$(fn_get_1panel_actual_port || true)
+                    fi
                     if [[ "$final_1p_port" =~ ^[0-9]+$ ]] && [ "$final_1p_port" -ge 1 ] && [ "$final_1p_port" -le 65535 ]; then
                         log_info "检测到 1Panel 当前端口: ${final_1p_port}"
                         if ufw status | grep -q "Status: active"; then
@@ -1177,10 +1222,14 @@ fn_1panel_manager() {
                     log_warn "官方交互失败，正在尝试兼容参数模式。"
                     local new_1p_port=""
                     if fn_prompt_port_in_range new_1p_port "请输入新的面板端口号 (1-65535): " "" 1 65535; then
-                        if fn_1pctl_run update port "$new_1p_port"; then
+                        local port_update_output_compat=""
+                        if fn_1pctl_run_capture port_update_output_compat update port "$new_1p_port"; then
                             local final_1p_port="$new_1p_port"
                             local detected_1p_port=""
-                            detected_1p_port=$(fn_get_1panel_actual_port || true)
+                            detected_1p_port=$(fn_extract_1panel_port_from_text "$port_update_output_compat" || true)
+                            if [[ ! "$detected_1p_port" =~ ^[0-9]+$ ]]; then
+                                detected_1p_port=$(fn_get_1panel_actual_port || true)
+                            fi
                             if [[ "$detected_1p_port" =~ ^[0-9]+$ ]] && [ "$detected_1p_port" -ge 1 ] && [ "$detected_1p_port" -le 65535 ]; then
                                 final_1p_port="$detected_1p_port"
                             fi
