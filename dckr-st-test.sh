@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v5.127test"
+readonly SCRIPT_VERSION="v5.128test"
 GUGU_MODE="test"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -1116,13 +1116,41 @@ fn_1pctl_run_capture() {
 fn_extract_1panel_port_from_text() {
     local text="$1"
     local port=""
+    # 仅匹配“标签后直接跟端口数字”的场景，避免从错误提示中误抓 1/65535
     port=$(printf '%s\n' "$text" \
         | fn_strip_ansi \
-        | grep -Eoi '([Pp]anel[[:space:]_-]*[Pp]ort|[Uu]pdate[[:space:]]*[Pp]anel[[:space:]_-]*[Pp]ort|[Pp]ort)[^0-9]{0,30}[0-9]{1,5}' \
+        | grep -Eoi '([Pp]anel[[:space:]_-]*[Pp]ort|面板端口)[[:space:]]*:[[:space:]]*[0-9]{1,5}' \
         | grep -oE '[0-9]{1,5}' \
         | tail -n 1)
+    if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+        port=$(printf '%s\n' "$text" \
+            | fn_strip_ansi \
+            | grep -Eoi '([Uu]pdate[[:space:]_-]*[Pp]anel[[:space:]_-]*[Pp]ort|更新面板端口)[[:space:]]*:[[:space:]]*[0-9]{1,5}' \
+            | grep -oE '[0-9]{1,5}' \
+            | tail -n 1)
+    fi
     if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
         echo "$port"
+        return 0
+    fi
+    return 1
+}
+
+fn_1panel_port_update_succeeded() {
+    local text="$1"
+    local cleaned=""
+    cleaned=$(printf '%s\n' "$text" | fn_strip_ansi)
+
+    # 显式错误优先判失败
+    if echo "$cleaned" | grep -qiE '(^|[[:space:]])error:'; then
+        return 1
+    fi
+
+    # 包含明确成功词或可解析的端口结果，判定为成功
+    if echo "$cleaned" | grep -qiE 'update[[:space:]_-]*successful|更新成功'; then
+        return 0
+    fi
+    if fn_extract_1panel_port_from_text "$cleaned" >/dev/null 2>&1; then
         return 0
     fi
     return 1
@@ -1132,7 +1160,10 @@ fn_get_1panel_actual_port() {
     local port=""
 
     # 优先从 1pctl user-info 输出中提取端口
-    port=$(1pctl user-info 2>/dev/null | fn_strip_ansi | grep -Eoi '([Pp]anel[[:space:]_-]*[Pp]ort|[Pp]ort)[^0-9]{0,20}[0-9]{1,5}' | grep -oE '[0-9]{1,5}' | tail -n 1)
+    port=$(1pctl user-info 2>/dev/null | fn_strip_ansi | grep -Eoi '([Pp]anel[[:space:]_-]*[Pp]ort|面板端口)[[:space:]]*:[[:space:]]*[0-9]{1,5}' | grep -oE '[0-9]{1,5}' | tail -n 1)
+    if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+        port=$(1pctl user-info 2>/dev/null | fn_strip_ansi | grep -Eoi 'https?://[^[:space:]]+:[0-9]{1,5}' | grep -oE '[0-9]{1,5}' | tail -n 1)
+    fi
     if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
         echo "$port"
         return 0
@@ -1204,6 +1235,11 @@ fn_1panel_manager() {
                 log_info "即将进入 1Panel 官方端口修改流程，请按提示输入新端口。"
                 local port_update_output=""
                 if fn_1pctl_run_capture port_update_output update port; then
+                    if ! fn_1panel_port_update_succeeded "$port_update_output"; then
+                        log_warn "1Panel 端口修改未成功，已跳过 UFW 自动放行。"
+                        sleep 2
+                        continue
+                    fi
                     local final_1p_port=""
                     final_1p_port=$(fn_extract_1panel_port_from_text "$port_update_output" || true)
                     if [[ ! "$final_1p_port" =~ ^[0-9]+$ ]]; then
@@ -1230,6 +1266,11 @@ fn_1panel_manager() {
                     if fn_prompt_port_in_range new_1p_port "请输入新的面板端口号 (1-65535): " "" 1 65535; then
                         local port_update_output_compat=""
                         if fn_1pctl_run_capture port_update_output_compat update port "$new_1p_port"; then
+                            if ! fn_1panel_port_update_succeeded "$port_update_output_compat"; then
+                                log_warn "1Panel 端口修改未成功，已跳过 UFW 自动放行。"
+                                sleep 2
+                                continue
+                            fi
                             local final_1p_port="$new_1p_port"
                             local detected_1p_port=""
                             detected_1p_port=$(fn_extract_1panel_port_from_text "$port_update_output_compat" || true)
