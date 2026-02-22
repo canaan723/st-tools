@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v5.1296test"
+readonly SCRIPT_VERSION="v5.1297test"
 GUGU_MODE="test"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -2007,10 +2007,6 @@ fn_st_get_basic_auth_credentials() {
     local __pass_var="$3"
     local current_user=""
     local current_pass=""
-    local raw_user=""
-    local raw_pass=""
-    local alt_config=""
-    local block=""
 
     if [ ! -f "$config_file" ]; then
         printf -v "$__user_var" '%s' ""
@@ -2018,39 +2014,9 @@ fn_st_get_basic_auth_credentials() {
         return 1
     fi
 
-    # 优先使用"分块提取"，兼容注释/空行/单双引号
-    block=$(sed -n '/^[[:space:]]*basicAuthUser:/,/^[^[:space:]]/p' "$config_file")
-    raw_user=$(echo "$block" | sed -n 's/^[[:space:]]*username:[[:space:]]*//p' | head -n 1)
-    raw_pass=$(echo "$block" | sed -n 's/^[[:space:]]*password:[[:space:]]*//p' | head -n 1)
-
-    # 若主路径未读到，尝试同项目另一种常见 config 路径
-    if [ -z "$raw_user" ] || [ -z "$raw_pass" ]; then
-        if [[ "$config_file" == */config/config.yaml ]]; then
-            alt_config="${config_file%/config/config.yaml}/config.yaml"
-        elif [[ "$config_file" == */config.yaml ]]; then
-            alt_config="${config_file%/config.yaml}/config/config.yaml"
-        fi
-        if [ -n "$alt_config" ] && [ -f "$alt_config" ]; then
-            block=$(sed -n '/^[[:space:]]*basicAuthUser:/,/^[^[:space:]]/p' "$alt_config")
-            [ -z "$raw_user" ] && raw_user=$(echo "$block" | sed -n 's/^[[:space:]]*username:[[:space:]]*//p' | head -n 1)
-            [ -z "$raw_pass" ] && raw_pass=$(echo "$block" | sed -n 's/^[[:space:]]*password:[[:space:]]*//p' | head -n 1)
-        fi
-    fi
-
-    # 回退：如果块定位失败，尝试全局首次匹配，避免界面空白
-    if [ -z "$raw_user" ]; then
-        raw_user=$(sed -n 's/^[[:space:]]*username:[[:space:]]*//p' "$config_file" | head -n 1)
-    fi
-    if [ -z "$raw_pass" ]; then
-        raw_pass=$(sed -n 's/^[[:space:]]*password:[[:space:]]*//p' "$config_file" | head -n 1)
-    fi
-    if [ -n "$alt_config" ] && [ -f "$alt_config" ]; then
-        [ -z "$raw_user" ] && raw_user=$(sed -n 's/^[[:space:]]*username:[[:space:]]*//p' "$alt_config" | head -n 1)
-        [ -z "$raw_pass" ] && raw_pass=$(sed -n 's/^[[:space:]]*password:[[:space:]]*//p' "$alt_config" | head -n 1)
-    fi
-
-    current_user=$(fn_st_trim_credential_value "$raw_user")
-    current_pass=$(fn_st_trim_credential_value "$raw_pass")
+    # 使用简单的 grep 方法提取凭据（与正式版本一致）
+    current_user=$(grep -A 2 "basicAuthUser:" "$config_file" | grep "username:" | cut -d'"' -f2)
+    current_pass=$(grep -A 2 "basicAuthUser:" "$config_file" | grep "password:" | cut -d'"' -f2)
 
     printf -v "$__user_var" '%s' "$current_user"
     printf -v "$__pass_var" '%s' "$current_pass"
