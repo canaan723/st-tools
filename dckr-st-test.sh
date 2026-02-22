@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v5.126test"
+readonly SCRIPT_VERSION="v5.127test"
 GUGU_MODE="test"
 
 if [ "$GUGU_MODE" = "prod" ]; then
