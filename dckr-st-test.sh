@@ -945,7 +945,7 @@ fn_ufw_manager() {
             2) ufw --force enable; sleep 1 ;;
             3) ufw disable; sleep 1 ;;
             4)
-                read -rp "请输入要放行的端口号: " p_allow < /dev/tty
+                read -rp "请输入要放行的端口号 (1-65535): " p_allow < /dev/tty
                 if [[ "$p_allow" =~ ^[0-9]+$ ]] && [ "$p_allow" -ge 1 ] && [ "$p_allow" -le 65535 ]; then
                     echo -e "选择协议: [1] TCP (默认)  [2] UDP  [3] TCP & UDP"
                     read -rp "请输入选项 [1-3]: " p_proto < /dev/tty
@@ -1042,8 +1042,8 @@ fn_1panel_manager() {
                 sleep 2
                 ;;
             4)
-                read -rp "请输入新的面板端口号: " new_1p_port < /dev/tty
-                if [[ "$new_1p_port" =~ ^[0-9]+$ ]] && [ "$new_1p_port" -ge 1 ] && [ "$new_1p_port" -le 65535 ]; then
+                read -rp "请输入新的面板端口号 (1024-49151): " new_1p_port < /dev/tty
+                if [[ "$new_1p_port" =~ ^[0-9]+$ ]] && [ "$new_1p_port" -ge 1024 ] && [ "$new_1p_port" -le 49151 ]; then
                     log_action "正在修改面板端口为 ${new_1p_port}..."
                     1pctl update port "$new_1p_port"
                     if ufw status | grep -q "Status: active"; then
@@ -1053,7 +1053,7 @@ fn_1panel_manager() {
                         log_success "UFW 规则已更新。"
                     fi
                 else
-                    log_warn "无效端口号。"
+                    log_warn "无效端口号，请输入 1024-49151 之间的数字。"
                 fi
                 sleep 2
                 ;;
@@ -1063,11 +1063,32 @@ fn_1panel_manager() {
                 read -rp "请选择 [1-2]: " up_choice < /dev/tty
                 if [[ "$up_choice" == "1" ]]; then
                     log_info "即将进入 1Panel 官方用户名修改流程，请按提示操作。"
-                    1pctl update username
+                    local user_update_output=""
+                    user_update_output=$(1pctl update username 2>&1 | tee /dev/tty)
+                    if echo "$user_update_output" | grep -qi "panel user is empty"; then
+                        log_warn "检测到当前 1Panel 版本需要直接传入用户名，正在切换兼容模式。"
+                        read -rp "请输入新用户名: " new_1p_user < /dev/tty
+                        if [ -n "$new_1p_user" ]; then
+                            1pctl update username "$new_1p_user"
+                        else
+                            log_warn "用户名为空，已取消。"
+                        fi
+                    fi
                 elif [[ "$up_choice" == "2" ]]; then
                     log_info "即将进入 1Panel 官方密码修改流程。"
                     log_warn "输入密码时屏幕不会显示字符，这是终端的安全设计，属于正常现象。"
-                    1pctl update password
+                    local pass_update_output=""
+                    pass_update_output=$(1pctl update password 2>&1 | tee /dev/tty)
+                    if echo "$pass_update_output" | grep -qi "panel password is empty"; then
+                        log_warn "检测到当前 1Panel 版本需要直接传入密码，正在切换兼容模式。"
+                        read -rsp "请输入新密码: " new_1p_pass < /dev/tty
+                        echo ""
+                        if [ -n "$new_1p_pass" ]; then
+                            1pctl update password "$new_1p_pass"
+                        else
+                            log_warn "密码为空，已取消。"
+                        fi
+                    fi
                 else
                     log_warn "无效选项。"
                 fi
@@ -1952,12 +1973,12 @@ EOF
     log_info "安装路径最终设置为: ${INSTALL_DIR}"
 
     while true; do
-        read -rp "请输入酒馆访问端口 [默认 8000]: " ST_PORT < /dev/tty
+        read -rp "请输入酒馆访问端口 (1024-49151) [默认 8000]: " ST_PORT < /dev/tty
         ST_PORT=${ST_PORT:-8000}
-        if [[ "$ST_PORT" =~ ^[0-9]+$ ]] && [ "$ST_PORT" -ge 1 ] && [ "$ST_PORT" -le 65535 ]; then
+        if [[ "$ST_PORT" =~ ^[0-9]+$ ]] && [ "$ST_PORT" -ge 1024 ] && [ "$ST_PORT" -le 49151 ]; then
             break
         else
-            log_warn "端口无效。请输入 1-65535 之间的数字。"
+            log_warn "端口无效。请输入 1024-49151 之间的数字。"
         fi
     done
 
@@ -2128,12 +2149,12 @@ install_gcli2api() {
     local INSTALL_DIR="${parent_path}/gcli2api"
     
     while true; do
-        read -rp "请输入访问端口 [默认 7861]: " GCLI_PORT < /dev/tty
+        read -rp "请输入访问端口 (1024-49151) [默认 7861]: " GCLI_PORT < /dev/tty
         GCLI_PORT=${GCLI_PORT:-7861}
-        if [[ "$GCLI_PORT" =~ ^[0-9]+$ ]] && [ "$GCLI_PORT" -ge 1 ] && [ "$GCLI_PORT" -le 65535 ]; then
+        if [[ "$GCLI_PORT" =~ ^[0-9]+$ ]] && [ "$GCLI_PORT" -ge 1024 ] && [ "$GCLI_PORT" -le 49151 ]; then
             break
         else
-            log_warn "端口无效。"
+            log_warn "端口无效。请输入 1024-49151 之间的数字。"
         fi
     done
 
@@ -2253,17 +2274,22 @@ fn_migrate_ais2api_to_ibuhub() {
     local project_dir="$1"
     local compose_file="$2"
     local compose_cmd="$3"
-    local container_name="ais2api"
+    local container_name="${4:-ais2api}"
     local env_file="${project_dir}/app.env"
 
     if [ ! -d "$project_dir" ] || [ ! -f "$compose_file" ]; then
         log_error "未找到 ais2api 项目目录或 docker-compose.yml。" || return 1
     fi
 
-    local current_image
-    current_image=$(docker inspect --format '{{.Config.Image}}' "$container_name" 2>/dev/null || true)
+    local current_image=""
+    if docker ps -a --format '{{.Names}}' | grep -qx "$container_name"; then
+        current_image=$(docker inspect --format '{{.Config.Image}}' "$container_name" 2>/dev/null || true)
+    fi
+    if [ -z "$current_image" ] && [ -f "$compose_file" ]; then
+        current_image=$(grep -E '^[[:space:]]*image:[[:space:]]*' "$compose_file" | head -n 1 | awk '{print $2}')
+    fi
     if [ -z "$current_image" ]; then
-        log_error "未能获取当前 ais2api 容器镜像信息，请确认容器是否存在。" || return 1
+        log_error "未能获取当前 ais2api 镜像信息，请确认项目配置是否完整。" || return 1
     fi
 
     if [[ "$current_image" != ${AIS2API_OLD_IMAGE_REPO}* ]]; then
@@ -2311,7 +2337,12 @@ fn_migrate_ais2api_to_ibuhub() {
         log_error "迁移失败：重建服务未成功，请检查日志。" || return 1
     fi
 
-    fn_verify_container_health "$container_name"
+    local health_container="$container_name"
+    if ! docker ps -a --format '{{.Names}}' | grep -qx "$health_container"; then
+        health_container=$(grep -E '^[[:space:]]*container_name:[[:space:]]*' "$compose_file" | head -n 1 | awk '{print $2}')
+    fi
+    health_container="${health_container:-ais2api}"
+    fn_verify_container_health "$health_container"
 
     log_action "正在清理旧镜像..."
     if docker rmi "$current_image" >/dev/null 2>&1 || docker rmi "$AIS2API_OLD_IMAGE" >/dev/null 2>&1; then
@@ -2356,12 +2387,12 @@ install_ais2api() {
     local INSTALL_DIR="${parent_path}/ais2api"
     
     while true; do
-        read -rp "请输入访问端口 [默认 8889]: " AIS_PORT < /dev/tty
+        read -rp "请输入访问端口 (1024-49151) [默认 8889]: " AIS_PORT < /dev/tty
         AIS_PORT=${AIS_PORT:-8889}
-        if [[ "$AIS_PORT" =~ ^[0-9]+$ ]] && [ "$AIS_PORT" -ge 1 ] && [ "$AIS_PORT" -le 65535 ]; then
+        if [[ "$AIS_PORT" =~ ^[0-9]+$ ]] && [ "$AIS_PORT" -ge 1024 ] && [ "$AIS_PORT" -le 49151 ]; then
             break
         else
-            log_warn "端口无效。"
+            log_warn "端口无效。请输入 1024-49151 之间的数字。"
         fi
     done
 
@@ -2436,12 +2467,12 @@ install_warp() {
     local INSTALL_DIR="${parent_path}/warp"
 
     while true; do
-        read -rp "请输入 Warp 代理映射到宿主机的端口 [默认 1080]: " WARP_PORT < /dev/tty
+        read -rp "请输入 Warp 代理映射到宿主机的端口 (1024-49151) [默认 1080]: " WARP_PORT < /dev/tty
         WARP_PORT=${WARP_PORT:-1080}
-        if [[ "$WARP_PORT" =~ ^[0-9]+$ ]] && [ "$WARP_PORT" -ge 1 ] && [ "$WARP_PORT" -le 65535 ]; then
+        if [[ "$WARP_PORT" =~ ^[0-9]+$ ]] && [ "$WARP_PORT" -ge 1024 ] && [ "$WARP_PORT" -le 49151 ]; then
             break
         else
-            log_warn "端口无效。"
+            log_warn "端口无效。请输入 1024-49151 之间的数字。"
         fi
     done
 
@@ -2600,7 +2631,12 @@ fn_test_llm_api() {
 fn_st_validate_host_entry() {
     local host="$1"
 
-    # 仅接受域名或以点开头的子域模式（如 .trycloudflare.com）
+    # 去除首尾引号，兼容误输入
+    host="${host#\"}"
+    host="${host%\"}"
+    host="${host#\'}"
+    host="${host%\'}"
+
     # 禁止协议、路径、端口、IP 与 localhost
     if [[ -z "$host" || "$host" =~ :// || "$host" == */* || "$host" == *:* ]]; then
         return 1
@@ -2608,9 +2644,16 @@ fn_st_validate_host_entry() {
     if [[ "$host" == "localhost" || "$host" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
         return 1
     fi
-    if [[ "$host" =~ ^\.?[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]]; then
+
+    # 普通域名：test.com
+    if [[ "$host" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]; then
         return 0
     fi
+    # 子域匹配：.test.com（前导点）
+    if [[ "$host" =~ ^\.([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]; then
+        return 0
+    fi
+
     return 1
 }
 
@@ -2768,7 +2811,12 @@ fn_st_host_whitelist_manager() {
         tput reset
         echo -e "${BLUE}=== 酒馆 Host 白名单管理 ===${NC}"
         echo -e "状态: $( [[ "$current_enabled" == "true" ]] && echo -e "${GREEN}已启用${NC}" || echo -e "${YELLOW}未启用${NC}" )"
-        echo -e "说明: 仅填写域名，不要填协议/端口/IP。支持 .example.com 子域匹配。"
+        echo -e "${YELLOW}安全提醒：Host 白名单属于关键安全防护，必须保持开启。${NC}"
+        echo -e "填写方式："
+        echo -e "  1) 只放行一个域名：填写 ${CYAN}test.com${NC}"
+        echo -e "  2) 放行该域名下所有子域：填写 ${CYAN}.test.com${NC}（前面有一个点）"
+        echo -e "  3) 多个域名可用空格、英文逗号或中文逗号分隔"
+        echo -e "  4) 不要填写网址前缀、端口、路径或 IP"
         echo -e "------------------------"
         if [ ${#ST_HOSTS[@]} -eq 0 ]; then
             echo -e "当前白名单域名: ${YELLOW}(空)${NC}"
@@ -2785,7 +2833,7 @@ fn_st_host_whitelist_manager() {
         echo -e "  [1] 添加域名 (支持多个，空格/逗号分隔)"
         echo -e "  [2] 删除指定域名 (按编号)"
         echo -e "  [3] 清空全部域名"
-        echo -e "  [4] 仅启用白名单 (enabled=true)"
+        echo -e "  [4] 重新开启白名单防护（安全必须开启）"
         echo -e "  [0] 返回上一级"
         echo -e "------------------------"
         read -rp "请输入选项: " host_choice < /dev/tty
@@ -2793,7 +2841,7 @@ fn_st_host_whitelist_manager() {
 
         case "$host_choice" in
             1)
-                read -rp "请输入域名（示例: example.com, .trycloudflare.com）: " host_input < /dev/tty
+                read -rp "请输入要放行的域名（可多个）: " host_input < /dev/tty
                 if [ -z "$host_input" ]; then
                     log_warn "输入为空，已取消。"
                     sleep 1
@@ -2801,7 +2849,7 @@ fn_st_host_whitelist_manager() {
                 fi
 
                 local normalized_input
-                normalized_input=$(echo "$host_input" | tr ',' ' ')
+                normalized_input=$(echo "$host_input" | tr ',，;；、' '     ')
                 read -ra host_candidates <<< "$normalized_input"
 
                 local added_count=0
@@ -2809,6 +2857,10 @@ fn_st_host_whitelist_manager() {
                 local candidate
                 for candidate in "${host_candidates[@]}"; do
                     candidate=$(echo "$candidate" | xargs)
+                    candidate="${candidate#\"}"
+                    candidate="${candidate%\"}"
+                    candidate="${candidate#\'}"
+                    candidate="${candidate%\'}"
                     candidate=${candidate,,}
                     [ -z "$candidate" ] && continue
 
@@ -2844,7 +2896,8 @@ fn_st_host_whitelist_manager() {
                 cd "$project_dir" && $compose_cmd restart
                 log_success "已更新白名单配置。"
                 if [ ${#invalid_hosts[@]} -gt 0 ]; then
-                    log_warn "以下项格式无效，已跳过: ${invalid_hosts[*]}"
+                    log_warn "以下内容未识别为有效域名，已跳过: ${invalid_hosts[*]}"
+                    log_info "提示：子域匹配请写成 .test.com（前面带点），且不要填写协议、端口或路径。"
                 fi
                 sleep 2
                 ;;
@@ -2894,7 +2947,7 @@ fn_st_host_whitelist_manager() {
                 fn_st_write_host_whitelist_config "$config_file" "$hosts_inline" || { sleep 2; continue; }
                 log_info "正在重启酒馆以应用白名单配置..."
                 cd "$project_dir" && $compose_cmd restart
-                log_success "已启用 Host 白名单。"
+                log_success "白名单防护已开启。"
                 sleep 2
                 ;;
             0) break ;;
@@ -3679,9 +3732,24 @@ fn_warp_docker_manager() {
     done
 }
 
+fn_find_ais2api_container_name() {
+    # 1) 优先固定名
+    if docker ps -a --format '{{.Names}}' | grep -q '^ais2api$'; then
+        echo "ais2api"
+        return
+    fi
+
+    # 2) 回退按镜像识别
+    docker ps -a --format '{{.Names}}|{{.Image}}' | awk -F'|' '
+        tolower($2) ~ /ghcr\.io\/ibuhub\/aistudio-to-api/ { print $1; exit }
+        tolower($2) ~ /ellinalopez\/cloud-studio/ { print $1; exit }
+    '
+}
+
 fn_api_docker_manager() {
     local container_name=$1
     local display_name=$2
+    local service_type="${3:-$container_name}"
     local compose_cmd=""
     
     if command -v docker-compose &> /dev/null; then
@@ -3692,13 +3760,26 @@ fn_api_docker_manager() {
         log_error "未检测到 Docker Compose。" || return 1
     fi
 
-    local project_dir=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$container_name" 2>/dev/null)
+    local project_dir=""
+    project_dir=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$container_name" 2>/dev/null)
     
+    if [ -z "$project_dir" ] || [ ! -d "$project_dir" ]; then
+        if [[ "$service_type" == "ais2api" ]]; then
+            local target_user="${SUDO_USER:-root}"
+            local user_home
+            if [ "$target_user" = "root" ]; then user_home="/root"; else user_home=$(getent passwd "$target_user" | cut -d: -f6); fi
+            project_dir="${user_home}/ais2api"
+        fi
+    fi
+
     if [ -z "$project_dir" ] || [ ! -d "$project_dir" ]; then
         log_error "未能找到项目目录。" || return 1
     fi
 
     local compose_file="${project_dir}/docker-compose.yml"
+    if [ ! -f "$compose_file" ]; then
+        log_error "未找到 docker-compose.yml: ${compose_file}" || return 1
+    fi
 
     while true; do
         tput reset
@@ -3710,7 +3791,7 @@ fn_api_docker_manager() {
         echo -e "  [3] 更新镜像 (pull & up)"
         echo -e "  [4] 查看运行状态 (ps)"
         echo -e "  [5] 查看实时日志 (logs -f)"
-        if [[ "$container_name" == "ais2api" ]]; then
+        if [[ "$service_type" == "ais2api" ]]; then
             echo -e "  [6] ${CYAN}代理配置管理${NC}"
             echo -e "  [7] ${CYAN}迁移到新镜像 (ibuhub)${NC}"
         fi
@@ -3731,15 +3812,15 @@ fn_api_docker_manager() {
                 trap 'exit 0' INT
                 ;;
             6)
-                if [[ "$container_name" == "ais2api" ]]; then
+                if [[ "$service_type" == "ais2api" ]]; then
                     fn_ais_proxy_manager "$project_dir" "$compose_file" "$compose_cmd"
                 else
                     log_warn "无效输入"
                 fi
                 ;;
             7)
-                if [[ "$container_name" == "ais2api" ]]; then
-                    fn_migrate_ais2api_to_ibuhub "$project_dir" "$compose_file" "$compose_cmd"
+                if [[ "$service_type" == "ais2api" ]]; then
+                    fn_migrate_ais2api_to_ibuhub "$project_dir" "$compose_file" "$compose_cmd" "$container_name"
                     read -rp "操作完成，按 Enter 继续..." < /dev/tty
                 else
                     log_warn "无效输入"
@@ -3808,7 +3889,9 @@ fn_manage_menu() {
             has_app=true
         fi
         # 3. ais2api 管理
-        if docker ps -a --format '{{.Names}}' | grep -q '^ais2api$'; then
+        local ais_container_name=""
+        ais_container_name=$(fn_find_ais2api_container_name)
+        if [ -n "$ais_container_name" ] || [ -f "${USER_HOME}/ais2api/docker-compose.yml" ]; then
             echo -e "  [3] ${GREEN}ais2api 运维管理${NC}"
             has_app=true
         fi
@@ -3834,7 +3917,17 @@ fn_manage_menu() {
         case "$manage_choice" in
             1) docker ps -a --format '{{.Names}}' | grep -q '^sillytavern$' && fn_st_docker_manager || log_warn "未安装" ;;
             2) docker ps -a --format '{{.Names}}' | grep -q '^gcli2api$' && fn_api_docker_manager "gcli2api" "gcli2api" || log_warn "未安装" ;;
-            3) docker ps -a --format '{{.Names}}' | grep -q '^ais2api$' && fn_api_docker_manager "ais2api" "ais2api" || log_warn "未安装" ;;
+            3)
+                local ais_runtime_name=""
+                ais_runtime_name=$(fn_find_ais2api_container_name)
+                if [ -n "$ais_runtime_name" ]; then
+                    fn_api_docker_manager "$ais_runtime_name" "ais2api" "ais2api"
+                elif [ -f "${USER_HOME}/ais2api/docker-compose.yml" ]; then
+                    fn_api_docker_manager "ais2api" "ais2api" "ais2api"
+                else
+                    log_warn "未安装"
+                fi
+                ;;
             4) command -v 1pctl &> /dev/null && fn_1panel_manager || log_warn "未安装" ;;
             5) docker ps -a --format '{{.Names}}' | grep -q '^warp$' && fn_warp_docker_manager || log_warn "未安装" ;;
             0) break ;;
