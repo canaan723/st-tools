@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v5.1298test"
+readonly SCRIPT_VERSION="v5.12989test"
 GUGU_MODE="test"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -2005,10 +2005,8 @@ fn_st_get_basic_auth_credentials() {
     local config_file="$1"
     local __user_var="$2"
     local __pass_var="$3"
-    local current_user=""
-    local current_pass=""
-    local raw_user=""
-    local raw_pass=""
+    local _user=""
+    local _pass=""
 
     if [ ! -f "$config_file" ]; then
         printf -v "$__user_var" '%s' ""
@@ -2016,33 +2014,12 @@ fn_st_get_basic_auth_credentials() {
         return 1
     fi
 
-    # 提取 username 和 password 行的完整内容
-    raw_user=$(grep -A 5 "basicAuthUser:" "$config_file" | grep "username:" | head -n 1)
-    raw_pass=$(grep -A 5 "basicAuthUser:" "$config_file" | grep "password:" | head -n 1)
+    # 直接使用与正式版本完全相同的方法
+    _user=$(grep -A 2 "basicAuthUser:" "$config_file" | grep "username:" | cut -d'"' -f2)
+    _pass=$(grep -A 2 "basicAuthUser:" "$config_file" | grep "password:" | cut -d'"' -f2)
 
-    # 提取值：支持双引号、单引号和无引号格式
-    # 格式示例：
-    #   username: "value"
-    #   username: 'value'
-    #   username: value
-    if [[ "$raw_user" =~ username:[[:space:]]*\"([^\"]*)\" ]]; then
-        current_user="${BASH_REMATCH[1]}"
-    elif [[ "$raw_user" =~ username:[[:space:]]*\'([^\']*)\' ]]; then
-        current_user="${BASH_REMATCH[1]}"
-    elif [[ "$raw_user" =~ username:[[:space:]]*([^[:space:]#]+) ]]; then
-        current_user="${BASH_REMATCH[1]}"
-    fi
-
-    if [[ "$raw_pass" =~ password:[[:space:]]*\"([^\"]*)\" ]]; then
-        current_pass="${BASH_REMATCH[1]}"
-    elif [[ "$raw_pass" =~ password:[[:space:]]*\'([^\']*)\' ]]; then
-        current_pass="${BASH_REMATCH[1]}"
-    elif [[ "$raw_pass" =~ password:[[:space:]]*([^[:space:]#]+) ]]; then
-        current_pass="${BASH_REMATCH[1]}"
-    fi
-
-    printf -v "$__user_var" '%s' "$current_user"
-    printf -v "$__pass_var" '%s' "$current_pass"
+    printf -v "$__user_var" '%s' "$_user"
+    printf -v "$__pass_var" '%s' "$_pass"
 }
 
 fn_st_set_basic_auth_credentials() {
