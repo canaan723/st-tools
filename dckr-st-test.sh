@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v5.1292test"
+readonly SCRIPT_VERSION="v5.1293test"
 GUGU_MODE="test"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -2008,10 +2008,16 @@ fn_st_get_basic_auth_credentials() {
     local current_user=""
     local current_pass=""
 
+    if [ ! -f "$config_file" ]; then
+        printf -v "$__user_var" '%s' ""
+        printf -v "$__pass_var" '%s' ""
+        return 1
+    fi
+
     current_user=$(awk '
-        /^[[:space:]]*basicAuthUser:[[:space:]]*$/ { in_block=1; next }
-        in_block && /^[^[:space:]#][^:]*:[[:space:]]*/ { exit }
-        in_block && /^[[:space:]]*username:[[:space:]]*/ {
+        /^[[:space:]]*basicAuthUser:[[:space:]]*$/ { blk=1; next }
+        blk && /^[^[:space:]#][^:]*:[[:space:]]*/ { exit }
+        blk && /^[[:space:]]*username:[[:space:]]*/ {
             sub(/^[[:space:]]*username:[[:space:]]*/, "", $0)
             print
             exit
@@ -2019,9 +2025,9 @@ fn_st_get_basic_auth_credentials() {
     ' "$config_file")
 
     current_pass=$(awk '
-        /^[[:space:]]*basicAuthUser:[[:space:]]*$/ { in_block=1; next }
-        in_block && /^[^[:space:]#][^:]*:[[:space:]]*/ { exit }
-        in_block && /^[[:space:]]*password:[[:space:]]*/ {
+        /^[[:space:]]*basicAuthUser:[[:space:]]*$/ { blk=1; next }
+        blk && /^[^[:space:]#][^:]*:[[:space:]]*/ { exit }
+        blk && /^[[:space:]]*password:[[:space:]]*/ {
             sub(/^[[:space:]]*password:[[:space:]]*/, "", $0)
             print
             exit
