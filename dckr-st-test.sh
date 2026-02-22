@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v5.1295test"
+readonly SCRIPT_VERSION="v5.1296test"
 GUGU_MODE="test"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -2018,8 +2018,8 @@ fn_st_get_basic_auth_credentials() {
         return 1
     fi
 
-    # 优先使用“分块提取”，兼容注释/空行/单双引号
-    block=$(sed -n '/^[[:space:]]*basicAuthUser:[[:space:]]*$/,/^[^[:space:]]/p' "$config_file")
+    # 优先使用"分块提取"，兼容注释/空行/单双引号
+    block=$(sed -n '/^[[:space:]]*basicAuthUser:/,/^[^[:space:]]/p' "$config_file")
     raw_user=$(echo "$block" | sed -n 's/^[[:space:]]*username:[[:space:]]*//p' | head -n 1)
     raw_pass=$(echo "$block" | sed -n 's/^[[:space:]]*password:[[:space:]]*//p' | head -n 1)
 
@@ -2031,7 +2031,7 @@ fn_st_get_basic_auth_credentials() {
             alt_config="${config_file%/config.yaml}/config/config.yaml"
         fi
         if [ -n "$alt_config" ] && [ -f "$alt_config" ]; then
-            block=$(sed -n '/^[[:space:]]*basicAuthUser:[[:space:]]*$/,/^[^[:space:]]/p' "$alt_config")
+            block=$(sed -n '/^[[:space:]]*basicAuthUser:/,/^[^[:space:]]/p' "$alt_config")
             [ -z "$raw_user" ] && raw_user=$(echo "$block" | sed -n 's/^[[:space:]]*username:[[:space:]]*//p' | head -n 1)
             [ -z "$raw_pass" ] && raw_pass=$(echo "$block" | sed -n 's/^[[:space:]]*password:[[:space:]]*//p' | head -n 1)
         fi
