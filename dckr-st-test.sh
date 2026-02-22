@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v5.1291test"
+readonly SCRIPT_VERSION="v5.1292test"
 GUGU_MODE="test"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -1989,30 +1989,55 @@ fn_generate_password() {
     tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "$length"
 }
 
+fn_st_trim_credential_value() {
+    local raw_value="$1"
+    local cleaned=""
+
+    cleaned=$(echo "$raw_value" | sed -E 's/\r$//; s/[[:space:]]+#.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//')
+    cleaned="${cleaned#\"}"
+    cleaned="${cleaned%\"}"
+    cleaned="${cleaned#\'}"
+    cleaned="${cleaned%\'}"
+    printf '%s' "$cleaned"
+}
+
 fn_st_get_basic_auth_credentials() {
     local config_file="$1"
     local __user_var="$2"
     local __pass_var="$3"
     local current_user=""
     local current_pass=""
-    local block=""
 
-    block=$(sed -n '/^[[:space:]]*basicAuthUser:[[:space:]]*$/,/^[^[:space:]]/p' "$config_file")
-    current_user=$(echo "$block" | sed -n 's/^[[:space:]]*username:[[:space:]]*//p' | head -n 1)
-    current_pass=$(echo "$block" | sed -n 's/^[[:space:]]*password:[[:space:]]*//p' | head -n 1)
+    current_user=$(awk '
+        /^[[:space:]]*basicAuthUser:[[:space:]]*$/ { in_block=1; next }
+        in_block && /^[^[:space:]#][^:]*:[[:space:]]*/ { exit }
+        in_block && /^[[:space:]]*username:[[:space:]]*/ {
+            sub(/^[[:space:]]*username:[[:space:]]*/, "", $0)
+            print
+            exit
+        }
+    ' "$config_file")
 
-    current_user=$(echo "$current_user" | sed -E 's/[[:space:]]+#.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//')
-    current_pass=$(echo "$current_pass" | sed -E 's/[[:space:]]+#.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//')
+    current_pass=$(awk '
+        /^[[:space:]]*basicAuthUser:[[:space:]]*$/ { in_block=1; next }
+        in_block && /^[^[:space:]#][^:]*:[[:space:]]*/ { exit }
+        in_block && /^[[:space:]]*password:[[:space:]]*/ {
+            sub(/^[[:space:]]*password:[[:space:]]*/, "", $0)
+            print
+            exit
+        }
+    ' "$config_file")
 
-    current_user="${current_user#\"}"
-    current_user="${current_user%\"}"
-    current_user="${current_user#\'}"
-    current_user="${current_user%\'}"
+    # 回退：如果块定位失败，尝试全局首次匹配，避免界面空白
+    if [ -z "$current_user" ]; then
+        current_user=$(sed -n 's/^[[:space:]]*username:[[:space:]]*//p' "$config_file" | head -n 1)
+    fi
+    if [ -z "$current_pass" ]; then
+        current_pass=$(sed -n 's/^[[:space:]]*password:[[:space:]]*//p' "$config_file" | head -n 1)
+    fi
 
-    current_pass="${current_pass#\"}"
-    current_pass="${current_pass%\"}"
-    current_pass="${current_pass#\'}"
-    current_pass="${current_pass%\'}"
+    current_user=$(fn_st_trim_credential_value "$current_user")
+    current_pass=$(fn_st_trim_credential_value "$current_pass")
 
     printf -v "$__user_var" '%s' "$current_user"
     printf -v "$__pass_var" '%s' "$current_pass"
