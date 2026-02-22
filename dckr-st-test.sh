@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v5.1293test"
+readonly SCRIPT_VERSION="v5.1294test"
 GUGU_MODE="test"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -2014,25 +2014,9 @@ fn_st_get_basic_auth_credentials() {
         return 1
     fi
 
-    current_user=$(awk '
-        /^[[:space:]]*basicAuthUser:[[:space:]]*$/ { blk=1; next }
-        blk && /^[^[:space:]#][^:]*:[[:space:]]*/ { exit }
-        blk && /^[[:space:]]*username:[[:space:]]*/ {
-            sub(/^[[:space:]]*username:[[:space:]]*/, "", $0)
-            print
-            exit
-        }
-    ' "$config_file")
-
-    current_pass=$(awk '
-        /^[[:space:]]*basicAuthUser:[[:space:]]*$/ { blk=1; next }
-        blk && /^[^[:space:]#][^:]*:[[:space:]]*/ { exit }
-        blk && /^[[:space:]]*password:[[:space:]]*/ {
-            sub(/^[[:space:]]*password:[[:space:]]*/, "", $0)
-            print
-            exit
-        }
-    ' "$config_file")
+    # 与正式版一致的读取思路：在 basicAuthUser 邻近范围内提取账号密码
+    current_user=$(grep -A 3 "^[[:space:]]*basicAuthUser:" "$config_file" | grep -m1 "^[[:space:]]*username:" | sed -E 's/^[[:space:]]*username:[[:space:]]*//')
+    current_pass=$(grep -A 3 "^[[:space:]]*basicAuthUser:" "$config_file" | grep -m1 "^[[:space:]]*password:" | sed -E 's/^[[:space:]]*password:[[:space:]]*//')
 
     # 回退：如果块定位失败，尝试全局首次匹配，避免界面空白
     if [ -z "$current_user" ]; then
