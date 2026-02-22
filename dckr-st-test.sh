@@ -84,6 +84,14 @@ fn_init_user_home() {
     fi
 }
 
+fn_ensure_valid_cwd() {
+    if ! pwd -P >/dev/null 2>&1; then
+        log_warn "检测到当前工作目录不可用，已自动切换到用户主目录。"
+        cd "$USER_HOME" 2>/dev/null || cd /root 2>/dev/null || cd / || return 1
+    fi
+    return 0
+}
+
 fn_ssh_rollback() {
     local failed_port=$1
     echo -e "\033[33m[警告] 检测到新SSH端口连接失败，正在执行回滚操作...\033[0m"
@@ -418,6 +426,7 @@ fn_report_dependencies() {
 }
 
 fn_check_dependencies() {
+    fn_ensure_valid_cwd || true
     fn_print_info "--- Docker 环境诊断开始 ---"
     
     local docker_check_needed=true
@@ -3990,6 +3999,7 @@ main_menu() {
 
 # --- [启动逻辑] ---
 fn_init_user_home
+fn_ensure_valid_cwd || true
 fn_auto_install
 # 仅在已安装模式下启动时检查更新，避免干扰初次运行
 [[ "$0" == "$GUGU_PATH" ]] && fn_check_update
