@@ -64,6 +64,10 @@ fi
 
 CUSTOM_PROXY_IMAGE=""
 USER_HOME=""
+readonly AIS2API_OLD_IMAGE_REPO="ellinalopez/cloud-studio"
+readonly AIS2API_OLD_IMAGE="ellinalopez/cloud-studio:latest"
+readonly AIS2API_NEW_IMAGE_REPO="ghcr.io/ibuhub/aistudio-to-api"
+readonly AIS2API_NEW_IMAGE="ghcr.io/ibuhub/aistudio-to-api:latest"
 
 fn_init_user_home() {
     local target_user
@@ -1054,15 +1058,18 @@ fn_1panel_manager() {
                 sleep 2
                 ;;
             5)
-                echo -e "  [1] 修改用户名"
-                echo -e "  [2] 修改密码"
+                echo -e "  [1] 修改用户名 (调用 1Panel 官方交互)"
+                echo -e "  [2] 修改密码 (调用 1Panel 官方交互)"
                 read -rp "请选择 [1-2]: " up_choice < /dev/tty
                 if [[ "$up_choice" == "1" ]]; then
-                    read -rp "请输入新用户名: " new_1p_user < /dev/tty
-                    1pctl update username "$new_1p_user"
+                    log_info "即将进入 1Panel 官方用户名修改流程，请按提示操作。"
+                    1pctl update username
                 elif [[ "$up_choice" == "2" ]]; then
-                    read -rp "请输入新密码: " new_1p_pass < /dev/tty
-                    1pctl update password "$new_1p_pass"
+                    log_info "即将进入 1Panel 官方密码修改流程。"
+                    log_warn "输入密码时屏幕不会显示字符，这是终端的安全设计，属于正常现象。"
+                    1pctl update password
+                else
+                    log_warn "无效选项。"
                 fi
                 sleep 2
                 ;;
@@ -1748,6 +1755,7 @@ install_sillytavern() {
         sed -i '1i# ✦ 咕咕助手 · 作者：清绝 | 博客：https://blog.qjyg.de' "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)listen: .*/\1listen: true # 允许外部访问/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)whitelistMode: .*/\1whitelistMode: false # 关闭IP白名单模式/" "$CONFIG_FILE"
+        sed -i -E "/^[[:space:]]*hostWhitelist:/,/^[[:space:]]*hosts:/{s/^([[:space:]]*)enabled: .*/\1enabled: true # 启用 Host 白名单/}" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)sessionTimeout: .*/\1sessionTimeout: 86400 # 24小时退出登录/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)lazyLoadCharacters: .*/\1lazyLoadCharacters: true # 懒加载、点击角色卡才加载/" "$CONFIG_FILE"
         sed -i -E "s/^([[:space:]]*)memoryCacheCapacity: .*/\1memoryCacheCapacity: '${ST_CACHE_MEM}mb' # 角色卡内存缓存/" "$CONFIG_FILE"
@@ -2173,26 +2181,159 @@ EOF
     echo -e "  ${CYAN}项目路径:${NC} $INSTALL_DIR"
 }
 
+fn_write_ais_official_env() {
+    local env_file="$1"
+    local api_keys="$2"
+
+    cat <<EOF > "$env_file"
+# ===================================
+# Server Configuration
+# ===================================
+PORT=7860
+HOST=0.0.0.0
+WS_PORT=9998
+
+# ===================================
+# Authentication Configuration
+# ===================================
+API_KEYS=${api_keys}
+
+# ===================================
+# Security Configuration
+# ===================================
+SECURE_COOKIES=false
+RATE_LIMIT_MAX_ATTEMPTS=5
+RATE_LIMIT_WINDOW_MINUTES=15
+INITIAL_AUTH_INDEX=0
+
+# ===================================
+# UI Configuration
+# ===================================
+ICON_URL=
+CHECK_UPDATE=true
+
+# ===================================
+# Browser Configuration
+# ===================================
+CAMOUFOX_EXECUTABLE_PATH=
+TARGET_DOMAIN=
+
+# ===================================
+# Request Handling Configuration
+# ===================================
+STREAMING_MODE=real
+MAX_RETRIES=3
+RETRY_DELAY=2000
+FORCE_THINKING=false
+FORCE_WEB_SEARCH=false
+FORCE_URL_CONTEXT=false
+
+# ===================================
+# Account Switching Configuration
+# ===================================
+SWITCH_ON_USES=40
+FAILURE_THRESHOLD=3
+IMMEDIATE_SWITCH_STATUS_CODES=429,503
+
+# ===================================
+# Timezone Configuration
+# ===================================
+TZ=
+
+# ===================================
+# Proxy Configuration
+# ===================================
+HTTP_PROXY=
+HTTPS_PROXY=
+NO_PROXY=
+EOF
+}
+
+fn_migrate_ais2api_to_ibuhub() {
+    local project_dir="$1"
+    local compose_file="$2"
+    local compose_cmd="$3"
+    local container_name="ais2api"
+    local env_file="${project_dir}/app.env"
+
+    if [ ! -d "$project_dir" ] || [ ! -f "$compose_file" ]; then
+        log_error "未找到 ais2api 项目目录或 docker-compose.yml。" || return 1
+    fi
+
+    local current_image
+    current_image=$(docker inspect --format '{{.Config.Image}}' "$container_name" 2>/dev/null || true)
+    if [ -z "$current_image" ]; then
+        log_error "未能获取当前 ais2api 容器镜像信息，请确认容器是否存在。" || return 1
+    fi
+
+    if [[ "$current_image" != ${AIS2API_OLD_IMAGE_REPO}* ]]; then
+        if [[ "$current_image" == ${AIS2API_NEW_IMAGE_REPO}* ]]; then
+            log_success "当前已使用新镜像 (${current_image})，无需迁移。"
+            return 0
+        fi
+        log_warn "当前镜像为 ${current_image}，不属于旧镜像 ${AIS2API_OLD_IMAGE_REPO}，已跳过迁移。"
+        return 1
+    fi
+
+    local ts
+    ts=$(date +%Y%m%d_%H%M%S)
+    local compose_bak="${compose_file}.bak_${ts}"
+    cp -f "$compose_file" "$compose_bak"
+    log_info "已备份 compose 文件: ${compose_bak}"
+
+    local old_api_keys=""
+    if [ -f "$env_file" ]; then
+        local env_bak="${env_file}.bak_${ts}"
+        cp -f "$env_file" "$env_bak"
+        log_info "已备份环境文件: ${env_bak}"
+        old_api_keys=$(grep -E '^API_KEYS=' "$env_file" | tail -n 1 | cut -d= -f2-)
+    fi
+
+    mkdir -p "${project_dir}/auth"
+
+    log_action "正在写入新镜像官方 app.env 配置..."
+    fn_write_ais_official_env "$env_file" "$old_api_keys"
+
+    log_action "正在更新 docker-compose.yml..."
+    sed -i -E "0,/^[[:space:]]*image:[[:space:]]*/s|^[[:space:]]*image:[[:space:]].*|    image: ${AIS2API_NEW_IMAGE}|" "$compose_file"
+    sed -i -E 's#(\./auth:/app/)auth#\1configs/auth#g' "$compose_file"
+
+    if ! grep -q "/app/configs/auth" "$compose_file"; then
+        if grep -q "^[[:space:]]*volumes:[[:space:]]*$" "$compose_file"; then
+            sed -i -E '0,/^[[:space:]]*volumes:[[:space:]]*$/s|^[[:space:]]*volumes:[[:space:]]*$|    volumes:\n      - ./auth:/app/configs/auth|' "$compose_file"
+        else
+            sed -i -E '0,/^[[:space:]]*-[[:space:]]*app\.env[[:space:]]*$/s|^[[:space:]]*-[[:space:]]*app\.env[[:space:]]*$|      - app.env\n    volumes:\n      - ./auth:/app/configs/auth|' "$compose_file"
+        fi
+    fi
+
+    log_action "正在拉取新镜像并重建服务..."
+    if ! (cd "$project_dir" && $compose_cmd pull && $compose_cmd up -d --force-recreate); then
+        log_error "迁移失败：重建服务未成功，请检查日志。" || return 1
+    fi
+
+    fn_verify_container_health "$container_name"
+
+    log_action "正在清理旧镜像..."
+    if docker rmi "$current_image" >/dev/null 2>&1 || docker rmi "$AIS2API_OLD_IMAGE" >/dev/null 2>&1; then
+        log_success "旧镜像清理完成。"
+    else
+        log_warn "旧镜像删除失败（可能被占用或不存在），请按需手动清理。"
+    fi
+
+    log_success "ais2api 已完成迁移到新镜像：${AIS2API_NEW_IMAGE}"
+    return 0
+}
+
 install_ais2api() {
     # 初始化变量供全局检查函数使用
     local DOCKER_VER="-" DOCKER_STATUS="-"
     local COMPOSE_VER="-" COMPOSE_STATUS="-"
     local DOCKER_COMPOSE_CMD=""
     local CONTAINER_NAME="ais2api"
-    local IMAGE_NAME="ellinalopez/cloud-studio:latest"
+    local IMAGE_NAME="$AIS2API_NEW_IMAGE"
     
     tput reset
     echo -e "${CYAN}ais2api Docker 自动化安装流程${NC}"
-    
-    # 架构检测
-    local arch
-    arch=$(uname -m)
-    if [[ "$arch" != "x86_64" ]]; then
-        log_error "检测到当前系统架构为 ${arch}，而 ais2api 仅支持 x86_64 (amd64) 架构，无法继续安装。"
-        return 1
-    fi
-
-    log_warn "注意：此镜像仅支持 x86 架构。"
     
     fn_check_base_deps
     fn_check_dependencies
@@ -2230,54 +2371,10 @@ install_ais2api() {
 
     log_action "正在创建目录结构..."
     mkdir -p "$INSTALL_DIR/auth"
-
-    while true; do
-        if [ "$(ls -A "$INSTALL_DIR/auth" 2>/dev/null)" ]; then
-            log_success "检测到认证文件，继续安装..."
-            break
-        else
-            echo -e "\n${YELLOW}---【 重要：请放入认证文件 】---${NC}"
-            echo -e "ais2api 需要至少一个认证文件才能启动。"
-            echo -e "请将您的认证文件（如 ${CYAN}auth-1${NC}、${CYAN}auth-2${NC} ……）放入以下目录："
-            echo -e "路径: ${GREEN}$INSTALL_DIR/auth${NC}"
-            echo -e "--------------------------------"
-            read -rp "放入完成后按【回车键】重新检测，或输入 [q] 退出安装: " auth_check < /dev/tty
-            if [[ "$auth_check" == "q" ]]; then
-                log_info "操作已取消。"
-                return 1
-            fi
-        fi
-    done
+    log_info "新镜像支持在 Web 面板中进行认证配置，无需预先放入认证文件。"
     
     log_action "正在生成 app.env..."
-    cat <<EOF > "$INSTALL_DIR/app.env"
-# ✦ 咕咕助手 · 作者：清绝 | 博客：https://blog.qjyg.de
-# 自定义密钥
-API_KEYS=${AIS_KEY}
-
-# 如果你需要使用【app.env】加载认证信息，删除下面的 # 以去除注释，并填入之前获取的认证文件auth_single里的全部内容！
-# AUTH_JSON_1=
-# 如果还需要添加更多账号，依此类推增加 AUTH_JSON_2、AUTH_JSON_3
-
-# 以下为可选参数
-# （选填）账号使用40次后切换到下一个账号（建议用50或以下，太高导致内存占用高，然后卡顿）
-SWITCH_ON_USES=40
-
-# （选填）服务器端重试次数1次
-MAX_RETRIES=1
-
-# （选填）失败3次后重试
-FAILURE_THRESHOLD=3
-
-# （选填）遇到429和503报错立刻切换账号
-IMMEDIATE_SWITCH_STATUS_CODES=429,503
-
-# （选填）起始账号，默认是第一个
-INITIAL_AUTH_INDEX=null
-
-# 使用假流式
-STREAMING_MODE=real
-EOF
+    fn_write_ais_official_env "$INSTALL_DIR/app.env" "$AIS_KEY"
 
     log_action "正在生成 docker-compose.yml..."
     cat <<EOF > "$INSTALL_DIR/docker-compose.yml"
@@ -2290,12 +2387,12 @@ services:
     env_file:
       - app.env
     volumes:
-      - ./auth:/app/auth
+      - ./auth:/app/configs/auth
     restart: unless-stopped
 EOF
 
     log_action "正在启动服务..."
-    cd "$INSTALL_DIR" && docker compose up -d
+    cd "$INSTALL_DIR" && $DOCKER_COMPOSE_CMD up -d
     
     fn_verify_container_health "$CONTAINER_NAME"
     
@@ -2492,6 +2589,313 @@ fn_test_llm_api() {
                 
                 echo -e "\n"
                 read -rp "测试完成，按 Enter 继续..." < /dev/tty
+                ;;
+            0) break ;;
+            *) log_warn "无效输入"; sleep 1 ;;
+        esac
+    done
+}
+
+# --- [酒馆 Host 白名单辅助函数] ---
+fn_st_validate_host_entry() {
+    local host="$1"
+
+    # 仅接受域名或以点开头的子域模式（如 .trycloudflare.com）
+    # 禁止协议、路径、端口、IP 与 localhost
+    if [[ -z "$host" || "$host" =~ :// || "$host" == */* || "$host" == *:* ]]; then
+        return 1
+    fi
+    if [[ "$host" == "localhost" || "$host" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        return 1
+    fi
+    if [[ "$host" =~ ^\.?[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]]; then
+        return 0
+    fi
+    return 1
+}
+
+fn_st_get_host_whitelist_enabled() {
+    local config_file="$1"
+    awk '
+        /^[[:space:]]*hostWhitelist:[[:space:]]*$/ { in_block=1; next }
+        in_block && /^[[:space:]]*enabled:[[:space:]]*/ {
+            if ($0 ~ /true/) print "true"; else print "false";
+            found=1; exit
+        }
+        in_block && /^[^[:space:]]/ { in_block=0 }
+        END { if (!found) print "false" }
+    ' "$config_file"
+}
+
+fn_st_load_host_whitelist_hosts() {
+    local config_file="$1"
+    ST_HOSTS=()
+
+    local parsed=""
+    parsed=$(awk '
+        /^[[:space:]]*hostWhitelist:[[:space:]]*$/ { in_block=1; next }
+        in_block && /^[^[:space:]]/ { in_block=0 }
+        in_block && /^[[:space:]]*hosts:[[:space:]]*\[/ {
+            line=$0
+            sub(/^[[:space:]]*hosts:[[:space:]]*\[/, "", line)
+            sub(/\][[:space:]]*$/, "", line)
+            gsub(/"/, "", line)
+            gsub(/\047/, "", line)
+            n=split(line, arr, ",")
+            for (i=1; i<=n; i++) {
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", arr[i])
+                if (arr[i] != "") print arr[i]
+            }
+        }
+        in_block && /^[[:space:]]*-[[:space:]]*/ {
+            line=$0
+            sub(/^[[:space:]]*-[[:space:]]*/, "", line)
+            gsub(/"/, "", line)
+            gsub(/\047/, "", line)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+            if (line != "") print line
+        }
+    ' "$config_file")
+
+    if [ -n "$parsed" ]; then
+        while IFS= read -r host; do
+            [ -n "$host" ] && ST_HOSTS+=("$host")
+        done <<< "$parsed"
+    fi
+}
+
+fn_st_build_hosts_inline() {
+    if [ ${#ST_HOSTS[@]} -eq 0 ]; then
+        echo "[]"
+        return
+    fi
+
+    local out="["
+    local h
+    for h in "${ST_HOSTS[@]}"; do
+        h="${h//\\/\\\\}"
+        h="${h//\"/\\\"}"
+        out+="\"$h\", "
+    done
+    out="${out%, }]"
+    echo "$out"
+}
+
+fn_st_write_host_whitelist_config() {
+    local config_file="$1"
+    local hosts_inline="$2"
+    local tmp_file
+    tmp_file=$(mktemp)
+
+    awk -v hosts_inline="$hosts_inline" '
+        BEGIN {
+            in_block=0
+            block_found=0
+            enabled_found=0
+            hosts_found=0
+        }
+        {
+            if ($0 ~ /^[[:space:]]*hostWhitelist:[[:space:]]*$/) {
+                in_block=1
+                block_found=1
+                enabled_found=0
+                hosts_found=0
+                print
+                next
+            }
+
+            if (in_block && $0 ~ /^[^[:space:]]/) {
+                if (!enabled_found) print "  enabled: true"
+                if (!hosts_found) print "  hosts: " hosts_inline
+                in_block=0
+            }
+
+            if (in_block) {
+                if ($0 ~ /^[[:space:]]*enabled:[[:space:]]*/) {
+                    print "  enabled: true"
+                    enabled_found=1
+                    next
+                }
+                if ($0 ~ /^[[:space:]]*hosts:[[:space:]]*/) {
+                    print "  hosts: " hosts_inline
+                    hosts_found=1
+                    next
+                }
+                # 清理旧的多行 hosts 列表项，防止残留
+                if (hosts_found && $0 ~ /^[[:space:]]*-[[:space:]]+/) {
+                    next
+                }
+            }
+
+            print
+        }
+        END {
+            if (in_block) {
+                if (!enabled_found) print "  enabled: true"
+                if (!hosts_found) print "  hosts: " hosts_inline
+            }
+
+            if (!block_found) {
+                print ""
+                print "# Host whitelist configuration. Recommended if you are using a listen mode"
+                print "hostWhitelist:"
+                print "  enabled: true"
+                print "  scan: true"
+                print "  hosts: " hosts_inline
+            }
+        }
+    ' "$config_file" > "$tmp_file"
+
+    if [ $? -ne 0 ]; then
+        rm -f "$tmp_file"
+        log_error "写入 Host 白名单配置失败。"
+        return 1
+    fi
+
+    mv "$tmp_file" "$config_file"
+}
+
+fn_st_host_whitelist_manager() {
+    local project_dir="$1"
+    local config_file="$2"
+    local compose_cmd="$3"
+
+    while true; do
+        fn_st_load_host_whitelist_hosts "$config_file"
+        local current_enabled
+        current_enabled=$(fn_st_get_host_whitelist_enabled "$config_file")
+
+        tput reset
+        echo -e "${BLUE}=== 酒馆 Host 白名单管理 ===${NC}"
+        echo -e "状态: $( [[ "$current_enabled" == "true" ]] && echo -e "${GREEN}已启用${NC}" || echo -e "${YELLOW}未启用${NC}" )"
+        echo -e "说明: 仅填写域名，不要填协议/端口/IP。支持 .example.com 子域匹配。"
+        echo -e "------------------------"
+        if [ ${#ST_HOSTS[@]} -eq 0 ]; then
+            echo -e "当前白名单域名: ${YELLOW}(空)${NC}"
+        else
+            echo -e "当前白名单域名:"
+            local i=1
+            local host_item
+            for host_item in "${ST_HOSTS[@]}"; do
+                echo -e "  [$i] ${CYAN}${host_item}${NC}"
+                ((i++))
+            done
+        fi
+        echo -e "------------------------"
+        echo -e "  [1] 添加域名 (支持多个，空格/逗号分隔)"
+        echo -e "  [2] 删除指定域名 (按编号)"
+        echo -e "  [3] 清空全部域名"
+        echo -e "  [4] 仅启用白名单 (enabled=true)"
+        echo -e "  [0] 返回上一级"
+        echo -e "------------------------"
+        read -rp "请输入选项: " host_choice < /dev/tty
+        [[ -z "$host_choice" ]] && continue
+
+        case "$host_choice" in
+            1)
+                read -rp "请输入域名（示例: example.com, .trycloudflare.com）: " host_input < /dev/tty
+                if [ -z "$host_input" ]; then
+                    log_warn "输入为空，已取消。"
+                    sleep 1
+                    continue
+                fi
+
+                local normalized_input
+                normalized_input=$(echo "$host_input" | tr ',' ' ')
+                read -ra host_candidates <<< "$normalized_input"
+
+                local added_count=0
+                local invalid_hosts=()
+                local candidate
+                for candidate in "${host_candidates[@]}"; do
+                    candidate=$(echo "$candidate" | xargs)
+                    candidate=${candidate,,}
+                    [ -z "$candidate" ] && continue
+
+                    if ! fn_st_validate_host_entry "$candidate"; then
+                        invalid_hosts+=("$candidate")
+                        continue
+                    fi
+
+                    local exists=false
+                    local existing
+                    for existing in "${ST_HOSTS[@]}"; do
+                        if [ "$existing" = "$candidate" ]; then
+                            exists=true
+                            break
+                        fi
+                    done
+                    if [ "$exists" = false ]; then
+                        ST_HOSTS+=("$candidate")
+                        ((added_count++))
+                    fi
+                done
+
+                if [ $added_count -eq 0 ] && [ ${#invalid_hosts[@]} -eq 0 ]; then
+                    log_warn "没有可新增的域名（可能全部重复）。"
+                    sleep 1
+                    continue
+                fi
+
+                local hosts_inline
+                hosts_inline=$(fn_st_build_hosts_inline)
+                fn_st_write_host_whitelist_config "$config_file" "$hosts_inline" || { sleep 2; continue; }
+                log_info "正在重启酒馆以应用白名单配置..."
+                cd "$project_dir" && $compose_cmd restart
+                log_success "已更新白名单配置。"
+                if [ ${#invalid_hosts[@]} -gt 0 ]; then
+                    log_warn "以下项格式无效，已跳过: ${invalid_hosts[*]}"
+                fi
+                sleep 2
+                ;;
+            2)
+                if [ ${#ST_HOSTS[@]} -eq 0 ]; then
+                    log_warn "当前无可删除域名。"
+                    sleep 1
+                    continue
+                fi
+
+                read -rp "请输入要删除的编号: " del_index < /dev/tty
+                if [[ ! "$del_index" =~ ^[0-9]+$ ]] || [ "$del_index" -lt 1 ] || [ "$del_index" -gt ${#ST_HOSTS[@]} ]; then
+                    log_warn "编号无效。"
+                    sleep 1
+                    continue
+                fi
+
+                unset 'ST_HOSTS[del_index-1]'
+                ST_HOSTS=("${ST_HOSTS[@]}")
+
+                local hosts_inline
+                hosts_inline=$(fn_st_build_hosts_inline)
+                fn_st_write_host_whitelist_config "$config_file" "$hosts_inline" || { sleep 2; continue; }
+                log_info "正在重启酒馆以应用白名单配置..."
+                cd "$project_dir" && $compose_cmd restart
+                log_success "域名已删除。"
+                sleep 2
+                ;;
+            3)
+                read -rp "确认清空全部白名单域名？[y/N]: " confirm_clear < /dev/tty
+                if [[ ! "$confirm_clear" =~ ^[Yy]$ ]]; then
+                    log_info "操作已取消。"
+                    sleep 1
+                    continue
+                fi
+
+                ST_HOSTS=()
+                fn_st_write_host_whitelist_config "$config_file" "[]" || { sleep 2; continue; }
+                log_info "正在重启酒馆以应用白名单配置..."
+                cd "$project_dir" && $compose_cmd restart
+                log_success "白名单域名已清空。"
+                sleep 2
+                ;;
+            4)
+                local hosts_inline
+                hosts_inline=$(fn_st_build_hosts_inline)
+                fn_st_write_host_whitelist_config "$config_file" "$hosts_inline" || { sleep 2; continue; }
+                log_info "正在重启酒馆以应用白名单配置..."
+                cd "$project_dir" && $compose_cmd restart
+                log_success "已启用 Host 白名单。"
+                sleep 2
                 ;;
             0) break ;;
             *) log_warn "无效输入"; sleep 1 ;;
@@ -3113,6 +3517,7 @@ fn_st_docker_manager() {
         echo -e "  [7] 查看资源占用 (stats)"
         echo -e "  [8] 查看实时日志 (logs -f)"
         echo -e "  [9] ${CYAN}代理配置管理${NC}"
+        echo -e "  [10] ${CYAN}Host 白名单域名管理${NC}"
         echo -e "  [x] 彻底卸载酒馆"
         echo -e "  [0] 返回上一级"
         echo -e "------------------------"
@@ -3169,6 +3574,9 @@ fn_st_docker_manager() {
                 ;;
             9)
                 fn_st_proxy_manager "$project_dir" "$config_file" "$compose_file" "$compose_cmd"
+                ;;
+            10)
+                fn_st_host_whitelist_manager "$project_dir" "$config_file" "$compose_cmd"
                 ;;
             x|X)
                 if fn_uninstall_docker_app "sillytavern" "SillyTavern" "$project_dir" "ghcr.io/sillytavern/sillytavern:latest"; then
@@ -3304,6 +3712,7 @@ fn_api_docker_manager() {
         echo -e "  [5] 查看实时日志 (logs -f)"
         if [[ "$container_name" == "ais2api" ]]; then
             echo -e "  [6] ${CYAN}代理配置管理${NC}"
+            echo -e "  [7] ${CYAN}迁移到新镜像 (ibuhub)${NC}"
         fi
         echo -e "  [x] 彻底卸载服务"
         echo -e "  [0] 返回上一级"
@@ -3324,6 +3733,14 @@ fn_api_docker_manager() {
             6)
                 if [[ "$container_name" == "ais2api" ]]; then
                     fn_ais_proxy_manager "$project_dir" "$compose_file" "$compose_cmd"
+                else
+                    log_warn "无效输入"
+                fi
+                ;;
+            7)
+                if [[ "$container_name" == "ais2api" ]]; then
+                    fn_migrate_ais2api_to_ibuhub "$project_dir" "$compose_file" "$compose_cmd"
+                    read -rp "操作完成，按 Enter 继续..." < /dev/tty
                 else
                     log_warn "无效输入"
                 fi
