@@ -12,7 +12,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-readonly SCRIPT_VERSION="v5.15"
+readonly SCRIPT_VERSION="v5.16"
 GUGU_MODE="prod"
 
 if [ "$GUGU_MODE" = "prod" ]; then
@@ -2270,7 +2270,7 @@ install_sillytavern() {
     INSTALL_DIR="${parent_path}/sillytavern"
 
     # 路径安全检查：禁止安装到系统关键目录
-    if [[ "$INSTALL_DIR" =~ ^/(bin|boot|dev|etc|lib|lib64|proc|root|sbin|sys|usr)(/|$) ]]; then
+    if [[ "$INSTALL_DIR" =~ ^/(bin|boot|dev|etc|lib|lib64|proc|sbin|sys|usr)(/|$) ]]; then
         log_error "安全限制：不允许安装到系统关键目录 ($INSTALL_DIR)。请选择其他路径。" || return 1
     fi
 
@@ -2440,7 +2440,7 @@ install_gcli2api() {
     local INSTALL_DIR="${parent_path}/gcli2api"
 
     # 路径安全检查：禁止安装到系统关键目录
-    if [[ "$INSTALL_DIR" =~ ^/(bin|boot|dev|etc|lib|lib64|proc|root|sbin|sys|usr)(/|$) ]]; then
+    if [[ "$INSTALL_DIR" =~ ^/(bin|boot|dev|etc|lib|lib64|proc|sbin|sys|usr)(/|$) ]]; then
         log_error "安全限制：不允许安装到系统关键目录 ($INSTALL_DIR)。请选择其他路径。" || return 1
     fi
 
@@ -2665,7 +2665,7 @@ install_ais2api() {
     local INSTALL_DIR="${parent_path}/ais2api"
 
     # 路径安全检查：禁止安装到系统关键目录
-    if [[ "$INSTALL_DIR" =~ ^/(bin|boot|dev|etc|lib|lib64|proc|root|sbin|sys|usr)(/|$) ]]; then
+    if [[ "$INSTALL_DIR" =~ ^/(bin|boot|dev|etc|lib|lib64|proc|sbin|sys|usr)(/|$) ]]; then
         log_error "安全限制：不允许安装到系统关键目录 ($INSTALL_DIR)。请选择其他路径。" || return 1
     fi
 
@@ -2732,7 +2732,7 @@ install_warp() {
     local INSTALL_DIR="${parent_path}/warp"
 
     # 路径安全检查：禁止安装到系统关键目录
-    if [[ "$INSTALL_DIR" =~ ^/(bin|boot|dev|etc|lib|lib64|proc|root|sbin|sys|usr)(/|$) ]]; then
+    if [[ "$INSTALL_DIR" =~ ^/(bin|boot|dev|etc|lib|lib64|proc|sbin|sys|usr)(/|$) ]]; then
         log_error "安全限制：不允许安装到系统关键目录 ($INSTALL_DIR)。请选择其他路径。" || return 1
     fi
 
