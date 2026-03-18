@@ -54,7 +54,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v5.12test${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v5.13test${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
     echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
 }
@@ -89,7 +89,7 @@ fn_print_header() {
 }
 
 fn_print_success() {
-    echo -e "${GREEN}✓ ${BOLD}$1${NC}"
+    echo -e "${GREEN}✓ ${BOLD}$1${NC}" >&2
 }
 
 fn_print_warning() {
@@ -126,7 +126,7 @@ fn_read_yes_no_prompt() {
     local note="$3"
 
     if [[ -n "$note" ]]; then
-        echo -e "${YELLOW}${note}${NC}"
+        echo -e "${YELLOW}${note}${NC}" >&2
     fi
 
     local suffix
@@ -367,17 +367,17 @@ fn_test_basic_internet_connectivity() {
 fn_assert_basic_internet_connectivity() {
     local operation_name="$1"
 
-    fn_print_warning "正在检测当前网络连通性..."
+    fn_print_warning "正在检测当前网络连通性（msftconnecttest / baidu / qq）..."
     local probe
     if probe="$(fn_test_basic_internet_connectivity)"; then
         local url elapsed
         IFS='|' read -r url elapsed <<<"$probe"
-        fn_print_success "网络检测通过 (${url}，耗时 $(fn_format_seconds "$elapsed"))。"
+        fn_print_success "网络检测通过 (${url}，耗时 $(fn_format_seconds "$elapsed"))。" >&2
         return 0
     fi
 
     fn_print_error "${operation_name} 前检测到当前网络不可用，已中止。"
-    echo -e "${CYAN}请先确认网络已连通；如需代理，请在主菜单 [9] 配置后重试。${NC}"
+    echo -e "${CYAN}请先确认网络已连通；如需代理，请在主菜单 [9] 配置后重试。${NC}" >&2
     return 1
 }
 
@@ -441,16 +441,16 @@ fn_assert_github_direct_connectivity() {
     fi
 
     fn_print_error "${operation_name} 前未能连通 GitHub 官方线路，已中止。"
-    echo -e "${CYAN}该操作仅允许直连 GitHub，请检查代理设置、Git 全局代理或网络环境后重试。${NC}"
+    echo -e "${CYAN}该操作仅允许直连 GitHub，请检查代理设置、Git 全局代理或网络环境后重试。${NC}" >&2
     return 1
 }
 
 fn_write_git_network_troubleshooting() {
     fn_print_error "网络连接失败，可能是代理配置问题。"
-    echo -e "${CYAN}  请检查：${NC}"
-    echo -e "${CYAN}  1. 如果您【需要】使用代理：请确保代理软件已正常运行，并在助手内正确配置代理端口（主菜单 -> 9）。${NC}"
-    echo -e "${CYAN}  2. 如果您【不】使用代理：请检查并清除之前可能设置过的 Git 全局代理。${NC}"
-    echo -e "${YELLOW}     (可在任意终端执行命令： git config --global --unset http.proxy 后重试)${NC}"
+    echo -e "${CYAN}  请检查：${NC}" >&2
+    echo -e "${CYAN}  1. 如果您【需要】使用代理：请确保代理软件已正常运行，并在助手内正确配置代理端口（主菜单 -> 9）。${NC}" >&2
+    echo -e "${CYAN}  2. 如果您【不】使用代理：请检查并清除之前可能设置过的 Git 全局代理。${NC}" >&2
+    echo -e "${YELLOW}     (可在任意终端执行命令： git config --global --unset http.proxy 后重试)${NC}" >&2
 }
 
 fn_get_authenticated_github_url() {
@@ -573,19 +573,23 @@ fn_resolve_download_route() {
     fi
 
     local google_probe google_url google_elapsed google_fluent
+    fn_print_warning "正在检测 Google 可达性（用于判断是否建议 GitHub 官方线路）..."
     if google_probe="$(fn_test_google_reachability)"; then
         IFS='|' read -r google_url google_elapsed google_fluent <<<"$google_probe"
         if [[ "$google_fluent" == "true" ]]; then
-            fn_print_success "检测到 Google 可流畅访问 (${google_url}，耗时 $(fn_format_seconds "$google_elapsed"))。"
-            if fn_read_yes_no_prompt "使用 GitHub 官方线路" true "输入 n 将测速镜像。"; then
+            fn_print_success "Google 检测结果：可流畅访问 (${google_url}，耗时 $(fn_format_seconds "$google_elapsed"))。" >&2
+            fn_print_warning "判定：建议优先使用 GitHub 官方线路；输入 n 将进入镜像测速。"
+            if fn_read_yes_no_prompt "是否使用 GitHub 官方线路（推荐）" true "回车=是；输入 n=测速镜像并手动选择。"; then
                 echo "github.com|${git_url}"
                 return 0
             fi
         else
-            fn_print_warning "检测到 Google 可访问但不够流畅 ($(fn_format_seconds "$google_elapsed"))，将直接测速全部镜像。"
+            fn_print_warning "Google 检测结果：可访问但不够流畅 (${google_url}，耗时 $(fn_format_seconds "$google_elapsed"))。"
+            fn_print_warning "判定：跳过 GitHub 直连询问，直接测速全部镜像线路。"
         fi
     else
-        fn_print_warning "检测到 Google 无法流畅访问，将按国内环境直接测速全部镜像。"
+        fn_print_warning "Google 检测结果：不可达或超时。"
+        fn_print_warning "判定：按国内环境直接测速全部镜像线路。"
     fi
 
     local mirror_candidates=()
@@ -595,7 +599,7 @@ fn_resolve_download_route() {
         return 1
     fi
 
-    fn_print_warning "正在并行测速 ${#mirror_candidates[@]} 条镜像线路，请稍候..."
+    fn_print_warning "正在并行测速 ${#mirror_candidates[@]} 条镜像线路（仅镜像，不含 GitHub 官方）..."
     local measured
     mapfile -t measured < <(printf '%s\n' "${mirror_candidates[@]}" | fn_measure_git_candidates 12)
     if [[ ${#measured[@]} -eq 0 ]]; then
@@ -634,19 +638,19 @@ fn_resolve_download_route() {
     local i
     for i in "${!successful[@]}"; do
         IFS='|' read -r elapsed name host is_official url <<<"${successful[$i]}"
-        printf "  [%2d] %s - Git %s\n" "$((i + 1))" "$name" "$(fn_format_seconds "$elapsed")"
+        printf "  [%2d] %s - Git %s\n" "$((i + 1))" "$name" "$(fn_format_seconds "$elapsed")" >&2
     done
     for line in "${failed[@]}"; do
         IFS='|' read -r name host is_official url <<<"$line"
-        echo -e "  ${RED}✗${NC} ${name}"
+        echo -e "  ${RED}✗${NC} ${name}" >&2
     done
 
     local fastest_elapsed fastest_name fastest_host fastest_url
     IFS='|' read -r fastest_elapsed fastest_name fastest_host is_official fastest_url <<<"${successful[0]}"
-    fn_print_success "最快线路：${fastest_name} (Git $(fn_format_seconds "$fastest_elapsed"))"
+    fn_print_success "最快线路：${fastest_name} (Git $(fn_format_seconds "$fastest_elapsed"))" >&2
 
     while true; do
-        echo -e "${YELLOW}回车使用最快线路，输入编号选择其他线路，0 取消。${NC}"
+        echo -e "${YELLOW}回车使用最快线路，输入编号选择其他线路，0 取消。${NC}" >&2
         local choice
         choice="$(fn_read_text_prompt "线路选择" "" "回车/编号/0" "false")"
 
