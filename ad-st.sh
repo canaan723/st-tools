@@ -25,7 +25,6 @@ BACKUP_LIMIT=10
 SCRIPT_SELF_PATH=$(readlink -f "$0")
 SCRIPT_URL="https://gitee.com/canaan723/st-tools/raw/main/ad-st.sh"
 UPDATE_FLAG_FILE="/data/data/com.termux/files/usr/tmp/.st_assistant_update_flag"
-CACHED_MIRRORS=()
 
 CONFIG_DIR="$HOME/.config/ad-st"
 CONFIG_FILE="$CONFIG_DIR/backup_prefs.conf"
@@ -54,8 +53,11 @@ MIRROR_LIST=(
     "https://hubproxy-advj.onrender.com/https://github.com/SillyTavern/SillyTavern.git"
 )
 
+GIT_LAST_LOG_FILE=""
+PKG_NONINTERACTIVE_NOTICE_SHOWN="false"
+
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v5.15${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v5.19${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
     echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
 }
@@ -73,8 +75,7 @@ fn_show_agreement_if_first_run() {
         echo -e " （持续更新）"
         echo -e "\n${GREEN}发现盗卖的欢迎告诉我，感谢支持。${NC}"
         echo -e "─────────────────────────────────────────────────────────────"
-        read -p "请输入 'yes' 表示你已阅读并同意以上条款: " confirm
-        if [[ "$confirm" == "yes" ]]; then
+        if fn_read_keyword_confirm "yes" "表示你已阅读并同意以上条款"; then
             mkdir -p "$CONFIG_DIR"
             touch "$AGREEMENT_FILE"
             echo -e "\n${GREEN}感谢您的支持！正在进入助手...${NC}"
@@ -91,7 +92,7 @@ fn_print_header() {
 }
 
 fn_print_success() {
-    echo -e "${GREEN}✓ ${BOLD}$1${NC}"
+    echo -e "${GREEN}✓ ${BOLD}$1${NC}" >&2
 }
 
 fn_print_warning() {
@@ -111,6 +112,285 @@ fn_print_error_exit() {
 fn_press_any_key() {
     echo -e "\n${CYAN}请按任意键返回...${NC}"
     read -n 1 -s
+}
+
+fn_run_git_with_progress() {
+    local operation_name="$1"
+    local sanitize_output="${2:-false}"
+    shift 2
+
+    if [[ $# -eq 0 ]]; then
+        fn_print_error "内部错误：未提供 Git 命令。"
+        return 2
+    fi
+
+    if [[ -n "$GIT_LAST_LOG_FILE" && -f "$GIT_LAST_LOG_FILE" ]]; then
+        rm -f "$GIT_LAST_LOG_FILE"
+    fi
+    GIT_LAST_LOG_FILE="$(mktemp)"
+
+    fn_print_warning "${operation_name}：正在执行 Git 操作并实时显示进度..."
+    if [[ "$sanitize_output" == "true" ]]; then
+        (
+            "$@" 2>&1 \
+                | awk '{ gsub(/https:\/\/[^\/@[:space:]]+@github\.com\//, "https://***@github.com/"); print; fflush(); }' \
+                | tee "$GIT_LAST_LOG_FILE"
+            exit ${PIPESTATUS[0]}
+        )
+    else
+        (
+            "$@" 2>&1 | tee "$GIT_LAST_LOG_FILE"
+            exit ${PIPESTATUS[0]}
+        )
+    fi
+}
+
+fn_git_last_log_contains_regex() {
+    local pattern="$1"
+    [[ -n "$GIT_LAST_LOG_FILE" && -f "$GIT_LAST_LOG_FILE" ]] || return 1
+    grep -qE "$pattern" "$GIT_LAST_LOG_FILE"
+}
+
+fn_git_last_log_tail() {
+    local lines="${1:-20}"
+    [[ -n "$GIT_LAST_LOG_FILE" && -f "$GIT_LAST_LOG_FILE" ]] || return 0
+    tail -n "$lines" "$GIT_LAST_LOG_FILE"
+}
+
+fn_git_last_log_conflict_preview() {
+    local lines="${1:-8}"
+    [[ -n "$GIT_LAST_LOG_FILE" && -f "$GIT_LAST_LOG_FILE" ]] || return 0
+    local preview
+    preview="$(
+        {
+            grep -Eo 'CONFLICT[^[:cntrl:]]* in [^[:space:]]+' "$GIT_LAST_LOG_FILE" 2>/dev/null | sed -E 's/.* in //'
+            grep -E '^[[:space:]]+[^[:space:]]' "$GIT_LAST_LOG_FILE" 2>/dev/null | sed -E 's/^[[:space:]]+//'
+            grep -Eo '(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|npm-shrinkwrap\.json|\.git/index\.lock|index\.lock)' "$GIT_LAST_LOG_FILE" 2>/dev/null
+        } | sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g' \
+          | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' \
+          | grep -vE '^(Please commit|Aborting|error:|fatal:|hint:|remote:|To )' \
+          | awk 'NF && !seen[$0]++'
+    )"
+
+    if [[ -z "$preview" ]]; then
+        preview="$(fn_git_last_log_tail "$lines" \
+            | sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g' \
+            | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+    else
+        preview="$(printf '%s\n' "$preview" | head -n "$lines")"
+    fi
+
+    printf '%s' "$preview"
+}
+
+fn_git_unmerged_files_preview() {
+    local lines="${1:-8}"
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+
+    local files
+    files="$(git diff --name-only --diff-filter=U 2>/dev/null | sed '/^[[:space:]]*$/d')"
+    [[ -n "$files" ]] || return 0
+
+    local total preview
+    total="$(printf '%s\n' "$files" | wc -l | awk '{print $1}')"
+    preview="$(printf '%s\n' "$files" | head -n "$lines")"
+    if [[ "$total" =~ ^[0-9]+$ ]] && (( total > lines )); then
+        preview="${preview}"$'\n'"...（其余省略，共 ${total} 个未解决冲突文件）"
+    fi
+    printf '%s' "$preview"
+}
+
+fn_git_repo_issue_summary() {
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+
+    local issues=()
+    local unmerged_count
+    unmerged_count="$(git diff --name-only --diff-filter=U 2>/dev/null | sed '/^[[:space:]]*$/d' | wc -l | awk '{print $1}')"
+    if [[ "$unmerged_count" =~ ^[0-9]+$ ]] && (( unmerged_count > 0 )); then
+        issues+=("未解决冲突文件: ${unmerged_count} 个")
+    fi
+
+    [[ -f .git/MERGE_HEAD ]] && issues+=("检测到未完成的 merge 状态")
+    [[ -f .git/CHERRY_PICK_HEAD ]] && issues+=("检测到未完成的 cherry-pick 状态")
+    [[ -f .git/REVERT_HEAD ]] && issues+=("检测到未完成的 revert 状态")
+    [[ -d .git/rebase-merge || -d .git/rebase-apply ]] && issues+=("检测到未完成的 rebase 状态")
+
+    local lock_files=()
+    local lock_path
+    for lock_path in .git/index.lock .git/shallow.lock .git/packed-refs.lock .git/config.lock; do
+        if [[ -f "$lock_path" ]]; then
+            lock_files+=("${lock_path#.git/}")
+        fi
+    done
+    if (( ${#lock_files[@]} > 0 )); then
+        issues+=("Git 锁文件残留: ${lock_files[*]}")
+    fi
+
+    if (( ${#issues[@]} == 0 )); then
+        return 1
+    fi
+
+    printf '%s\n' "${issues[@]}"
+    return 0
+}
+
+fn_git_workspace_auto_repair() {
+    local branch="${1:-$REPO_BRANCH}"
+    local deep_clean="${2:-false}"
+
+    fn_print_warning "正在执行 Git 一键自愈..."
+
+    rm -f .git/index.lock .git/shallow.lock .git/packed-refs.lock .git/config.lock 2>/dev/null || true
+
+    git merge --abort >/dev/null 2>&1 || true
+    git rebase --abort >/dev/null 2>&1 || true
+    git cherry-pick --abort >/dev/null 2>&1 || true
+    git revert --abort >/dev/null 2>&1 || true
+    git am --abort >/dev/null 2>&1 || true
+
+    if [[ "$deep_clean" == "true" ]]; then
+        if ! git reset --hard "origin/$branch" >/dev/null 2>&1; then
+            git reset --hard HEAD >/dev/null 2>&1 || return 1
+        fi
+        git checkout -B "$branch" "origin/$branch" >/dev/null 2>&1 || git checkout -B "$branch" >/dev/null 2>&1 || true
+        git clean -fd >/dev/null 2>&1 || return 1
+    else
+        git reset --merge >/dev/null 2>&1 || true
+    fi
+
+    return 0
+}
+
+fn_trim() {
+    local s="$1"
+    s="${s//$'\r'/}"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+}
+
+# Returns 0 for yes, 1 for no.
+fn_read_yes_no_prompt() {
+    local label="$1"
+    local default_yes="${2:-true}"
+    local note="$3"
+
+    if [[ -n "$note" ]]; then
+        echo -e "${YELLOW}${note}${NC}" >&2
+    fi
+
+    local suffix
+    if [[ "$default_yes" == "true" ]]; then
+        suffix='[Y/n]'
+    else
+        suffix='[y/N]'
+    fi
+
+    local input
+    while true; do
+        read -r -p "${label} ${suffix}: " input
+        input="$(fn_trim "$input")"
+        input="${input,,}"
+
+        if [[ -z "$input" ]]; then
+            [[ "$default_yes" == "true" ]] && return 0 || return 1
+        fi
+        case "$input" in
+            y|yes) return 0 ;;
+            n|no) return 1 ;;
+            *) fn_print_warning "请输入 y 或 n。" ;;
+        esac
+    done
+}
+
+# Prints the value to stdout.
+fn_read_text_prompt() {
+    local label="$1"
+    local default_value="$2"
+    local hint="$3"
+    local required="${4:-false}"
+
+    local has_default=false
+    if [[ -n "$default_value" ]]; then
+        has_default=true
+    fi
+
+    local prompt="$label"
+    if [[ -n "$hint" ]]; then
+        prompt="${prompt} [${hint}]"
+    elif $has_default; then
+        prompt="${prompt} [默认: ${default_value}]"
+    fi
+
+    local input
+    while true; do
+        read -r -p "${prompt}: " input
+        input="$(fn_trim "$input")"
+        if [[ -z "$input" ]]; then
+            if $has_default; then
+                printf '%s' "$default_value"
+                return 0
+            fi
+            if [[ "$required" == "true" ]]; then
+                fn_print_warning "不能为空，请重试。"
+                continue
+            fi
+            printf '%s' ""
+            return 0
+        fi
+        printf '%s' "$input"
+        return 0
+    done
+}
+
+fn_choice_allowed() {
+    local choice="$1"
+    local allowed="$2"
+
+    [[ "$choice" =~ ^[0-9]+$ ]] || return 1
+
+    local part
+    IFS='/' read -ra parts <<<"$allowed"
+    for part in "${parts[@]}"; do
+        if [[ "$part" =~ ^[0-9]+-[0-9]+$ ]]; then
+            local start="${part%-*}"
+            local end="${part#*-}"
+            if (( choice >= start && choice <= end )); then
+                return 0
+            fi
+        elif [[ "$part" =~ ^[0-9]+$ ]]; then
+            if (( choice == part )); then
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
+# Prints the choice to stdout.
+fn_read_menu_prompt() {
+    local allowed="$1"
+    local input
+    while true; do
+        read -r -p $'\n'"请选择 [${allowed}]: " input
+        input="$(fn_trim "$input")"
+        if fn_choice_allowed "$input" "$allowed"; then
+            printf '%s' "$input"
+            return 0
+        fi
+        fn_print_warning "输入无效，请按提示重试。"
+    done
+}
+
+# Returns 0 if keyword matches (case-insensitive).
+fn_read_keyword_confirm() {
+    local keyword="${1:-yes}"
+    local action_text="${2:-继续}"
+
+    local input
+    read -r -p "输入 ${keyword} ${action_text}: " input
+    input="$(fn_trim "$input")"
+    [[ "${input,,}" == "${keyword,,}" ]]
 }
 
 fn_check_command() {
@@ -203,91 +483,345 @@ fn_get_user_folders() {
     echo "${user_folders[@]}"
 }
 
-fn_find_fastest_mirror() {
-    local mode="$1"
-    if [ -z "$mode" ]; then mode="all"; fi
 
-    if [[ "$mode" != "all" && ${#CACHED_MIRRORS[@]} -gt 0 ]]; then
-        fn_print_success "已使用缓存的测速结果。" >&2
-        printf '%s\n' "${CACHED_MIRRORS[@]}"
+fn_format_seconds() {
+    local seconds="$1"
+    if [[ -z "$seconds" ]]; then
+        printf '%s' "-"
         return 0
     fi
-    if [[ "$mode" == "all" ]]; then
-        CACHED_MIRRORS=()
+    printf "%.2fs" "$seconds"
+}
+
+fn_invoke_web_probe() {
+    local url="$1"
+    local timeout_seconds="${2:-6}"
+
+    timeout "${timeout_seconds}s" curl -L -o /dev/null -s -w "%{time_total}" "$url" 2>/dev/null
+}
+
+fn_test_basic_internet_connectivity() {
+    local probe_urls=(
+        "https://www.msftconnecttest.com/connecttest.txt"
+        "https://www.baidu.com"
+        "https://www.qq.com"
+    )
+
+    local url elapsed
+    for url in "${probe_urls[@]}"; do
+        elapsed="$(fn_invoke_web_probe "$url" 6)" && [[ -n "$elapsed" ]] && { echo "${url}|${elapsed}"; return 0; }
+    done
+    return 1
+}
+
+fn_assert_basic_internet_connectivity() {
+    local operation_name="$1"
+
+    fn_print_warning "正在检测当前网络连通性（msftconnecttest / baidu / qq）..."
+    local probe
+    if probe="$(fn_test_basic_internet_connectivity)"; then
+        local url elapsed
+        IFS='|' read -r url elapsed <<<"$probe"
+        fn_print_success "网络检测通过 (${url}，耗时 $(fn_format_seconds "$elapsed"))。" >&2
+        return 0
     fi
 
-    fn_print_warning "开始测试 Git 镜像连通性与速度 (用于下载)..."
-    local github_url="https://github.com/SillyTavern/SillyTavern.git"
-    local sorted_successful_mirrors=()
-    
-    if [[ "$mode" == "official_only" || "$mode" == "all" ]]; then
-        if [[ " ${MIRROR_LIST[*]} " =~ " ${github_url} " ]]; then
-            echo -e "  - 优先测试: GitHub 官方源..." >&2
-            if timeout 10s git ls-remote "$github_url" HEAD >/dev/null 2>&1; then
-                fn_print_success "GitHub 官方源直连可用！" >&2
-                sorted_successful_mirrors+=("$github_url")
-            else
-                fn_print_error "GitHub 官方源连接超时。"
-            fi
+    fn_print_error "${operation_name} 前检测到当前网络不可用，已中止。"
+    echo -e "${CYAN}请先确认网络已连通；如需代理，请在主菜单 [9] 配置后重试。${NC}" >&2
+    return 1
+}
+
+fn_elapsed_is_le() {
+    local value="$1"
+    local threshold="$2"
+    awk -v v="$value" -v t="$threshold" 'BEGIN { exit !((v + 0) <= (t + 0)) }'
+}
+
+fn_test_google_reachability() {
+    local google_urls=(
+        "https://www.gstatic.com/generate_204"
+        "https://www.google.com/generate_204"
+    )
+
+    local url elapsed fluent
+    for url in "${google_urls[@]}"; do
+        elapsed="$(fn_invoke_web_probe "$url" 6)" && [[ -n "$elapsed" ]] || continue
+        fluent="false"
+        if fn_elapsed_is_le "$elapsed" "2.5"; then
+            fluent="true"
         fi
-        if [[ "$mode" == "official_only" ]]; then
-            if [ ${#sorted_successful_mirrors[@]} -gt 0 ]; then
-                printf '%s\n' "${sorted_successful_mirrors[@]}"
-                return 0
-            else
-                return 1
-            fi
-        fi
-    fi
+        echo "${url}|${elapsed}|${fluent}"
+        return 0
+    done
+    return 1
+}
 
-    if [[ "$mode" == "mirrors_only" || "$mode" == "all" ]]; then
-        local other_mirrors=()
-        for mirror in "${MIRROR_LIST[@]}"; do
-            [[ "$mirror" != "$github_url" ]] && other_mirrors+=("$mirror")
-        done
+fn_assert_github_direct_connectivity() {
+    local operation_name="$1"
 
-        if [ ${#other_mirrors[@]} -gt 0 ]; then
-            echo -e "${YELLOW}已启动并行测试，将完整测试所有镜像线路...${NC}" >&2
-            local results_file
-            results_file=$(mktemp)
-            local pids=()
-            for mirror_url in "${other_mirrors[@]}"; do
-                (
-                    local mirror_host
-                    mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
-                    local start_time
-                    start_time=$(date +%s.%N)
-                    if timeout 10s git ls-remote "$mirror_url" HEAD >/dev/null 2>&1; then
-                        local end_time
-                        end_time=$(date +%s.%N)
-                        local elapsed_time
-                        elapsed_time=$(echo "$end_time - $start_time" | bc)
-                        echo "$elapsed_time $mirror_url" >>"$results_file"
-                        echo -e "  - 测试: ${CYAN}${mirror_host}${NC} - 耗时 ${GREEN}${elapsed_time}s${NC} ${GREEN}[成功]${NC}" >&2
-                    else
-                        echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${RED}[失败]${NC}" >&2
-                    fi
-                ) &
-                pids+=($!)
-            done
-            wait "${pids[@]}"
-
-            if [ -s "$results_file" ]; then
-                mapfile -t other_successful_mirrors < <(sort -n "$results_file" | awk '{print $2}')
-                sorted_successful_mirrors+=("${other_successful_mirrors[@]}")
-            fi
-            rm -f "$results_file"
-        fi
-    fi
-
-    if [ ${#sorted_successful_mirrors[@]} -gt 0 ]; then
-        fn_print_success "测试完成，找到 ${#sorted_successful_mirrors[@]} 个可用线路。" >&2
-        CACHED_MIRRORS=("${sorted_successful_mirrors[@]}")
-        printf '%s\n' "${CACHED_MIRRORS[@]}"
-    else
-        fn_print_error "所有线路均测试失败。"
+    if ! fn_assert_basic_internet_connectivity "$operation_name"; then
         return 1
     fi
+
+    fn_print_warning "正在检测 Google 访问情况..."
+    local google_probe google_url google_elapsed google_fluent
+    if google_probe="$(fn_test_google_reachability)"; then
+        IFS='|' read -r google_url google_elapsed google_fluent <<<"$google_probe"
+        if [[ "$google_fluent" == "true" ]]; then
+            fn_print_success "Google 检测通过 (${google_url}，耗时 $(fn_format_seconds "$google_elapsed"))。"
+        else
+            fn_print_warning "Google 可访问但不够流畅 (${google_url}，耗时 $(fn_format_seconds "$google_elapsed"))。"
+        fi
+    else
+        fn_print_warning "Google 探测失败，继续检测 GitHub 官方线路。"
+    fi
+
+    fn_print_warning "正在检测 GitHub 官方线路连通性..."
+    local start_time end_time elapsed
+    start_time="$(date +%s.%N)"
+    if timeout 10s git -c credential.helper='' ls-remote "https://github.com/octocat/Hello-World.git" HEAD >/dev/null 2>&1; then
+        end_time="$(date +%s.%N)"
+        elapsed="$(echo "${end_time} - ${start_time}" | bc)"
+        if fn_elapsed_is_le "$elapsed" "4.0"; then
+            fn_print_success "GitHub 官方线路可直连 (Git $(fn_format_seconds "$elapsed"))。"
+        else
+            fn_print_warning "GitHub 官方线路可连通，但速度较慢 (Git $(fn_format_seconds "$elapsed"))。"
+        fi
+        return 0
+    fi
+
+    fn_print_error "${operation_name} 前未能连通 GitHub 官方线路，已中止。"
+    echo -e "${CYAN}该操作仅允许直连 GitHub，请检查代理设置、Git 全局代理或网络环境后重试。${NC}" >&2
+    return 1
+}
+
+fn_write_git_network_troubleshooting() {
+    fn_print_error "网络连接失败，可能是代理配置问题。"
+    echo -e "${CYAN}  请检查：${NC}" >&2
+    echo -e "${CYAN}  1. 如果您【需要】使用代理：请确保代理软件已正常运行，并在助手内正确配置代理端口（主菜单 -> 9）。${NC}" >&2
+    echo -e "${CYAN}  2. 如果您【不】使用代理：请检查并清除之前可能设置过的 Git 全局代理。${NC}" >&2
+    echo -e "${YELLOW}     (可在任意终端执行命令： git config --global --unset http.proxy 后重试)${NC}" >&2
+}
+
+fn_get_authenticated_github_url() {
+    local repo_url="$1"
+    local repo_token="$2"
+
+    if [[ -z "$repo_url" || -z "$repo_token" ]]; then
+        return 1
+    fi
+    if [[ "$repo_url" != https://github.com/* ]]; then
+        return 1
+    fi
+
+    local repo_path="${repo_url#https://github.com/}"
+    echo "https://${repo_token}@github.com/${repo_path}"
+}
+
+fn_sanitize_git_output() {
+    local text="$1"
+    echo "$text" | sed -E 's#https://[^/@[:space:]]+@github\.com/#https://***@github.com/#g'
+}
+
+fn_convert_github_url_to_mirror_url() {
+    local mirror_url="$1"
+    local github_url="$2"
+
+    if [[ "$github_url" != https://github.com/* ]]; then
+        echo ""
+        return 1
+    fi
+    local repo_path="${github_url#https://github.com/}"
+
+    if [[ "$mirror_url" == https://github.com/* ]]; then
+        echo "$github_url"
+        return 0
+    fi
+
+    if [[ "$mirror_url" == *"/gh/"* ]]; then
+        local base="${mirror_url%%/gh/*}"
+        echo "${base}/gh/${repo_path}"
+        return 0
+    fi
+
+    if [[ "$mirror_url" == *"/https://github.com/"* ]]; then
+        local base="${mirror_url%%/https://github.com/*}"
+        echo "${base}/${github_url}"
+        return 0
+    fi
+
+    if [[ "$mirror_url" == *"/github.com/"* ]]; then
+        local base="${mirror_url%%/github.com/*}"
+        echo "${base}/github.com/${repo_path}"
+        return 0
+    fi
+
+    echo ""
+    return 1
+}
+
+fn_get_github_git_candidates() {
+    local git_url="$1"
+
+    echo "GitHub 官方线路|github.com|true|${git_url}"
+
+    local mirror_url mirror_git_url mirror_host
+    for mirror_url in "${MIRROR_LIST[@]}"; do
+        if [[ "$mirror_url" == https://github.com/* ]]; then
+            continue
+        fi
+
+        mirror_git_url="$(fn_convert_github_url_to_mirror_url "$mirror_url" "$git_url")"
+        if [[ -z "$mirror_git_url" ]]; then
+            continue
+        fi
+
+        mirror_host="$(echo "$mirror_git_url" | sed -E 's#^https?://([^/]+)/?.*$#\1#')"
+        echo "镜像线路 (${mirror_host})|${mirror_host}|false|${mirror_git_url}"
+    done
+}
+
+# Reads candidates from stdin: name|host|is_official|git_url
+# Outputs: OK|elapsed|name|host|is_official|git_url  (elapsed in seconds)
+#          FAIL||name|host|is_official|git_url
+fn_measure_git_candidates() {
+    local timeout_seconds="${1:-12}"
+
+    local results_file
+    results_file="$(mktemp)"
+
+    local pids=()
+    while IFS='|' read -r name host is_official git_url; do
+        (
+            local start end elapsed
+            start="$(date +%s.%N)"
+            if timeout "${timeout_seconds}s" git ls-remote "$git_url" HEAD >/dev/null 2>&1; then
+                end="$(date +%s.%N)"
+                elapsed="$(echo "${end} - ${start}" | bc)"
+                echo "OK|${elapsed}|${name}|${host}|${is_official}|${git_url}" >>"$results_file"
+            else
+                echo "FAIL||${name}|${host}|${is_official}|${git_url}" >>"$results_file"
+            fi
+        ) &
+        pids+=($!)
+    done
+
+    if [[ ${#pids[@]} -gt 0 ]]; then
+        wait "${pids[@]}"
+    fi
+    cat "$results_file"
+    rm -f "$results_file"
+}
+
+# Outputs selected route: host|git_url
+fn_resolve_download_route() {
+    local operation_name="$1"
+    local git_url="$2"
+
+    if ! fn_assert_basic_internet_connectivity "$operation_name"; then
+        return 1
+    fi
+
+    local google_probe google_url google_elapsed google_fluent
+    fn_print_warning "正在检测 Google 可达性（用于判断是否建议 GitHub 官方线路）..."
+    if google_probe="$(fn_test_google_reachability)"; then
+        IFS='|' read -r google_url google_elapsed google_fluent <<<"$google_probe"
+        if [[ "$google_fluent" == "true" ]]; then
+            fn_print_success "Google 检测结果：可流畅访问 (${google_url}，耗时 $(fn_format_seconds "$google_elapsed"))。" >&2
+            fn_print_warning "判定：建议优先使用 GitHub 官方线路；输入 n 将进入镜像测速。"
+            if fn_read_yes_no_prompt "是否使用 GitHub 官方线路（推荐）" true "回车=是；输入 n=测速镜像并手动选择。"; then
+                echo "github.com|${git_url}"
+                return 0
+            fi
+        else
+            fn_print_warning "Google 检测结果：可访问但不够流畅 (${google_url}，耗时 $(fn_format_seconds "$google_elapsed"))。"
+            fn_print_warning "判定：跳过 GitHub 直连询问，直接测速全部镜像线路。"
+        fi
+    else
+        fn_print_warning "Google 检测结果：不可达或超时。"
+        fn_print_warning "判定：按国内环境直接测速全部镜像线路。"
+    fi
+
+    local mirror_candidates=()
+    mapfile -t mirror_candidates < <(fn_get_github_git_candidates "$git_url" | awk -F'|' '$3=="false"{print}')
+    if [[ ${#mirror_candidates[@]} -eq 0 ]]; then
+        fn_print_error "当前没有可用的 GitHub 镜像配置。"
+        return 1
+    fi
+
+    fn_print_warning "正在并行测速 ${#mirror_candidates[@]} 条镜像线路（仅镜像，不含 GitHub 官方）..."
+    local measured
+    mapfile -t measured < <(printf '%s\n' "${mirror_candidates[@]}" | fn_measure_git_candidates 12)
+    if [[ ${#measured[@]} -eq 0 ]]; then
+        fn_print_error "测速失败：未获得任何结果。"
+        return 1
+    fi
+
+    local tmp_success tmp_fail
+    tmp_success="$(mktemp)"
+    tmp_fail="$(mktemp)"
+
+    local line status elapsed name host is_official url
+    for line in "${measured[@]}"; do
+        IFS='|' read -r status elapsed name host is_official url <<<"$line"
+        if [[ "$status" == "OK" ]]; then
+            echo "${elapsed}|${name}|${host}|${is_official}|${url}" >>"$tmp_success"
+        else
+            echo "${name}|${host}|${is_official}|${url}" >>"$tmp_fail"
+        fi
+    done
+
+    mapfile -t successful < <(sort -n "$tmp_success")
+    mapfile -t failed < <(cat "$tmp_fail")
+    rm -f "$tmp_success" "$tmp_fail"
+
+    if [[ ${#successful[@]} -eq 0 ]]; then
+        fn_print_error "所有线路测速失败。"
+        fn_write_git_network_troubleshooting
+        if [[ "$google_fluent" == "true" ]]; then
+            fn_print_warning "如需改用 GitHub 官方线路，请重新执行本操作。"
+        fi
+        return 1
+    fi
+
+    fn_print_warning "测速完成："
+    local i
+    for i in "${!successful[@]}"; do
+        IFS='|' read -r elapsed name host is_official url <<<"${successful[$i]}"
+        printf "  [%2d] %s - Git %s\n" "$((i + 1))" "$name" "$(fn_format_seconds "$elapsed")" >&2
+        printf "       地址: %s\n" "$url" >&2
+    done
+    for line in "${failed[@]}"; do
+        IFS='|' read -r name host is_official url <<<"$line"
+        echo -e "  ${RED}✗${NC} ${name}" >&2
+        echo -e "      地址: ${url}" >&2
+    done
+
+    local fastest_elapsed fastest_name fastest_host fastest_url
+    IFS='|' read -r fastest_elapsed fastest_name fastest_host is_official fastest_url <<<"${successful[0]}"
+    fn_print_success "最快线路：${fastest_name} (Git $(fn_format_seconds "$fastest_elapsed"))" >&2
+
+    while true; do
+        echo -e "${YELLOW}回车使用最快线路，输入编号选择其他线路，0 取消。${NC}" >&2
+        local choice
+        choice="$(fn_read_text_prompt "线路选择" "" "回车/编号/0" "false")"
+
+        if [[ -z "$choice" ]]; then
+            echo "${fastest_host}|${fastest_url}"
+            return 0
+        fi
+        if [[ "$choice" == "0" ]]; then
+            return 1
+        fi
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#successful[@]} )); then
+            local selected="${successful[$((choice - 1))]}"
+            local sel_elapsed sel_name sel_host sel_is_official sel_url
+            IFS='|' read -r sel_elapsed sel_name sel_host sel_is_official sel_url <<<"$selected"
+            echo "${sel_host}|${sel_url}"
+            return 0
+        fi
+        fn_print_warning "输入无效，请按提示重试。"
+    done
 }
 
 fn_run_npm_install() {
@@ -324,6 +858,31 @@ fn_run_npm_install() {
     fi
 }
 
+fn_print_pkg_noninteractive_notice() {
+    if [[ "$PKG_NONINTERACTIVE_NOTICE_SHOWN" == "true" ]]; then
+        return 0
+    fi
+
+    echo -e "${CYAN}若系统包配置文件有差异，脚本会自动保留当前已安装版本并继续，避免安装过程停顿。${NC}"
+    PKG_NONINTERACTIVE_NOTICE_SHOWN="true"
+}
+
+fn_run_termux_apt_noninteractive() {
+    if [ $# -eq 0 ]; then
+        fn_print_error "内部错误：未提供软件包命令。"
+        return 2
+    fi
+
+    fn_print_pkg_noninteractive_notice
+    env DEBIAN_FRONTEND=noninteractive \
+        APT_LISTCHANGES_FRONTEND=none \
+        UCF_FORCE_CONFFOLD=1 \
+        apt -y \
+            -o Dpkg::Options::=--force-confdef \
+            -o Dpkg::Options::=--force-confold \
+            "$@"
+}
+
 fn_update_termux_source() {
     fn_print_header "1/5: 配置软件源"
     echo -e "${YELLOW}即将开始配置 Termux 软件源...${NC}"
@@ -337,7 +896,7 @@ fn_update_termux_source() {
     for i in {1..3}; do
         termux-change-repo
         fn_print_warning "正在更新软件包列表 (第 $i/3 次尝试)..."
-        if pkg update -y; then
+        if fn_run_termux_apt_noninteractive update; then
             fn_print_success "软件源配置并更新成功！"
             return 0
         fi
@@ -365,14 +924,8 @@ fn_git_ensure_identity() {
         clear
         fn_print_header "首次使用Git同步：配置身份"
         local user_name user_email
-        while true; do
-            read -p "请输入您的Git用户名 (例如 Your Name): " user_name
-            [[ -n "$user_name" ]] && break || fn_print_error "用户名不能为空！"
-        done
-        while true; do
-            read -p "请输入您的Git邮箱 (例如 you@example.com): " user_email
-            [[ -n "$user_email" ]] && break || fn_print_error "邮箱不能为空！"
-        done
+        user_name="$(fn_read_text_prompt "Git 用户名" "" "例如 Your Name" "true")"
+        user_email="$(fn_read_text_prompt "Git 邮箱" "" "例如 you@example.com" "true")"
         git config --global user.name "$user_name"
         git config --global user.email "$user_email"
         fn_print_success "Git身份信息已配置成功！"
@@ -385,14 +938,8 @@ fn_git_configure() {
     clear
     fn_print_header "配置 Git 同步服务"
     local repo_url repo_token
-    while true; do
-        read -p "请输入您的私有仓库HTTPS地址: " repo_url
-        [[ -n "$repo_url" ]] && break || fn_print_error "仓库地址不能为空！"
-    done
-    while true; do
-        read -p "请输入您的Personal Access Token: " repo_token
-        [[ -n "$repo_token" ]] && break || fn_print_error "Token不能为空！"
-    done
+    repo_url="$(fn_read_text_prompt "仓库地址" "" "私有仓库 HTTPS 地址" "true")"
+    repo_token="$(fn_read_text_prompt "访问令牌" "" "Personal Access Token" "true")"
     echo "REPO_URL=\"$repo_url\"" > "$GIT_SYNC_CONFIG_FILE"
     echo "REPO_TOKEN=\"$repo_token\"" >> "$GIT_SYNC_CONFIG_FILE"
     chmod 600 "$GIT_SYNC_CONFIG_FILE"
@@ -400,148 +947,6 @@ fn_git_configure() {
     fn_press_any_key
 }
 
-fn_git_test_one_mirror_push() {
-    local authed_url="$1"
-    local test_tag="st-sync-test-$(date +%s%N)"
-    local temp_repo_dir
-    temp_repo_dir=$(mktemp -d)
-    (
-        cd "$temp_repo_dir" || return 1
-        git init -q
-        git config user.name "test"
-        git config user.email "test@example.com"
-        touch testfile.txt
-        git add testfile.txt
-        git commit -m "Sync test commit" -q
-        git remote add origin "$authed_url"
-        if timeout 15s git push origin "HEAD:refs/tags/$test_tag" >/dev/null 2>&1; then
-            timeout 15s git push origin --delete "refs/tags/$test_tag" >/dev/null 2>&1
-            return 0
-        else
-            return 1
-        fi
-    )
-    local exit_code=$?
-    rm -rf "$temp_repo_dir"
-    return $exit_code
-}
-
-fn_git_construct_authed_url() {
-    local public_mirror_url="$1"
-    source "$GIT_SYNC_CONFIG_FILE"
-    
-    if [[ -z "$REPO_URL" || -z "$REPO_TOKEN" ]]; then
-        return 1
-    fi
-
-    local repo_path
-    repo_path=$(echo "$REPO_URL" | sed 's|https://github.com/||')
-    local authed_private_url="https://${REPO_TOKEN}@github.com/${repo_path}"
-
-    if [[ "$public_mirror_url" == "https://github.com/SillyTavern/SillyTavern.git" ]]; then
-        echo "$authed_private_url"
-        return 0
-    fi
-    
-    if [[ "$public_mirror_url" =~ ^https://hub\.gitmirror\.com/ ]]; then
-        echo "https://${REPO_TOKEN}@hub.gitmirror.com/${repo_path}"
-        return 0
-    fi
-
-    if [[ "$public_mirror_url" =~ ^https://([^/]+)/gh/ ]]; then
-        local proxy_domain="${BASH_REMATCH[1]}"
-        echo "https://${REPO_TOKEN}@${proxy_domain}/gh/${repo_path}"
-        return 0
-    fi
-
-    local proxy_prefix
-    proxy_prefix=$(echo "$public_mirror_url" | sed -E 's|/(https?://)?github.com/.*||')
-    if [[ -n "$proxy_prefix" && "$proxy_prefix" != "$public_mirror_url" ]]; then
-        echo "${proxy_prefix}/${authed_private_url}"
-        return 0
-    fi
-
-    return 1
-}
-
-fn_git_find_pushable_mirror() {
-    local mode="$1"
-    if [ -z "$mode" ]; then mode="all"; fi
-
-    source "$GIT_SYNC_CONFIG_FILE"
-    if [[ -z "$REPO_URL" || -z "$REPO_TOKEN" ]]; then
-        fn_print_error "Git同步配置不完整或不存在。"
-        return 1
-    fi
-    fn_print_warning "正在自动测试支持数据上传的加速线路..."
-    local github_public_url="https://github.com/SillyTavern/SillyTavern.git"
-    local successful_urls=()
-    
-    if [[ "$mode" == "official_only" || "$mode" == "all" ]]; then
-        if [[ " ${MIRROR_LIST[*]} " =~ " ${github_public_url} " ]]; then
-            local official_url
-            official_url=$(fn_git_construct_authed_url "https://github.com/SillyTavern/SillyTavern.git")
-            echo -e "  - 优先测试: 官方 GitHub ..." >&2
-            if fn_git_test_one_mirror_push "$official_url"; then 
-                echo -e "    ${GREEN}[成功]${NC}" >&2
-                successful_urls+=("$official_url")
-            else 
-                echo -e "    ${RED}[失败]${NC}" >&2
-            fi
-        fi
-        if [[ "$mode" == "official_only" ]]; then
-            if [ ${#successful_urls[@]} -gt 0 ]; then
-                printf '%s\n' "${successful_urls[@]}"
-                return 0
-            else
-                return 1
-            fi
-        fi
-    fi
-    
-    if [[ "$mode" == "mirrors_only" || "$mode" == "all" ]]; then
-        local other_mirrors=()
-        for mirror_url in "${MIRROR_LIST[@]}"; do
-            [[ "$mirror_url" != "$github_public_url" ]] && other_mirrors+=("$mirror_url")
-        done
-        
-        if [ ${#other_mirrors[@]} -gt 0 ]; then
-            echo -e "${YELLOW}已启动并行测试，将完整测试所有镜像...${NC}" >&2
-            local results_file
-            results_file=$(mktemp)
-            local pids=()
-            for mirror_url in "${other_mirrors[@]}"; do
-                ( 
-                    local authed_push_url
-                    authed_push_url=$(fn_git_construct_authed_url "$mirror_url") || exit 1
-                    local mirror_host
-                    mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
-                    if fn_git_test_one_mirror_push "$authed_push_url"; then 
-                        echo "$authed_push_url" >> "$results_file"
-                        echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${GREEN}[成功]${NC}" >&2
-                    else 
-                        echo -e "  - 测试: ${CYAN}${mirror_host}${NC} ${RED}[失败]${NC}" >&2
-                    fi 
-                ) &
-                pids+=($!)
-            done
-            wait "${pids[@]}"
-            if [ -s "$results_file" ]; then
-                mapfile -t other_successful_urls < "$results_file"
-                successful_urls+=("${other_successful_urls[@]}")
-            fi
-            rm -f "$results_file"
-        fi
-    fi
-    
-    if [ ${#successful_urls[@]} -gt 0 ]; then 
-        fn_print_success "测试完成，找到 ${#successful_urls[@]} 条可用上传线路。" >&2
-        printf '%s\n' "${successful_urls[@]}"
-    else 
-        fn_print_error "所有上传线路均测试失败。"
-        return 1
-    fi
-}
 
 fn_git_backup_to_cloud() {
     clear
@@ -551,111 +956,112 @@ fn_git_backup_to_cloud() {
         fn_press_any_key
         return
     fi
-    local SYNC_CONFIG_YAML="false"
-    local USER_MAP=""
-    if [ -f "$SYNC_RULES_CONFIG_FILE" ]; then
-        source "$SYNC_RULES_CONFIG_FILE"
-    fi
-    local push_urls=()
-    mapfile -t push_urls < <(fn_git_find_pushable_mirror "official_only")
 
-    if [ ${#push_urls[@]} -eq 0 ]; then
-        mapfile -t push_urls < <(fn_git_find_pushable_mirror "mirrors_only")
-        if [ ${#push_urls[@]} -eq 0 ]; then
-            fn_print_error "所有上传线路均测试失败。"
-            fn_press_any_key
-            return
-        fi
+    source "$GIT_SYNC_CONFIG_FILE"
+    if [[ -z "$REPO_URL" || -z "$REPO_TOKEN" ]]; then
+        fn_print_error "Git 同步配置不完整。"
+        fn_press_any_key
+        return
+    fi
+
+    local push_url
+    if ! push_url="$(fn_get_authenticated_github_url "$REPO_URL" "$REPO_TOKEN")"; then
+        fn_print_error "当前仅支持 GitHub HTTPS 仓库进行云端备份。"
+        fn_press_any_key
+        return
+    fi
+
+    if ! fn_assert_github_direct_connectivity "云端备份"; then
+        fn_press_any_key
+        return
     fi
 
     local backup_success=false
-    local attempts=0
     while ! $backup_success; do
-        attempts=$((attempts + 1))
-        for push_url in "${push_urls[@]}"; do
-            local chosen_host
-            chosen_host=$(echo "$push_url" | sed -e 's|https://.*@||' -e 's|/.*$||')
-            fn_print_warning "正在尝试使用线路 [${chosen_host}] 进行备份..."
-            local temp_dir
-            temp_dir=$(mktemp -d)
+        local SYNC_CONFIG_YAML="false"
+        local USER_MAP=""
+        if [ -f "$SYNC_RULES_CONFIG_FILE" ]; then
+            source "$SYNC_RULES_CONFIG_FILE"
+        fi
 
-            (
-                cd "$HOME" || exit 1
-                if ! git clone --depth 1 "$push_url" "$temp_dir"; then
-                    fn_print_error "克隆云端仓库失败！"
-                    exit 1
+        local temp_dir
+        temp_dir=$(mktemp -d)
+        (
+            cd "$HOME" || exit 1
+            fn_print_warning "正在连接 GitHub 私有仓库..."
+            if ! fn_run_git_with_progress "从云端克隆仓库" true git -c credential.helper='' clone --progress --depth 1 "$push_url" "$temp_dir"; then
+                fn_print_error "从云端克隆仓库失败！Git输出: $(fn_git_last_log_tail 2)"
+                if fn_git_last_log_contains_regex "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
+                    fn_write_git_network_troubleshooting
                 fi
-                fn_print_success "已成功从云端克隆仓库。"
+                exit 1
+            fi
+            fn_print_success "已成功从云端克隆仓库。"
 
-                cd "$temp_dir" || exit 1
-                fn_print_warning "正在同步本地数据到临时区..."
-                local rsync_exclude_args=("--exclude=extensions/" "--exclude=backups/" "--exclude=*.log")
+            cd "$temp_dir" || exit 1
+            fn_print_warning "正在同步本地数据到临时区..."
+            local rsync_exclude_args=("--exclude=extensions/" "--exclude=backups/" "--exclude=*.log")
 
-                if [ -n "$USER_MAP" ] && [[ "$USER_MAP" == *":"* ]]; then
-                    local local_user="${USER_MAP%%:*}"
-                    local remote_user="${USER_MAP##*:}"
-                    fn_print_warning "应用用户映射规则: 本地'${local_user}' -> 云端'${remote_user}'"
-                    if [ -d "$ST_DIR/data/$local_user" ]; then
-                        mkdir -p "./data/$remote_user"
-                        rsync -a --delete "${rsync_exclude_args[@]}" "$ST_DIR/data/$local_user/" "./data/$remote_user/"
-                    else
-                        fn_print_warning "本地用户文件夹 '$local_user' 不存在，跳过同步。"
-                    fi
+            if [ -n "$USER_MAP" ] && [[ "$USER_MAP" == *":"* ]]; then
+                local local_user="${USER_MAP%%:*}"
+                local remote_user="${USER_MAP##*:}"
+                fn_print_warning "应用用户映射规则: 本地'${local_user}' -> 云端'${remote_user}'"
+                if [ -d "$ST_DIR/data/$local_user" ]; then
+                    mkdir -p "./data/$remote_user"
+                    rsync -a --delete "${rsync_exclude_args[@]}" "$ST_DIR/data/$local_user/" "./data/$remote_user/"
                 else
-                    fn_print_warning "应用镜像同步规则: 同步所有本地用户文件夹"
-                    find . -mindepth 1 -not -path './.git*' -delete
-                    local local_users
-                    local_users=($(fn_get_user_folders "$ST_DIR/data"))
-                    for l_user in "${local_users[@]}"; do
-                        mkdir -p "./data/$l_user"
-                        rsync -a --delete "${rsync_exclude_args[@]}" "$ST_DIR/data/$l_user/" "./data/$l_user/"
-                    done
-                fi
-
-                if [ "$SYNC_CONFIG_YAML" == "true" ] && [ -f "$ST_DIR/config.yaml" ]; then
-                    cp "$ST_DIR/config.yaml" .
-                fi
-                
-                git add .
-                if git diff-index --quiet HEAD; then
-                    fn_print_success "数据与云端一致，无需上传。"
-                    exit 100
-                fi
-                
-                fn_print_warning "正在提交数据变更..."
-                local commit_message="📱 Termux 推送: $(date +'%Y-%m-%d %H:%M:%S')"
-                git commit -m "$commit_message" -q || { fn_print_error "Git 提交失败！"; exit 1; }
-                
-                fn_print_warning "正在上传到云端..."
-                git push || { fn_print_error "上传失败！"; exit 1; }
-                fn_print_success "数据成功备份到云端！"
-                exit 0
-            )
-            
-            local subshell_exit_code=$?
-            rm -rf "$temp_dir"
-            if [ $subshell_exit_code -eq 0 ] || [ $subshell_exit_code -eq 100 ]; then
-                backup_success=true
-                break
-            else
-                fn_print_error "使用线路 [${chosen_host}] 备份失败，正在切换..."
-                continue
-            fi
-        done
-
-        if ! $backup_success; then
-            if [ $attempts -eq 1 ]; then
-                fn_print_error "已尝试所有预选线路，但备份均失败。"
-                fn_print_warning "将进行全量测速并重试所有可用线路..."
-                mapfile -t push_urls < <(fn_git_find_pushable_mirror "all")
-                if [ ${#push_urls[@]} -eq 0 ]; then
-                    fn_print_error "全量测速后未找到任何可用上传线路。"
-                    break
+                    fn_print_warning "本地用户文件夹 '$local_user' 不存在，跳过同步。"
                 fi
             else
-                fn_print_error "已尝试所有可用线路，但备份均失败。"
-                break
+                fn_print_warning "应用镜像同步规则: 同步所有本地用户文件夹"
+                find . -mindepth 1 -not -path './.git*' -delete
+                local local_users
+                local_users=($(fn_get_user_folders "$ST_DIR/data"))
+                for l_user in "${local_users[@]}"; do
+                    mkdir -p "./data/$l_user"
+                    rsync -a --delete "${rsync_exclude_args[@]}" "$ST_DIR/data/$l_user/" "./data/$l_user/"
+                done
             fi
+
+            if [ "$SYNC_CONFIG_YAML" == "true" ] && [ -f "$ST_DIR/config.yaml" ]; then
+                cp "$ST_DIR/config.yaml" .
+            fi
+
+            git add .
+            if git diff-index --quiet HEAD; then
+                fn_print_success "数据与云端一致，无需上传。"
+                exit 100
+            fi
+
+            fn_print_warning "正在提交数据变更..."
+            local commit_message="📱 Termux 推送: $(date +'%Y-%m-%d %H:%M:%S')"
+            local commit_output
+            commit_output="$(git commit -m "$commit_message" -q 2>&1)"
+            if [ $? -ne 0 ]; then
+                fn_print_error "Git 提交失败！输出: ${commit_output}"
+                exit 1
+            fi
+
+            fn_print_warning "正在上传到 GitHub..."
+            if ! fn_run_git_with_progress "上传到 GitHub" true git -c credential.helper='' push --progress; then
+                fn_print_error "上传失败！Git输出: $(fn_git_last_log_tail 2)"
+                if fn_git_last_log_contains_regex "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
+                    fn_write_git_network_troubleshooting
+                fi
+                exit 1
+            fi
+
+            fn_print_success "数据成功备份到云端！"
+            exit 0
+        )
+
+        local subshell_exit_code=$?
+        rm -rf "$temp_dir"
+        if [ $subshell_exit_code -eq 0 ] || [ $subshell_exit_code -eq 100 ]; then
+            backup_success=true
+        elif ! fn_read_yes_no_prompt "备份失败，是否重试" true ""; then
+            fn_print_warning "操作已取消。"
+            break
         fi
     done
 
@@ -672,8 +1078,7 @@ fn_git_restore_from_cloud() {
     fi
     
     fn_print_warning "此操作将用云端数据【覆盖】本地数据！"
-    read -p "是否在恢复前，先对当前数据进行一次本地备份？(强烈推荐) [Y/n]: " backup_confirm
-    if [[ ! "$backup_confirm" =~ ^[nN]$ ]]; then 
+    if fn_read_yes_no_prompt "恢复前先创建本地备份" true "强烈推荐。"; then
         if ! fn_create_zip_backup "恢复前"; then
             fn_print_error "本地备份失败，恢复操作已中止。"
             fn_press_any_key
@@ -681,135 +1086,113 @@ fn_git_restore_from_cloud() {
         fi
     fi
     
-    read -p "确认要从云端恢复数据吗？[Y/n]: " restore_confirm
-    if [[ "$restore_confirm" =~ ^[nN]$ ]]; then
+    if ! fn_read_yes_no_prompt "从云端恢复并覆盖本地数据" false ""; then
         fn_print_warning "操作已取消。"
         fn_press_any_key
         return
     fi
     
+    source "$GIT_SYNC_CONFIG_FILE"
+    if [[ -z "$REPO_URL" || -z "$REPO_TOKEN" ]]; then
+        fn_print_error "Git 同步配置不完整。"
+        fn_press_any_key
+        return
+    fi
+
+    local pull_url
+    if ! pull_url="$(fn_get_authenticated_github_url "$REPO_URL" "$REPO_TOKEN")"; then
+        fn_print_error "当前仅支持 GitHub HTTPS 仓库进行云端恢复。"
+        fn_press_any_key
+        return
+    fi
+
+    if ! fn_assert_github_direct_connectivity "云端恢复"; then
+        fn_press_any_key
+        return
+    fi
+
+    local clone_success=false
+    local temp_dir=""
+    while ! $clone_success; do
+        temp_dir="$(mktemp -d)"
+        fn_print_warning "正在从 GitHub 私有仓库下载备份..."
+        if fn_run_git_with_progress "下载云端备份仓库" true git -c credential.helper='' clone --progress --depth 1 "$pull_url" "$temp_dir"; then
+            clone_success=true
+        else
+            fn_print_error "恢复失败！Git输出: $(fn_git_last_log_tail 2)"
+            if fn_git_last_log_contains_regex "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
+                fn_write_git_network_troubleshooting
+            fi
+            rm -rf "$temp_dir"
+            temp_dir=""
+            if ! fn_read_yes_no_prompt "恢复失败，是否重试" true ""; then
+                fn_print_warning "操作已取消。"
+                fn_press_any_key
+                return
+            fi
+        fi
+    done
+
     local SYNC_CONFIG_YAML="false"
     local USER_MAP=""
     if [ -f "$SYNC_RULES_CONFIG_FILE" ]; then
         source "$SYNC_RULES_CONFIG_FILE"
     fi
 
-    local pull_urls=()
-    mapfile -t pull_urls < <(fn_find_fastest_mirror "official_only")
-
-    if [ ${#pull_urls[@]} -eq 0 ]; then
-        mapfile -t pull_urls < <(fn_find_fastest_mirror "mirrors_only")
-        if [ ${#pull_urls[@]} -eq 0 ]; then
-            fn_print_error "所有下载线路均测试失败。"
-            fn_press_any_key
-            return
-        fi
+    if [ -z "$(ls -A "$temp_dir")" ]; then
+        fn_print_error "下载的数据源无效或为空，恢复操作已中止！"
+        rm -rf "$temp_dir"
+        fn_press_any_key
+        return
     fi
-    
-    local temp_dir
-    temp_dir=$(mktemp -d)
-    (
-        cd "$HOME" || exit 1
-        source "$GIT_SYNC_CONFIG_FILE"
-        local repo_path
-        repo_path=$(echo "$REPO_URL" | sed 's|https://github.com/||')
-        
-        local clone_success=false
-        local attempts=0
-        while ! $clone_success; do
-            attempts=$((attempts + 1))
-            for pull_url in "${pull_urls[@]}"; do
-                local chosen_host
-                chosen_host=$(echo "$pull_url" | sed -e 's|https://||' -e 's|/.*$||')
-                fn_print_warning "正在尝试使用线路 [${chosen_host}] 进行恢复..."
-                local private_repo_url
-                private_repo_url=$(echo "$pull_url" | sed "s|/SillyTavern/SillyTavern.git|/${repo_path}|")
-                local pull_url_with_auth
-                pull_url_with_auth=$(echo "$private_repo_url" | sed "s|https://|https://${REPO_TOKEN}@|")
-                
-                if git clone --depth 1 "$pull_url_with_auth" "$temp_dir"; then
-                    clone_success=true
-                    break
-                fi
-                fn_print_error "下载云端数据失败！正在切换下一条线路..."
-                rm -rf "$temp_dir"/* "$temp_dir"/.* 2>/dev/null
-            done
+    fn_print_success "已成功从云端下载数据。"
 
-            if ! $clone_success; then
-                if [ $attempts -eq 1 ]; then
-                    fn_print_error "已尝试所有预选线路，但下载均失败。"
-                    fn_print_warning "将进行全量测速并重试所有可用线路..."
-                    mapfile -t pull_urls < <(fn_find_fastest_mirror "all")
-                    if [ ${#pull_urls[@]} -eq 0 ]; then
-                        fn_print_error "全量测速后未找到任何可用下载线路。"
-                        break
-                    fi
-                else
-                    fn_print_error "已尝试所有可用线路，但恢复均失败。"
-                    break
-                fi
+    fn_print_warning "正在将云端数据同步到本地..."
+    local rsync_exclude_args=("--exclude=extensions/" "--exclude=backups/" "--exclude=*.log")
+
+    if [ -n "$USER_MAP" ] && [[ "$USER_MAP" == *":"* ]]; then
+        local local_user="${USER_MAP%%:*}"
+        local remote_user="${USER_MAP##*:}"
+        fn_print_warning "应用用户映射规则: 云端'${remote_user}' -> 本地'${local_user}'"
+        if [ -d "$temp_dir/data/$remote_user" ]; then
+            mkdir -p "$ST_DIR/data/$local_user"
+            rsync -a --delete "${rsync_exclude_args[@]}" "$temp_dir/data/$remote_user/" "$ST_DIR/data/$local_user/"
+        else
+            fn_print_warning "云端映射文件夹 'data/${remote_user}' 不存在，跳过映射同步。"
+        fi
+    else
+        fn_print_warning "应用镜像同步规则: 恢复所有云端用户文件夹"
+        local remote_users_all
+        remote_users_all=($(fn_get_user_folders "$temp_dir/data"))
+        local final_remote_users=("${remote_users_all[@]}")
+
+        local local_users
+        local_users=($(fn_get_user_folders "$ST_DIR/data"))
+        for l_user in "${local_users[@]}"; do
+            if ! [[ " ${final_remote_users[*]} " =~ " ${l_user} " ]]; then
+                fn_print_warning "清理本地多余的用户: $l_user"
+                rm -rf "$ST_DIR/data/$l_user"
             fi
         done
+        for r_user in "${final_remote_users[@]}"; do
+            mkdir -p "$ST_DIR/data/$r_user"
+            rsync -a --delete "${rsync_exclude_args[@]}" "$temp_dir/data/$r_user/" "$ST_DIR/data/$r_user/"
+        done
+    fi
 
-        if ! $clone_success; then
-            exit 1
-        fi
-        if [ -z "$(ls -A "$temp_dir")" ]; then
-            fn_print_error "下载的数据源无效或为空，恢复操作已中止！"
-            exit 1
-        fi
-        fn_print_success "已成功从云端下载数据。"
+    if [ "$SYNC_CONFIG_YAML" == "true" ] && [ -f "$temp_dir/config.yaml" ]; then
+        fn_print_warning "正在同步: config.yaml"
+        cp "$temp_dir/config.yaml" "$ST_DIR/config.yaml"
+    fi
 
-        fn_print_warning "正在将云端数据同步到本地..."
-        local rsync_exclude_args=("--exclude=extensions/" "--exclude=backups/" "--exclude=*.log")
-
-        if [ -n "$USER_MAP" ] && [[ "$USER_MAP" == *":"* ]]; then
-            local local_user="${USER_MAP%%:*}"
-            local remote_user="${USER_MAP##*:}"
-            fn_print_warning "应用用户映射规则: 云端'${remote_user}' -> 本地'${local_user}'"
-            if [ -d "$temp_dir/data/$remote_user" ]; then
-                mkdir -p "$ST_DIR/data/$local_user"
-                rsync -a --delete "${rsync_exclude_args[@]}" "$temp_dir/data/$remote_user/" "$ST_DIR/data/$local_user/"
-            else
-                fn_print_warning "云端映射文件夹 'data/${remote_user}' 不存在，跳过映射同步。"
-            fi
-        else
-            fn_print_warning "应用镜像同步规则: 恢复所有云端用户文件夹"
-            local remote_users_all
-            remote_users_all=($(fn_get_user_folders "$temp_dir/data"))
-            local final_remote_users=("${remote_users_all[@]}")
-            
-            local local_users
-            local_users=($(fn_get_user_folders "$ST_DIR/data"))
-            for l_user in "${local_users[@]}"; do
-                if ! [[ " ${final_remote_users[*]} " =~ " ${l_user} " ]]; then
-                    fn_print_warning "清理本地多余的用户: $l_user"
-                    rm -rf "$ST_DIR/data/$l_user"
-                fi
-            done
-            for r_user in "${final_remote_users[@]}"; do
-                mkdir -p "$ST_DIR/data/$r_user"
-                rsync -a --delete "${rsync_exclude_args[@]}" "$temp_dir/data/$r_user/" "$ST_DIR/data/$r_user/"
-            done
-        fi
-
-        if [ "$SYNC_CONFIG_YAML" == "true" ] && [ -f "$temp_dir/config.yaml" ]; then
-            fn_print_warning "正在同步: config.yaml"
-            cp "$temp_dir/config.yaml" "$ST_DIR/config.yaml"
-        fi
-        
-        fn_print_success "\n数据已从云端成功恢复！"
-        exit 0
-    )
-    
+    fn_print_success "\n数据已从云端成功恢复！"
     rm -rf "$temp_dir"
     fn_press_any_key
 }
 
 fn_git_clear_config() {
     if [ -f "$GIT_SYNC_CONFIG_FILE" ]; then
-        read -p "确认要清除已保存的Git同步配置吗？(y/n): " confirm
-        if [[ "$confirm" =~ ^[yY]$ ]]; then
+        if fn_read_yes_no_prompt "清除已保存的 Git 同步配置" false ""; then
             rm -f "$GIT_SYNC_CONFIG_FILE"
             fn_print_success "Git同步配置已清除。"
         else
@@ -885,9 +1268,8 @@ fn_export_extension_links() {
         fn_print_warning "未找到任何已安装的Git扩展。"
     else
         echo -e "$output_content"
-        read -p $'\n'"是否将以上链接保存到 '$HOME/ST_扩展链接_...txt'？ [y/N]: " save_choice
-        if [[ "$save_choice" =~ ^[yY]$ ]]; then
-            local file_path="$HOME/ST_扩展链接_$(date +'%Y-%m-%d').txt"
+        local file_path="$HOME/ST_扩展链接_$(date +'%Y-%m-%d').txt"
+        if fn_read_yes_no_prompt "保存到 ${file_path}" false ""; then
             echo -e "$output_content" > "$file_path"
             if [ $? -eq 0 ]; then
                 fn_print_success "链接已成功保存到: $file_path"
@@ -906,12 +1288,13 @@ fn_menu_git_config() {
         echo -e "      [1] ${CYAN}修改/设置同步信息${NC}"
         echo -e "      [2] ${RED}清除所有同步配置${NC}"
         echo -e "      [0] ${CYAN}返回上一级${NC}\n"
-        read -p "    请输入选项: " choice
+        local choice
+        choice="$(fn_read_menu_prompt "0-2")"
         case $choice in
             1) fn_git_configure; break ;;
             2) fn_git_clear_config ;;
             0) break ;;
-            *) fn_print_error "无效输入。"; sleep 1 ;;
+            *) fn_print_error "输入无效，请按提示重试。"; sleep 1 ;;
         esac
     done
 }
@@ -950,7 +1333,8 @@ fn_menu_advanced_sync() {
         
         echo -e "\n  [3] ${RED}重置所有高级设置${NC}"
         echo -e "  [0] ${CYAN}返回上一级${NC}\n"
-        read -p "    请输入选项: " choice
+        local choice
+        choice="$(fn_read_menu_prompt "0-3")"
         case $choice in
             1) 
                 local new_status="false"
@@ -960,10 +1344,9 @@ fn_menu_advanced_sync() {
                 sleep 1
                 ;;
             2) 
-                read -p "请输入本地用户文件夹名 [直接回车默认为 default-user]: " local_u
-                local_u=${local_u:-default-user}
-                read -p "请输入要映射到的云端用户文件夹名 [直接回车默认为 default-user]: " remote_u
-                remote_u=${remote_u:-default-user}
+                local local_u remote_u
+                local_u="$(fn_read_text_prompt "本地用户目录" "default-user" "" "false")"
+                remote_u="$(fn_read_text_prompt "云端用户目录" "default-user" "" "false")"
                 fn_update_config_value "USER_MAP" "${local_u}:${remote_u}" "$SYNC_RULES_CONFIG_FILE"
                 fn_print_success "用户映射已设置为: ${local_u} -> ${remote_u}"
                 sleep 1.5
@@ -978,7 +1361,7 @@ fn_menu_advanced_sync() {
                 sleep 1.5
                 ;;
             0) break ;;
-            *) fn_print_error "无效输入。"; sleep 1 ;;
+            *) fn_print_error "输入无效，请按提示重试。"; sleep 1 ;;
         esac
     done
 }
@@ -1009,7 +1392,8 @@ fn_menu_git_sync() {
         echo -e "      [4] ${CYAN}高级同步设置 (用户映射等)${NC}"
         echo -e "      [5] ${CYAN}导出扩展链接${NC}\n"
         echo -e "      [0] ${CYAN}返回主菜单${NC}\n"
-        read -p "    请输入选项: " choice
+        local choice
+        choice="$(fn_read_menu_prompt "0-5")"
         case $choice in
             1) fn_menu_git_config ;;
             2) fn_git_backup_to_cloud ;;
@@ -1017,7 +1401,7 @@ fn_menu_git_sync() {
             4) fn_menu_advanced_sync ;;
             5) fn_export_extension_links ;;
             0) break ;;
-            *) fn_print_error "无效输入。"; sleep 1 ;;
+            *) fn_print_error "输入无效，请按提示重试。"; sleep 1 ;;
         esac
     done
 }
@@ -1037,14 +1421,14 @@ fn_apply_proxy() {
 }
 
 fn_set_proxy() {
-    read -p "请输入代理端口号 [直接回车默认为 7890]: " port
-    port=${port:-7890}
+    local port
+    port="$(fn_read_text_prompt "代理端口" "7890" "" "false")"
     if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -gt 0 ] && [ "$port" -lt 65536 ]; then
         echo "$port" > "$PROXY_CONFIG_FILE"
         fn_apply_proxy
         fn_print_success "代理已设置为: 127.0.0.1:$port"
     else
-        fn_print_error "无效的端口号！请输入1-65535之间的数字。"
+        fn_print_error "请输入 1-65535。"
     fi
     fn_press_any_key
 }
@@ -1072,12 +1456,13 @@ fn_menu_proxy() {
         echo -e "      [1] ${CYAN}设置/修改代理${NC}"
         echo -e "      [2] ${RED}清除代理${NC}"
         echo -e "      [0] ${CYAN}返回主菜单${NC}\n"
-        read -p "    请输入选项: " choice
+        local choice
+        choice="$(fn_read_menu_prompt "0-2")"
         case $choice in
             1) fn_set_proxy ;;
             2) fn_clear_proxy ;;
             0) break ;;
-            *) fn_print_error "无效输入。"; sleep 1 ;;
+            *) fn_print_error "输入无效，请按提示重试。"; sleep 1 ;;
         esac
     done
 }
@@ -1140,8 +1525,7 @@ fn_create_zip_backup() {
         local oldest_backup="${all_backups[0]}"
         fn_print_warning "警告：本地备份已达上限 (${BACKUP_LIMIT}/${BACKUP_LIMIT})。"
         echo -e "创建新备份将会自动删除最旧的一个备份文件:\n  - ${RED}将被删除: $(basename "$oldest_backup")${NC}"
-        read -p "是否继续创建本地备份？[Y/n]: " confirm_overwrite
-        if [[ "$confirm_overwrite" =~ ^[nN]$ ]]; then
+        if ! fn_read_yes_no_prompt "继续创建本地备份" false ""; then
             fn_print_warning "操作已取消。"
             return 1
         fi
@@ -1192,8 +1576,7 @@ fn_install_st() {
     if [[ "$auto_start" == "true" ]]; then
         while true; do
             if ! fn_update_termux_source; then
-                read -p $'\n'"${RED}软件源配置失败。是否重试？(直接回车=是, 输入n=否): ${NC}" retry_choice
-                if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
+                if ! fn_read_yes_no_prompt "软件源配置失败，是否重试" true ""; then
                     fn_print_error_exit "用户取消操作。"
                 fi
             else
@@ -1202,8 +1585,8 @@ fn_install_st() {
         done
         fn_print_header "2/5: 安装核心依赖"
         echo -e "${YELLOW}正在安装核心依赖...${NC}"
-        yes | pkg upgrade -y
-        yes | pkg install git nodejs-lts rsync zip unzip termux-api coreutils gawk bc || fn_print_error_exit "核心依赖安装失败！"
+        fn_run_termux_apt_noninteractive upgrade || fn_print_error_exit "核心依赖升级失败！"
+        fn_run_termux_apt_noninteractive install git nodejs-lts rsync zip unzip termux-api coreutils gawk bc || fn_print_error_exit "核心依赖安装失败！"
         fn_print_success "核心依赖安装完毕。"
     fi
     fn_print_header "3/5: 下载酒馆主程序"
@@ -1212,53 +1595,25 @@ fn_install_st() {
     elif [ -d "$ST_DIR" ] && [ -n "$(ls -A "$ST_DIR")" ]; then
         fn_print_error_exit "目录 $ST_DIR 已存在但安装不完整。请手动删除该目录后再试。"
     else
-        local download_success=false
-        local full_retest_attempted=false
-        while ! $download_success; do
-            local mirrors_to_try=()
-            if [ "$full_retest_attempted" = false ]; then
-                mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "official_only")
-                if [ ${#mirrors_to_try[@]} -eq 0 ]; then
-                    mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "mirrors_only")
-                fi
-            else
-                mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "all")
-            fi
+        local selected_route
+        if ! selected_route="$(fn_resolve_download_route "下载酒馆主程序" "https://github.com/SillyTavern/SillyTavern.git")"; then
+            fn_print_error_exit "未能选定可用下载线路。"
+        fi
 
-            if [ ${#mirrors_to_try[@]} -eq 0 ]; then
-                read -p $'\n'"${RED}所有线路均测试失败。是否重新测速并重试？(直接回车=是, 输入n=否): ${NC}" retry_choice
-                if [[ "$retry_choice" == "n" || "$retry_choice" == "N" ]]; then
-                    fn_print_error_exit "下载失败，用户取消操作。"
-                fi
-                full_retest_attempted=false
-                continue
-            fi
+        local route_host route_url
+        IFS='|' read -r route_host route_url <<<"$selected_route"
 
-            for mirror_url in "${mirrors_to_try[@]}"; do
-                local mirror_host
-                mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
-                fn_print_warning "正在尝试从镜像 [${mirror_host}] 下载 (${REPO_BRANCH} 分支)..."
-                local git_output
-                git_output=$(git clone --depth 1 -b "$REPO_BRANCH" "$mirror_url" "$ST_DIR" 2>&1)
-                if [ $? -eq 0 ]; then
-                    fn_print_success "主程序下载完成。"
-                    download_success=true
-                    break
-                else
-                    fn_print_error "使用镜像 [${mirror_host}] 下载失败！Git输出: $(echo "$git_output" | tail -n 2)"
-                    rm -rf "$ST_DIR"
-                fi
-            done
-
-            if ! $download_success; then
-                if [ "$full_retest_attempted" = false ]; then
-                    full_retest_attempted=true
-                    fn_print_error "预选线路均下载失败。将进行全量测速并重试所有可用线路..."
-                else
-                    fn_print_error "已尝试所有可用线路，下载均失败。"
-                fi
+        fn_print_warning "正在使用线路 [${route_host}] 下载 (${REPO_BRANCH} 分支)..."
+        if ! fn_run_git_with_progress "下载酒馆主程序" false git clone --progress --depth 1 -b "$REPO_BRANCH" "$route_url" "$ST_DIR"; then
+            if fn_git_last_log_contains_regex "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
+                fn_write_git_network_troubleshooting
             fi
-        done
+            fn_print_error "下载失败！Git输出: $(fn_git_last_log_tail 2)"
+            rm -rf "$ST_DIR"
+            fn_press_any_key
+            return
+        fi
+        fn_print_success "主程序下载完成。"
     fi
     fn_print_header "4/5: 配置并安装依赖"
     if [ -d "$ST_DIR" ]; then
@@ -1290,86 +1645,115 @@ fn_update_st() {
     fi
     cd "$ST_DIR" || fn_print_error_exit "无法进入酒馆目录: $ST_DIR"
 
-    local mirrors_to_try=()
-    mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "official_only")
-    if [ ${#mirrors_to_try[@]} -eq 0 ]; then
-        mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "mirrors_only")
-    fi
-    if [ ${#mirrors_to_try[@]} -eq 0 ]; then
-        fn_print_error "所有线路均测试失败，无法更新。"
+    local selected_route
+    if ! selected_route="$(fn_resolve_download_route "更新酒馆" "https://github.com/SillyTavern/SillyTavern.git")"; then
+        fn_print_error "未能选定可用更新线路。"
         fn_press_any_key
         return
     fi
 
-    local pull_succeeded=false
-    for mirror_url in "${mirrors_to_try[@]}"; do
-        local mirror_host
-        mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
-        fn_print_warning "正在尝试使用线路 [${mirror_host}] 更新..."
-        git remote set-url origin "$mirror_url" >/dev/null 2>&1
+    local route_host route_url
+    IFS='|' read -r route_host route_url <<<"$selected_route"
+    fn_print_warning "正在使用线路 [${route_host}] 更新..."
+    git remote set-url origin "$route_url" >/dev/null 2>&1
 
-        local git_output
-        # 使用 --no-rebase 策略并捕获输出
-        git_output=$(git pull origin "$REPO_BRANCH" --no-rebase --allow-unrelated-histories 2>&1)
-        local exit_code=$?
-
-        if [ $exit_code -eq 0 ]; then
-            if [[ "$git_output" == *"Already up to date."* ]]; then
-                fn_print_success "代码已是最新，无需更新。"
+    local preflight_issues
+    preflight_issues="$(fn_git_repo_issue_summary || true)"
+    if [[ -n "$preflight_issues" ]]; then
+        clear
+        fn_print_header "检测到仓库残留状态"
+        echo -e "\n--- 检测结果 ---\n${preflight_issues}\n--------------"
+        echo -e "${CYAN}这通常是上次更新/切换中断遗留，并非您的操作错误。${NC}"
+        if fn_read_yes_no_prompt "是否先执行一键自愈再继续更新（推荐）" true ""; then
+            if fn_git_workspace_auto_repair "$REPO_BRANCH" false; then
+                fn_print_success "仓库自愈完成，继续更新。"
             else
-                fn_print_success "代码更新成功。"
+                fn_print_error "一键自愈失败，请重试或切换网络后再试。"
+                fn_press_any_key
+                return
             fi
-            pull_succeeded=true
-            break
-        elif echo "$git_output" | grep -qE "overwritten by merge|Please commit|unmerged files|Pulling is not possible|divergent branches|reconcile|index.lock"; then
-            # 智能诊断冲突原因
-            local reason="您可能修改过酒馆的文件，导致无法自动合并新版本。"
-            local actionDesc="放弃本地代码修改"
-            
-            if echo "$git_output" | grep -q "package-lock.json"; then
-                reason="依赖配置文件 (package-lock.json) 冲突，这是系统自动行为。"
-                actionDesc="重置系统配置文件"
-            elif echo "$git_output" | grep -qE "divergent branches|reconcile"; then
-                reason="本地版本与云端版本状态不一致 (分叉)。"
-                actionDesc="同步版本状态"
-            elif echo "$git_output" | grep -q "index.lock"; then
-                reason="Git 环境被锁定 (可能是上次操作意外中断)。"
-                actionDesc="解除锁定"
-            fi
-
-            clear
-            fn_print_header "检测到更新冲突"
-            fn_print_warning "原因: $reason"
-            echo -e "\n--- 冲突文件预览 ---\n$(echo "$git_output" | grep -E '^\s+' | head -n 5)\n--------------------"
-            echo -e "\n${CYAN}此操作将${BOLD}${actionDesc}${NC}，但${GREEN}绝对不会${NC}影响您的聊天记录、角色卡等个人数据。${NC}"
-            read -p "是否执行修复以完成更新？(直接回车=是, 输入n=否): " confirm_choice
-            
-            if [[ "$confirm_choice" =~ ^[nN]$ ]]; then
-                fn_print_warning "已取消更新。"
-                break
-            fi
-
-            fn_print_warning "正在执行深度修复与强制覆盖..."
-            # 自动解锁
-            rm -f .git/index.lock
-            if git reset --hard "origin/$REPO_BRANCH" >/dev/null 2>&1; then
-                # 彻底清理未追踪文件
-                git clean -fd >/dev/null 2>&1
-                fn_print_warning "正在重新拉取最新代码..."
-                if git pull origin "$REPO_BRANCH" --no-rebase --allow-unrelated-histories >/dev/null 2>&1; then
-                    fn_print_success "强制更新成功。"
-                    pull_succeeded=true
-                else
-                    fn_print_error "强制覆盖后拉取代码失败，请重试。"
-                fi
-            else
-                fn_print_error "强制覆盖失败！"
-            fi
-            break
-        else
-            fn_print_error "使用线路 [${mirror_host}] 更新失败，正在切换..."
         fi
-    done
+    fi
+
+    local pull_succeeded=false
+    if fn_run_git_with_progress "更新酒馆代码" false git pull --progress origin "$REPO_BRANCH" --no-rebase --allow-unrelated-histories; then
+        if fn_git_last_log_contains_regex "Already up to date\\."; then
+            fn_print_success "代码已是最新，无需更新。"
+        else
+            fn_print_success "代码更新成功。"
+        fi
+        pull_succeeded=true
+    elif fn_git_last_log_contains_regex "overwritten by merge|Please commit|unmerged files|Pulling is not possible|divergent branches|reconcile|index.lock|You have not concluded your merge|rebase|cherry-pick"; then
+        # 智能诊断冲突原因
+        local reason="检测到程序目录与目标版本存在差异，无法直接自动合并。"
+        local actionDesc="重置程序目录差异"
+        local conflict_preview
+        local unmerged_preview
+        unmerged_preview="$(fn_git_unmerged_files_preview 8)"
+
+        if [[ -n "$unmerged_preview" ]]; then
+            reason="检测到未解决冲突文件（通常是上次更新中断遗留）。"
+            actionDesc="清理未解决冲突并同步代码"
+        elif fn_git_last_log_contains_regex "package-lock\\.json"; then
+            reason="依赖配置文件 (package-lock.json) 冲突，这是系统自动行为。"
+            actionDesc="重置依赖配置文件"
+        elif fn_git_last_log_contains_regex "yarn\\.lock|pnpm-lock\\.yaml|npm-shrinkwrap\\.json"; then
+            reason="检测到依赖锁文件差异，这是常见自动行为。"
+            actionDesc="重置依赖锁文件"
+        elif fn_git_last_log_contains_regex "divergent branches|reconcile"; then
+            reason="本地版本与远程版本存在分叉（通常是由于非正常的更新中断引起）。"
+            actionDesc="同步版本状态并清理环境"
+        elif fn_git_last_log_contains_regex "index\\.lock"; then
+            reason="Git 环境被锁定（可能有其他 Git 进程正在运行或上次操作异常中断）。"
+            actionDesc="解除锁定并清理环境"
+        elif fn_git_last_log_contains_regex "You have not concluded your merge|rebase|cherry-pick"; then
+            reason="检测到未完成的 Git 操作（merge/rebase/cherry-pick）。"
+            actionDesc="终止未完成操作并恢复仓库状态"
+        elif fn_git_last_log_contains_regex "conflict|unmerged files"; then
+            reason="代码合并时发生冲突。"
+            actionDesc="放弃冲突的修改并清理环境"
+        fi
+
+        if [[ -n "$unmerged_preview" ]]; then
+            conflict_preview="$unmerged_preview"
+        else
+            conflict_preview="$(fn_git_last_log_conflict_preview 8)"
+        fi
+        clear
+        fn_print_header "检测到更新冲突"
+        fn_print_warning "原因: $reason"
+        if [[ -n "$conflict_preview" ]]; then
+            echo -e "\n--- 冲突对象（来自 Git 输出） ---\n${conflict_preview}\n------------------------------"
+        fi
+        echo -e "\n${CYAN}此操作将${BOLD}${actionDesc}${NC}，但${GREEN}绝对不会${NC}影响您的聊天记录、角色卡等个人数据。${NC}"
+        if [[ -n "$unmerged_preview" ]]; then
+            echo -e "${CYAN}这是更新中断后的常见状态，确认后脚本会自动清理并恢复到可更新状态。${NC}"
+        else
+            echo -e "${CYAN}若上方包含 package-lock / yarn.lock / pnpm-lock.yaml，通常可放心确认继续。${NC}"
+        fi
+        if ! fn_read_yes_no_prompt "是否执行修复以完成更新" true ""; then
+            fn_print_warning "已取消更新。"
+            fn_press_any_key
+            return
+        fi
+
+        fn_print_warning "正在执行深度修复与强制覆盖..."
+        if fn_git_workspace_auto_repair "$REPO_BRANCH" true; then
+            if fn_run_git_with_progress "重新拉取最新代码" false git pull --progress origin "$REPO_BRANCH" --no-rebase --allow-unrelated-histories; then
+                fn_print_success "强制更新成功。"
+                pull_succeeded=true
+            else
+                fn_print_error "强制覆盖后拉取代码失败，请重试。"
+            fi
+        else
+            fn_print_error "强制覆盖失败！"
+        fi
+    else
+        if fn_git_last_log_contains_regex "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
+            fn_write_git_network_troubleshooting
+        fi
+        fn_print_error "更新失败。Git输出: $(fn_git_last_log_tail 2)"
+    fi
 
     if $pull_succeeded; then
         if fn_run_npm_install; then
@@ -1393,33 +1777,23 @@ fn_rollback_st() {
     fi
     cd "$ST_DIR" || fn_print_error_exit "无法进入酒馆目录: $ST_DIR"
 
-    fn_print_warning "正在从远程仓库获取所有版本信息..."
-    local mirrors_to_try=()
-    mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "official_only")
-    if [ ${#mirrors_to_try[@]} -eq 0 ]; then
-        mapfile -t mirrors_to_try < <(fn_find_fastest_mirror "mirrors_only")
-    fi
-    if [ ${#mirrors_to_try[@]} -eq 0 ]; then
-        fn_print_error "所有线路均测试失败，无法获取版本列表。"
+    local selected_route
+    if ! selected_route="$(fn_resolve_download_route "回退前获取版本信息" "https://github.com/SillyTavern/SillyTavern.git")"; then
+        fn_print_error "未能选定可用线路，无法获取版本列表。"
         fn_press_any_key
         return
     fi
 
-    local fetch_ok=false
-    for mirror_url in "${mirrors_to_try[@]}"; do
-        local mirror_host
-        mirror_host=$(echo "$mirror_url" | sed -e 's|https://||' -e 's|/.*$||')
-        fn_print_warning "正在尝试使用线路 [${mirror_host}] 获取信息..."
-        git remote set-url origin "$mirror_url" >/dev/null 2>&1
-        if git fetch --all --tags >/dev/null 2>&1; then
-            fetch_ok=true
-            break
+    local route_host route_url
+    IFS='|' read -r route_host route_url <<<"$selected_route"
+    fn_print_warning "正在使用线路 [${route_host}] 获取版本信息..."
+    git remote set-url origin "$route_url" >/dev/null 2>&1
+    if [ -f ".git/index.lock" ]; then rm -f ".git/index.lock"; fi
+    if ! fn_run_git_with_progress "获取版本标签" false git fetch --progress --all --tags; then
+        if fn_git_last_log_contains_regex "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
+            fn_write_git_network_troubleshooting
         fi
-        fn_print_error "使用线路 [${mirror_host}] 获取失败，正在切换..."
-    done
-
-    if ! $fetch_ok; then
-        fn_print_error "尝试了所有可用线路，但无法从远程仓库获取版本信息。"
+        fn_print_error "无法从远程仓库获取版本信息。Git输出: $(fn_git_last_log_tail 2)"
         fn_press_any_key
         return
     fi
@@ -1458,7 +1832,7 @@ fn_rollback_st() {
         echo -e "  - 输入 ${GREEN}a${NC} 翻到上一页，${GREEN}d${NC} 翻到下一页"
         echo -e "  - 输入 ${GREEN}f [关键词]${NC} 筛选版本 (如 'f 1.10')"
         echo -e "  - 输入 ${GREEN}c${NC} 清除筛选，${GREEN}q${NC} 退出"
-        read -p "请输入操作: " user_input
+        user_input="$(fn_read_text_prompt "请输入操作" "" "" true)"
 
         case "$user_input" in
             [qQ]) fn_print_warning "操作已取消。"; fn_press_any_key; return ;;
@@ -1482,7 +1856,7 @@ fn_rollback_st() {
                     selected_tag="$user_input"
                     break
                 else
-                    fn_print_error "无效输入。"; sleep 1
+                    fn_print_error "输入无效，请按提示重试。"; sleep 1
                 fi
                 ;;
         esac
@@ -1490,46 +1864,86 @@ fn_rollback_st() {
 
     if [ -n "$selected_tag" ]; then
         echo -e "\n${CYAN}此操作仅会改变酒馆的程序版本，不会影响您的用户数据 (如聊天记录、角色卡等)。${NC}"
-        echo -en "确认要切换到版本 ${YELLOW}${selected_tag}${NC} 吗？(直接回车=是, 输入n=否): "
-        read confirm
-        if [[ "$confirm" =~ ^[nN]$ ]]; then
+        if ! fn_read_yes_no_prompt "确认要切换到版本 ${selected_tag} 吗" true ""; then
             fn_print_warning "操作已取消。"
             fn_press_any_key
             return
         fi
 
+        local preflight_issues
+        preflight_issues="$(fn_git_repo_issue_summary || true)"
+        if [[ -n "$preflight_issues" ]]; then
+            clear
+            fn_print_header "检测到仓库残留状态"
+            echo -e "\n--- 检测结果 ---\n${preflight_issues}\n--------------"
+            echo -e "${CYAN}这通常是上次更新/切换中断遗留，并非您的操作错误。${NC}"
+            if fn_read_yes_no_prompt "是否先执行一键自愈再继续切换版本（推荐）" true ""; then
+                if fn_git_workspace_auto_repair "$REPO_BRANCH" false; then
+                    fn_print_success "仓库自愈完成，继续切换版本。"
+                else
+                    fn_print_error "一键自愈失败，请重试。"
+                    fn_press_any_key
+                    return
+                fi
+            fi
+        fi
+
         fn_print_warning "正在尝试切换到版本 ${selected_tag}..."
-        local checkout_output
-        checkout_output=$(git checkout "tags/$selected_tag" 2>&1)
-        local exit_code=$?
         local checkout_succeeded=false
+        if [ -f ".git/index.lock" ]; then rm -f ".git/index.lock"; fi
 
-        if [ $exit_code -eq 0 ]; then
-            fn_print_success "版本已成功切换到 ${selected_tag}"
+        if fn_run_git_with_progress "切换到版本 ${selected_tag}" false git checkout -f "tags/$selected_tag"; then
             checkout_succeeded=true
-        elif echo "$checkout_output" | grep -qE "overwritten by checkout|Please commit|index.lock"; then
+        elif fn_git_last_log_contains_regex "overwritten by checkout|Please commit|unmerged files|conflict|index.lock|You have not concluded your merge|rebase|cherry-pick"; then
             # 智能诊断切换冲突
-            local reason="您有本地文件修改，与目标版本冲突。"
-            local actionDesc="放弃本地代码修改"
+            local reason="检测到程序目录与目标版本存在差异，无法直接切换。"
+            local actionDesc="重置程序目录差异"
+            local safe_hint="这是常见情况，可按提示确认继续。"
+            local conflict_preview
+            local unmerged_preview
+            unmerged_preview="$(fn_git_unmerged_files_preview 8)"
 
-            if echo "$checkout_output" | grep -q "index.lock"; then
+            if [[ -n "$unmerged_preview" ]]; then
+                reason="检测到未解决冲突文件（通常是上次更新中断遗留）。"
+                actionDesc="清理未解决冲突并继续切换"
+                safe_hint="该情况很常见，确认后脚本会自动清理冲突状态，可放心继续。"
+                conflict_preview="$unmerged_preview"
+            else
+                conflict_preview="$(fn_git_last_log_conflict_preview 8)"
+            fi
+
+            if [[ -z "$unmerged_preview" ]] && fn_git_last_log_contains_regex "package-lock\\.json"; then
+                reason="依赖配置文件 (package-lock.json) 差异，这是系统自动行为。"
+                actionDesc="重置依赖配置文件"
+                safe_hint="该情况通常由依赖安装自动产生，可放心确认继续。"
+            elif [[ -z "$unmerged_preview" ]] && fn_git_last_log_contains_regex "yarn\\.lock|pnpm-lock\\.yaml|npm-shrinkwrap\\.json"; then
+                reason="检测到依赖锁文件差异，这是常见自动行为。"
+                actionDesc="重置依赖锁文件"
+                safe_hint="该情况通常由依赖安装自动产生，可放心确认继续。"
+            fi
+
+            if fn_git_last_log_contains_regex "index\\.lock"; then
                 reason="Git 环境被锁定 (可能是上次操作意外中断)。"
                 actionDesc="解除锁定"
+                safe_hint="请继续执行修复，脚本会自动解除锁定。"
+            elif fn_git_last_log_contains_regex "You have not concluded your merge|rebase|cherry-pick"; then
+                reason="检测到未完成的 Git 操作（merge/rebase/cherry-pick）。"
+                actionDesc="终止未完成操作并恢复仓库状态"
+                safe_hint="该情况很常见，确认后脚本会自动修复，可放心继续。"
             fi
 
             fn_print_header "检测到切换冲突"
             fn_print_warning "原因: $reason"
+            if [[ -n "$conflict_preview" ]]; then
+                echo -e "\n--- 冲突对象（来自 Git 输出） ---\n${conflict_preview}\n------------------------------"
+            fi
             echo -e "\n${CYAN}此操作将${BOLD}${actionDesc}${NC}，但${GREEN}绝对不会${NC}影响您的聊天记录、角色卡等个人数据。${NC}"
-            read -p "是否要强制覆盖本地修改以完成切换？(直接回车=是, 输入n=否): " force_confirm
-            if [[ "$force_confirm" =~ ^[nN]$ ]]; then
+            echo -e "${CYAN}${safe_hint}${NC}"
+            if ! fn_read_yes_no_prompt "是否执行修复并继续切换版本（推荐）" true ""; then
                 fn_print_warning "已取消版本切换。"
             else
                 fn_print_warning "正在执行深度修复与强制切换..."
-                # 自动解锁
-                rm -f .git/index.lock
-                if git checkout -f "tags/$selected_tag" >/dev/null 2>&1; then
-                    # 彻底清理未追踪文件
-                    git clean -fd >/dev/null 2>&1
+                if fn_git_workspace_auto_repair "$REPO_BRANCH" true && fn_run_git_with_progress "强制切换到版本 ${selected_tag}" false git checkout -f "tags/$selected_tag"; then
                     fn_print_success "版本已成功强制切换到 ${selected_tag}"
                     checkout_succeeded=true
                 else
@@ -1537,10 +1951,11 @@ fn_rollback_st() {
                 fi
             fi
         else
-            fn_print_error "切换失败！Git输出: $(echo "$checkout_output" | tail -n 2)"
+            fn_print_error "切换失败！Git输出: $(fn_git_last_log_tail 2)"
         fi
 
         if $checkout_succeeded; then
+            git clean -fd >/dev/null 2>&1 || true
             if fn_run_npm_install; then
                 fn_print_success "版本切换并同步依赖成功！"
             else
@@ -1598,7 +2013,7 @@ fn_menu_backup_interactive() {
             printf "      ${CYAN}(%s)${NC}\n" "$description"
         done
         echo -e "\n      ${GREEN}[回车] 保存设置并开始备份${NC}\n      ${RED}[0] 返回上一级${NC}"
-        read -p "请操作 [输入数字, 回车 或 0]: " user_choice
+        user_choice="$(fn_read_text_prompt "请操作 [输入数字, 回车 或 0]" "" "" false)"
         case "$user_choice" in
         "" | [sS]) break ;;
         0) echo "操作已取消。"; return ;;
@@ -1611,7 +2026,7 @@ fn_menu_backup_interactive() {
                     selection_status[$selected_key]=true
                 fi
             else
-                fn_print_warning "无效输入。"
+                fn_print_warning "输入无效，请按提示重试。"
                 sleep 1
             fi
             ;;
@@ -1672,7 +2087,7 @@ fn_menu_manage_backups() {
         
         echo -e "\n  ${RED}请输入要删除的备份序号 (多选请用空格隔开, 输入 'all' 全选)。${NC}"
         echo -e "  按 ${CYAN}[回车] 键直接返回${NC}，或输入 ${CYAN}[0] 返回${NC}。"
-        read -p "  请操作: " selection
+        selection="$(fn_read_text_prompt "  请操作" "" "" false)"
         if [[ -z "$selection" || "$selection" == "0" ]]; then
             break
         fi
@@ -1698,8 +2113,7 @@ fn_menu_manage_backups() {
             for file in "${files_to_delete[@]}"; do
                 echo -e "  - ${RED}$(basename "$file")${NC}"
             done
-            read -p $'\n'"确认要删除这 ${#files_to_delete[@]} 个文件吗？[y/N]: " confirm_delete
-            if [[ "$confirm_delete" =~ ^[yY]$ ]]; then
+            if fn_read_yes_no_prompt "删除这 ${#files_to_delete[@]} 个文件" false ""; then
                 for file in "${files_to_delete[@]}"; do
                     rm "$file"
                 done
@@ -1720,12 +2134,13 @@ fn_menu_backup() {
         echo -e "      [1] ${CYAN}创建新的本地备份${NC}"
         echo -e "      [2] ${CYAN}管理已有的本地备份${NC}\n"
         echo -e "      [0] ${CYAN}返回主菜单${NC}\n"
-        read -p "    请输入选项: " choice
+        local choice
+        choice="$(fn_read_menu_prompt "0-2")"
         case $choice in
             1) fn_menu_backup_interactive ;;
             2) fn_menu_manage_backups ;;
             0) break ;;
-            *) fn_print_error "无效输入。"; sleep 1 ;;
+            *) fn_print_error "输入无效，请按提示重试。"; sleep 1 ;;
         esac
     done
 }
@@ -1733,6 +2148,9 @@ fn_menu_backup() {
 fn_update_script() {
     clear
     fn_print_header "更新咕咕助手脚本"
+    if ! fn_read_yes_no_prompt "检查并更新咕咕助手脚本" true ""; then
+        return
+    fi
     fn_print_warning "正在从 Gitee 下载新版本..."
     local temp_file
     temp_file=$(mktemp)
@@ -1796,8 +2214,7 @@ fn_manage_autostart() {
     fn_print_header "管理助手自启"
     if $is_set; then
         echo -e "当前状态: ${GREEN}已启用${NC}\n${CYAN}提示: 关闭自启后，输入 'gugu' 命令即可手动启动助手。${NC}"
-        read -p "是否取消自启？ [Y/n]: " confirm
-        if [[ ! "$confirm" =~ ^[nN]$ ]]; then
+        if fn_read_yes_no_prompt "是否取消自启" true ""; then
             fn_create_shortcut
             sed -i "/# 咕咕助手/d" "$BASHRC_FILE"
             sed -i "\|$AUTOSTART_CMD|d" "$BASHRC_FILE"
@@ -1805,8 +2222,7 @@ fn_manage_autostart() {
         fi
     else
         echo -e "当前状态: ${RED}未启用${NC}\n${CYAN}提示: 在 Termux 中输入 'gugu' 命令可以手动启动助手。${NC}"
-        read -p "是否设置自启？ [Y/n]: " confirm
-        if [[ ! "$confirm" =~ ^[nN]$ ]]; then
+        if fn_read_yes_no_prompt "是否设置自启" true ""; then
             fn_create_shortcut
             echo -e "\n# 咕咕助手\n$AUTOSTART_CMD" >>"$BASHRC_FILE"
             fn_print_success "已成功设置自启。"
@@ -1877,51 +2293,6 @@ if not hasattr(BaseModel, 'model_dump'):
 " &>/dev/null
 }
 
-fn_set_lab_mirror_preference() {
-    local key="$1"
-    local title="$2"
-    clear
-    fn_print_header "设置 $title 安装线路"
-    
-    local current_pref="Auto"
-    if [ -f "$LAB_CONFIG_FILE" ]; then
-        local val
-        val=$(grep "^${key}=" "$LAB_CONFIG_FILE" | cut -d'=' -f2 | tr -d '"')
-        if [ -n "$val" ]; then current_pref="$val"; fi
-    fi
-    
-    local pref_text="自动"
-    case "$current_pref" in
-        "Auto") pref_text="自动 (优先海外，失败则切国内)" ;;
-        "Official") pref_text="强制海外 (GitHub/官方源)" ;;
-        "Mirror") pref_text="强制国内 (镜像加速)" ;;
-    esac
-    
-    echo -e "当前设置: ${YELLOW}${pref_text}${NC}"
-    echo -e "\n${GREEN}[1] 自动 (推荐)${NC}"
-    echo -e "    优先尝试官方源，如果失败自动切换到国内镜像。"
-    echo -e "${CYAN}[2] 强制海外${NC}"
-    echo -e "    只使用官方源。适合网络环境极好(有梯子)的用户。"
-    echo -e "${CYAN}[3] 强制国内${NC}"
-    echo -e "    只使用国内镜像。适合无梯子用户。"
-    
-    read -p $'\n请选择 [1-3]: ' choice
-    local new_pref=""
-    case "$choice" in
-        1) new_pref="Auto" ;;
-        2) new_pref="Official" ;;
-        3) new_pref="Mirror" ;;
-        *) fn_print_warning "无效输入。"; sleep 1; return ;;
-    esac
-    
-    mkdir -p "$CONFIG_DIR"
-    touch "$LAB_CONFIG_FILE"
-    sed -i "/^${key}=/d" "$LAB_CONFIG_FILE"
-    echo "${key}=\"${new_pref}\"" >> "$LAB_CONFIG_FILE"
-    fn_print_success "设置已保存！"
-    sleep 1
-}
-
 fn_get_git_version() {
     local target_dir="$1"
     if [ ! -d "$target_dir/.git" ]; then
@@ -1948,12 +2319,13 @@ fn_menu_version_management() {
         echo -e "      [1] ${GREEN}更新酒馆${NC}"
         echo -e "      [2] ${YELLOW}回退版本${NC}\n"
         echo -e "      [0] ${CYAN}返回主菜单${NC}\n"
-        read -p "    请输入选项: " choice
+        local choice
+        choice="$(fn_read_menu_prompt "0-2")"
         case $choice in
             1) fn_update_st; break ;;
             2) fn_rollback_st; break ;;
             0) break ;;
-            *) fn_print_error "无效输入。"; sleep 1 ;;
+            *) fn_print_error "输入无效，请按提示重试。"; sleep 1 ;;
         esac
     done
 }
@@ -1969,30 +2341,29 @@ fn_install_gcli() {
     echo -e "该组件遵循 ${YELLOW}CNC-1.0${NC} 协议，${RED}${BOLD}严禁商业用途${NC}。"
     echo -e "继续安装即代表您知晓并同意遵守该协议。"
     echo -e "────────────────────────────────────────"
-    read -p "请输入 'yes' 确认并继续安装: " confirm
-    if [[ "$confirm" != "yes" ]]; then
+    if ! fn_read_keyword_confirm "yes" "确认并继续安装"; then
         fn_print_warning "用户取消安装。"
         fn_press_any_key
         return
     fi
 
     fn_print_warning "正在更新系统软件包以确保兼容性 (pkg upgrade)..."
-    if ! pkg update -y || ! pkg upgrade -y; then
+    if ! fn_run_termux_apt_noninteractive update || ! fn_run_termux_apt_noninteractive upgrade; then
         fn_print_error "软件包更新失败！请检查网络连接或手动执行 'pkg upgrade'。"
         fn_press_any_key
         return
     fi
 
     fn_print_warning "正在检查环境依赖..."
-    local packages_to_install=""
-    if ! command -v uv &> /dev/null; then packages_to_install+=" uv"; fi
-    if ! command -v python &> /dev/null; then packages_to_install+=" python"; fi
-    if ! command -v node &> /dev/null; then packages_to_install+=" nodejs"; fi
-    if ! command -v git &> /dev/null; then packages_to_install+=" git"; fi
+    local packages_to_install=()
+    if ! command -v uv &> /dev/null; then packages_to_install+=("uv"); fi
+    if ! command -v python &> /dev/null; then packages_to_install+=("python"); fi
+    if ! command -v node &> /dev/null; then packages_to_install+=("nodejs"); fi
+    if ! command -v git &> /dev/null; then packages_to_install+=("git"); fi
 
-    if [ -n "$packages_to_install" ]; then
-        fn_print_warning "正在安装缺失的系统依赖: $packages_to_install"
-        pkg install $packages_to_install -y || { fn_print_error "依赖安装失败！"; fn_press_any_key; return; }
+    if [ ${#packages_to_install[@]} -gt 0 ]; then
+        fn_print_warning "正在安装缺失的系统依赖: ${packages_to_install[*]}"
+        fn_run_termux_apt_noninteractive install "${packages_to_install[@]}" || { fn_print_error "依赖安装失败！"; fn_press_any_key; return; }
     fi
 
     if ! command -v pm2 &> /dev/null; then
@@ -2000,60 +2371,42 @@ fn_install_gcli() {
         npm install pm2 -g || { fn_print_error "pm2 安装失败！"; fn_press_any_key; return; }
     fi
 
-    local mirror_pref="Auto"
-    if [ -f "$LAB_CONFIG_FILE" ]; then
-        local val
-        val=$(grep "^GCLI_MIRROR_PREF=" "$LAB_CONFIG_FILE" | cut -d'=' -f2 | tr -d '"')
-        if [ -n "$val" ]; then mirror_pref="$val"; fi
+    local selected_route
+    if ! selected_route="$(fn_resolve_download_route "部署 gcli2api" "https://github.com/su-kaka/gcli2api.git")"; then
+        fn_print_error "未能选定可用下载线路。"
+        fn_press_any_key
+        return
     fi
-    
-    local official_git="https://github.com/su-kaka/gcli2api.git"
-    local mirror_git="https://hub.gitmirror.com/https://github.com/su-kaka/gcli2api.git"
-    
-    local use_official_git=true
-    if [[ "$mirror_pref" == "Mirror" ]]; then use_official_git=false; fi
-    
-    fn_print_warning "正在部署 gcli2api (模式: $mirror_pref)..."
+    local route_host route_url
+    IFS='|' read -r route_host route_url <<<"$selected_route"
+
+    fn_print_warning "正在部署 gcli2api (线路: ${route_host})..."
     cd "$HOME" || return
     
     if [ -d "$GCLI_DIR" ]; then
         fn_print_warning "检测到旧目录，正在更新..."
         cd "$GCLI_DIR" || return
-        
-        local update_success=false
-        if $use_official_git; then
-            echo -e "${BOLD}尝试从官方源拉取...${NC}"
-            git remote set-url origin "$official_git"
-            if git fetch --all; then update_success=true; fi
-        fi
-        
-        if ! $update_success && [[ "$mirror_pref" == "Auto" || "$mirror_pref" == "Mirror" ]]; then
-            if $use_official_git; then fn_print_warning "官方源连接失败，自动切换到国内镜像..."; fi
-            git remote set-url origin "$mirror_git"
-            if git fetch --all; then update_success=true; fi
-        fi
-        
-        if ! $update_success; then
-            fn_print_error "Git 拉取更新失败！请检查网络连接。"
+        git remote set-url origin "$route_url"
+        if ! fn_run_git_with_progress "拉取 gcli2api 更新" false git fetch --progress --all; then
+            if fn_git_last_log_contains_regex "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
+                fn_write_git_network_troubleshooting
+            fi
+            fn_print_error "Git 拉取更新失败！Git输出: $(fn_git_last_log_tail 8)"
             fn_press_any_key
             return
         fi
         git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
+        if [ $? -ne 0 ]; then
+            fn_print_error "Git 重置失败！请检查文件占用或手动处理。"
+            fn_press_any_key
+            return
+        fi
     else
-        local clone_success=false
-        if $use_official_git; then
-            echo -e "${BOLD}尝试从官方源克隆...${NC}"
-            if git clone "$official_git" "$GCLI_DIR"; then clone_success=true; fi
-        fi
-        
-        if ! $clone_success && [[ "$mirror_pref" == "Auto" || "$mirror_pref" == "Mirror" ]]; then
-            if $use_official_git; then fn_print_warning "官方源连接失败，自动切换到国内镜像..."; fi
-            rm -rf "$GCLI_DIR"
-            if git clone "$mirror_git" "$GCLI_DIR"; then clone_success=true; fi
-        fi
-        
-        if ! $clone_success; then
-            fn_print_error "克隆仓库失败！请检查网络或代理设置。"
+        if ! fn_run_git_with_progress "克隆 gcli2api 仓库" false git clone --progress "$route_url" "$GCLI_DIR"; then
+            if fn_git_last_log_contains_regex "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
+                fn_write_git_network_troubleshooting
+            fi
+            fn_print_error "克隆 gcli2api 仓库失败！Git输出: $(fn_git_last_log_tail 8)"
             fn_press_any_key
             return
         fi
@@ -2064,13 +2417,13 @@ fn_install_gcli() {
     uv venv --clear
     
     local install_success=false
-    if [[ "$mirror_pref" == "Official" || "$mirror_pref" == "Auto" ]]; then
-        fn_print_warning "尝试使用官方源安装依赖..."
-        if uv pip install -r requirements-termux.txt --link-mode copy; then install_success=true; fi
+    fn_print_warning "尝试使用官方源安装依赖..."
+    if uv pip install -r requirements-termux.txt --link-mode copy; then
+        install_success=true
     fi
     
-    if ! $install_success && [[ "$mirror_pref" == "Auto" || "$mirror_pref" == "Mirror" ]]; then
-        if [[ "$mirror_pref" == "Auto" ]]; then fn_print_warning "官方源安装失败，自动切换到国内镜像..."; else fn_print_warning "使用国内镜像安装依赖..."; fi
+    if ! $install_success; then
+        fn_print_warning "官方源安装失败，自动切换到国内镜像..."
         if uv pip install -r requirements-termux.txt --link-mode copy --index-url https://pypi.tuna.tsinghua.edu.cn/simple; then install_success=true; fi
     fi
     
@@ -2134,8 +2487,7 @@ fn_gcli_stop_service() {
 fn_gcli_uninstall() {
     clear
     fn_print_header "卸载 gcli2api"
-    read -p "确认要卸载 gcli2api 吗？(这将删除程序目录和配置文件) [y/N]: " confirm
-    if [[ "$confirm" =~ ^[yY]$ ]]; then
+    if fn_read_yes_no_prompt "确认要卸载 gcli2api 吗？(这将删除程序目录和配置文件)" false ""; then
         fn_gcli_stop_service
         rm -rf "$GCLI_DIR"
         cd "$HOME" || return
@@ -2190,19 +2542,25 @@ fn_menu_gcli_manage() {
         fi
 
         echo -e "      [1] ${CYAN}安装/更新${NC}"
-        if $is_running; then
-            echo -e "      [2] ${YELLOW}停止服务${NC}"
-        else
-            echo -e "      [2] ${GREEN}启动服务${NC}"
+        local installed=false
+        if [ -d "$GCLI_DIR" ]; then
+            installed=true
+            if $is_running; then
+                echo -e "      [2] ${YELLOW}停止服务${NC}"
+            else
+                echo -e "      [2] ${GREEN}启动服务${NC}"
+            fi
+            echo -e "      [3] 跟随酒馆启动: [${auto_start_status}]"
+            echo -e "      [4] ${RED}卸载 gcli2api${NC}"
+            echo -e "      [5] 打开 Web 面板"
         fi
-        echo -e "      [3] 跟随酒馆启动: [${auto_start_status}]"
-        echo -e "      [4] ${RED}卸载 gcli2api${NC}"
-        echo -e "      [5] 查看运行日志"
-        echo -e "      [6] 打开 Web 面板"
-        echo -e "\n      [7] ${YELLOW}切换安装线路${NC}"
         echo -e "      [0] ${CYAN}返回上一级${NC}\n"
-        
-        read -p "    请输入选项: " choice
+
+        local allowed_choices="0/1"
+        if $installed; then
+            allowed_choices="0-5"
+        fi
+        choice="$(fn_read_menu_prompt "$allowed_choices")"
         case $choice in
             1) fn_install_gcli ;;
             2)
@@ -2228,8 +2586,7 @@ fn_menu_gcli_manage() {
                 sleep 1
                 ;;
             4) fn_gcli_uninstall ;;
-            5) fn_gcli_show_logs ;;
-            6)
+            5)
                 if fn_check_command "termux-open-url"; then
                     termux-open-url "http://127.0.0.1:7861"
                     fn_print_success "已尝试打开浏览器。"
@@ -2238,9 +2595,8 @@ fn_menu_gcli_manage() {
                 fi
                 sleep 1
                 ;;
-            7) fn_set_lab_mirror_preference "GCLI_MIRROR_PREF" "gcli2api" ;;
             0) break ;;
-            *) fn_print_error "无效输入。"; sleep 1 ;;
+            *) fn_print_error "输入无效，请按提示重试。"; sleep 1 ;;
         esac
     done
 }
@@ -2298,10 +2654,10 @@ fn_menu_st_config() {
         
         echo -e "\n      [0] ${CYAN}返回上一级${NC}"
 
-        read -p "    请输入选项: " choice
+        choice="$(fn_read_menu_prompt "0-5")"
         case "$choice" in
             1)
-                read -p "请输入新的端口号 (1024-65535): " new_port
+                new_port="$(fn_read_text_prompt "请输入新的端口号 (1024-65535)" "" "" true)"
                 if [[ "$new_port" =~ ^[0-9]+$ ]] && [ "$new_port" -ge 1024 ] && [ "$new_port" -le 65535 ]; then
                     fn_update_st_config_value "port" "$new_port"
                     fn_print_success "端口已修改为 $new_port"
@@ -2320,8 +2676,8 @@ fn_menu_st_config() {
                 fn_press_any_key
                 ;;
             3)
-                read -p "请输入用户名: " u
-                read -p "请输入密码: " p
+                u="$(fn_read_text_prompt "请输入用户名" "" "" true)"
+                p="$(fn_read_text_prompt "请输入密码" "" "" true)"
                 if [[ -z "$u" || -z "$p" ]]; then
                     fn_print_error "用户名和密码不能为空！"
                 else
@@ -2352,10 +2708,9 @@ fn_menu_st_config() {
                 else
                     if [[ "$curr_auth" == "false" && "$curr_user" == "false" ]]; then
                         fn_print_warning "局域网访问必须开启账密模式！"
-                        read -p "是否自动开启单用户账密模式？[Y/n]: " confirm
-                        if [[ ! "$confirm" =~ ^[nN]$ ]]; then
-                            read -p "请设置用户名: " u
-                            read -p "请设置密码: " p
+                        if fn_read_yes_no_prompt "是否自动开启单用户账密模式" true ""; then
+                            u="$(fn_read_text_prompt "请设置用户名" "" "" true)"
+                            p="$(fn_read_text_prompt "请设置密码" "" "" true)"
                             if [[ -z "$u" || -z "$p" ]]; then
                                 fn_print_error "用户名和密码不能为空，操作已取消。"
                                 fn_press_any_key; continue
@@ -2417,7 +2772,7 @@ fn_menu_st_config() {
                 fn_press_any_key
                 ;;
             0) return ;;
-            *) fn_print_error "无效输入。"; sleep 1 ;;
+            *) fn_print_error "输入无效，请按提示重试。"; sleep 1 ;;
         esac
     done
 }
@@ -2429,12 +2784,13 @@ fn_menu_lab() {
         echo -e "      [1] ${CYAN}gcli2api${NC}"
         echo -e "      [2] ${CYAN}酒馆配置管理${NC}"
         echo -e "      [0] ${CYAN}返回主菜单${NC}\n"
-        read -p "    请输入选项: " choice
+        local choice
+        choice="$(fn_read_menu_prompt "0-2")"
         case $choice in
             1) fn_menu_gcli_manage ;;
             2) fn_menu_st_config ;;
             0) break ;;
-            *) fn_print_error "无效输入。"; sleep 1 ;;
+            *) fn_print_error "输入无效，请按提示重试。"; sleep 1 ;;
         esac
     done
 }
@@ -2458,7 +2814,7 @@ while true; do
     echo -e "      [9] 配置网络代理      [11] ${CYAN}酒馆配置管理${NC}"
     echo -e "      [10] 额外功能 (实验室)\n"
     echo -e "      ${RED}[0] 退出咕咕助手${NC}\n"
-    read -p "    请输入选项数字: " choice
+    choice="$(fn_read_menu_prompt "0-11")"
 
     case $choice in
         1) fn_start_st ;;
@@ -2473,6 +2829,6 @@ while true; do
         10) fn_menu_lab ;;
         11) fn_menu_st_config ;;
         0) echo -e "\n感谢使用，咕咕助手已退出。"; rm -f "$UPDATE_FLAG_FILE"; exit 0 ;;
-        *) fn_print_warning "无效输入，请重新选择。"; sleep 1.5 ;;
+        *) fn_print_warning "输入无效，请按提示重试。"; sleep 1.5 ;;
     esac
 done
