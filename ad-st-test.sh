@@ -54,7 +54,7 @@ MIRROR_LIST=(
 )
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v5.13test${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v5.14test${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
     echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
 }
@@ -526,7 +526,7 @@ fn_get_github_git_candidates() {
             continue
         fi
 
-        mirror_host="$(echo "$mirror_git_url" | sed -E 's#^https?://([^/]+)/.*#\\1#')"
+        mirror_host="$(echo "$mirror_git_url" | sed -E 's#^https?://([^/]+)/?.*$#\1#')"
         echo "镜像线路 (${mirror_host})|${mirror_host}|false|${mirror_git_url}"
     done
 }
@@ -639,10 +639,12 @@ fn_resolve_download_route() {
     for i in "${!successful[@]}"; do
         IFS='|' read -r elapsed name host is_official url <<<"${successful[$i]}"
         printf "  [%2d] %s - Git %s\n" "$((i + 1))" "$name" "$(fn_format_seconds "$elapsed")" >&2
+        printf "       地址: %s\n" "$url" >&2
     done
     for line in "${failed[@]}"; do
         IFS='|' read -r name host is_official url <<<"$line"
         echo -e "  ${RED}✗${NC} ${name}" >&2
+        echo -e "      地址: ${url}" >&2
     done
 
     local fastest_elapsed fastest_name fastest_host fastest_url
@@ -1503,12 +1505,15 @@ fn_update_st() {
         pull_succeeded=true
     elif echo "$git_output" | grep -qE "overwritten by merge|Please commit|unmerged files|Pulling is not possible|divergent branches|reconcile|index.lock"; then
         # 智能诊断冲突原因
-        local reason="您可能修改过酒馆的文件，导致无法自动合并新版本。"
-        local actionDesc="放弃本地代码修改"
+        local reason="检测到程序目录与目标版本存在差异，无法直接自动合并。"
+        local actionDesc="重置程序目录差异"
 
         if echo "$git_output" | grep -q "package-lock.json"; then
             reason="依赖配置文件 (package-lock.json) 冲突，这是系统自动行为。"
             actionDesc="重置系统配置文件"
+        elif echo "$git_output" | grep -qE "yarn.lock|pnpm-lock.yaml|npm-shrinkwrap.json"; then
+            reason="检测到依赖锁文件差异，这是常见自动行为。"
+            actionDesc="重置依赖锁文件"
         elif echo "$git_output" | grep -qE "divergent branches|reconcile"; then
             reason="本地版本与云端版本状态不一致 (分叉)。"
             actionDesc="同步版本状态"
@@ -1522,6 +1527,7 @@ fn_update_st() {
         fn_print_warning "原因: $reason"
         echo -e "\n--- 冲突文件预览 ---\n$(echo "$git_output" | grep -E '^\s+' | head -n 5)\n--------------------"
         echo -e "\n${CYAN}此操作将${BOLD}${actionDesc}${NC}，但${GREEN}绝对不会${NC}影响您的聊天记录、角色卡等个人数据。${NC}"
+        echo -e "${CYAN}若上方包含 package-lock / yarn.lock / pnpm-lock.yaml，通常可放心确认继续。${NC}"
         if ! fn_read_yes_no_prompt "是否执行修复以完成更新" true ""; then
             fn_print_warning "已取消更新。"
             fn_press_any_key
@@ -1673,18 +1679,36 @@ fn_rollback_st() {
             checkout_succeeded=true
         elif echo "$checkout_output" | grep -qE "overwritten by checkout|Please commit|index.lock"; then
             # 智能诊断切换冲突
-            local reason="您有本地文件修改，与目标版本冲突。"
-            local actionDesc="放弃本地代码修改"
+            local reason="检测到程序目录与目标版本存在差异，无法直接切换。"
+            local actionDesc="重置程序目录差异"
+            local safe_hint="这是常见情况，可按提示确认继续。"
+            local conflict_preview
+            conflict_preview="$(echo "$checkout_output" | grep -E '^[[:space:]]+' | sed -E 's/^[[:space:]]+//' | head -n 8)"
+
+            if echo "$checkout_output" | grep -q "package-lock.json"; then
+                reason="依赖配置文件 (package-lock.json) 差异，这是系统自动行为。"
+                actionDesc="重置依赖配置文件"
+                safe_hint="该情况通常由依赖安装自动产生，可放心确认继续。"
+            elif echo "$checkout_output" | grep -qE "yarn.lock|pnpm-lock.yaml|npm-shrinkwrap.json"; then
+                reason="检测到依赖锁文件差异，这是常见自动行为。"
+                actionDesc="重置依赖锁文件"
+                safe_hint="该情况通常由依赖安装自动产生，可放心确认继续。"
+            fi
 
             if echo "$checkout_output" | grep -q "index.lock"; then
                 reason="Git 环境被锁定 (可能是上次操作意外中断)。"
                 actionDesc="解除锁定"
+                safe_hint="请继续执行修复，脚本会自动解除锁定。"
             fi
 
             fn_print_header "检测到切换冲突"
             fn_print_warning "原因: $reason"
+            if [[ -n "$conflict_preview" ]]; then
+                echo -e "\n--- 冲突文件预览 ---\n${conflict_preview}\n--------------------"
+            fi
             echo -e "\n${CYAN}此操作将${BOLD}${actionDesc}${NC}，但${GREEN}绝对不会${NC}影响您的聊天记录、角色卡等个人数据。${NC}"
-            if ! fn_read_yes_no_prompt "是否要强制覆盖本地修改以完成切换" true ""; then
+            echo -e "${CYAN}${safe_hint}${NC}"
+            if ! fn_read_yes_no_prompt "是否执行修复并继续切换版本（推荐）" true ""; then
                 fn_print_warning "已取消版本切换。"
             else
                 fn_print_warning "正在执行深度修复与强制切换..."
