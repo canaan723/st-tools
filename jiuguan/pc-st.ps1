@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v5.17"
+$ScriptVersion = "v5.18"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -75,6 +75,166 @@ function Write-Warning($Message) { Write-Host "⚠ $Message" -ForegroundColor Ye
 function Write-Error($Message) { Write-Host "✗ $Message" -ForegroundColor Red }
 function Write-ErrorExit($Message) { Write-Host "`n✗ $Message`n流程已终止。" -ForegroundColor Red; Press-Any-Key; exit }
 function Press-Any-Key { Write-Host "`n请按任意键返回..." -ForegroundColor Cyan; $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null }
+$script:GitLastOutputLines = @()
+
+function Invoke-GitWithProgress {
+    param(
+        [Parameter(Mandatory = $true)] [string]$OperationName,
+        [Parameter(Mandatory = $true)] [string[]]$GitArgs,
+        [switch]$SanitizeOutput
+    )
+
+    $script:GitLastOutputLines = @()
+    Write-Warning "$OperationName：正在执行 Git 操作并实时显示进度..."
+
+    $outputBuffer = New-Object System.Collections.Generic.List[string]
+    & git @GitArgs 2>&1 | ForEach-Object {
+        $line = "$_"
+        if ($SanitizeOutput) {
+            $line = Sanitize-GitOutput $line
+        }
+        [void]$outputBuffer.Add($line)
+        Write-Host $line
+    }
+
+    $script:GitLastOutputLines = $outputBuffer.ToArray()
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Test-GitLastOutput {
+    param([Parameter(Mandatory = $true)] [string]$Pattern)
+    if (-not $script:GitLastOutputLines -or $script:GitLastOutputLines.Count -eq 0) { return $false }
+    $text = $script:GitLastOutputLines -join "`n"
+    return ($text -match $Pattern)
+}
+
+function Get-GitLastOutputTail {
+    param([int]$Lines = 20)
+    if (-not $script:GitLastOutputLines -or $script:GitLastOutputLines.Count -eq 0) { return "" }
+    $startIndex = [Math]::Max(0, $script:GitLastOutputLines.Count - $Lines)
+    return (@($script:GitLastOutputLines[$startIndex..($script:GitLastOutputLines.Count - 1)]) -join "`n")
+}
+
+function Get-GitConflictPreview {
+    param([int]$Lines = 8)
+    if (-not $script:GitLastOutputLines -or $script:GitLastOutputLines.Count -eq 0) { return "" }
+    $candidates = New-Object System.Collections.Generic.List[string]
+    foreach ($rawLine in $script:GitLastOutputLines) {
+        $line = "$rawLine" -replace '\x1B\[[0-9;]*[A-Za-z]', ''
+        $trimmed = $line.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
+
+        if ($trimmed -match 'CONFLICT.* in ([^\s]+)') {
+            [void]$candidates.Add($Matches[1])
+            continue
+        }
+
+        if ($trimmed -match 'package-lock\.json|yarn\.lock|pnpm-lock\.yaml|npm-shrinkwrap\.json|index\.lock') {
+            [void]$candidates.Add($trimmed)
+            continue
+        }
+
+        if ($line -match '^\s+\S') {
+            if ($trimmed -notmatch '^(Please commit|Aborting|error:|fatal:|hint:|remote:|To )') {
+                [void]$candidates.Add($trimmed)
+            }
+        }
+    }
+
+    $preview = @($candidates | Select-Object -Unique | Select-Object -First $Lines)
+    if ($preview.Count -eq 0) {
+        return (Get-GitLastOutputTail -Lines $Lines)
+    }
+
+    return ($preview -join "`n")
+}
+
+function Get-GitUnmergedFilesPreview {
+    param([int]$Lines = 8)
+    try {
+        $files = git diff --name-only --diff-filter=U 2>$null
+    } catch {
+        return ""
+    }
+
+    $files = @($files | ForEach-Object { "$_".Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($files.Count -eq 0) { return "" }
+
+    $preview = @($files | Select-Object -First $Lines)
+    if ($files.Count -gt $Lines) {
+        $preview += "...（其余省略，共 $($files.Count) 个未解决冲突文件）"
+    }
+    return ($preview -join "`n")
+}
+
+function Get-GitRepoIssueSummary {
+    $issues = New-Object System.Collections.Generic.List[string]
+
+    try {
+        $unmergedFiles = @(git diff --name-only --diff-filter=U 2>$null | ForEach-Object { "$_".Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($unmergedFiles.Count -gt 0) {
+            [void]$issues.Add("未解决冲突文件: $($unmergedFiles.Count) 个")
+        }
+    } catch {}
+
+    if (Test-Path ".git/MERGE_HEAD") { [void]$issues.Add("检测到未完成的 merge 状态") }
+    if (Test-Path ".git/CHERRY_PICK_HEAD") { [void]$issues.Add("检测到未完成的 cherry-pick 状态") }
+    if (Test-Path ".git/REVERT_HEAD") { [void]$issues.Add("检测到未完成的 revert 状态") }
+    if ((Test-Path ".git/rebase-merge") -or (Test-Path ".git/rebase-apply")) { [void]$issues.Add("检测到未完成的 rebase 状态") }
+
+    $lockCandidates = @(".git/index.lock", ".git/shallow.lock", ".git/packed-refs.lock", ".git/config.lock")
+    $lockFiles = @($lockCandidates | Where-Object { Test-Path $_ } | ForEach-Object { Split-Path $_ -Leaf })
+    if ($lockFiles.Count -gt 0) {
+        [void]$issues.Add("Git 锁文件残留: $($lockFiles -join ', ')")
+    }
+
+    return @($issues.ToArray())
+}
+
+function Invoke-GitWorkspaceAutoRepair {
+    param(
+        [string]$Branch = $Repo_Branch,
+        [switch]$DeepClean
+    )
+
+    Write-Warning "正在执行 Git 一键自愈..."
+
+    $lockCandidates = @(".git/index.lock", ".git/shallow.lock", ".git/packed-refs.lock", ".git/config.lock")
+    foreach ($lockPath in $lockCandidates) {
+        if (Test-Path $lockPath) {
+            Remove-Item $lockPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $abortCommands = @(
+        @('merge', '--abort'),
+        @('rebase', '--abort'),
+        @('cherry-pick', '--abort'),
+        @('revert', '--abort'),
+        @('am', '--abort')
+    )
+    foreach ($args in $abortCommands) {
+        & git @args 2>$null | Out-Null
+    }
+
+    if ($DeepClean) {
+        & git reset --hard "origin/$Branch" 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            & git reset --hard HEAD 2>$null | Out-Null
+            if ($LASTEXITCODE -ne 0) { return $false }
+        }
+        & git checkout -B $Branch "origin/$Branch" 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            & git checkout -B $Branch 2>$null | Out-Null
+        }
+        & git clean -fd 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { return $false }
+    } else {
+        & git reset --merge 2>$null | Out-Null
+    }
+
+    return $true
+}
 
 function Read-YesNoPrompt {
     param(
@@ -1033,10 +1193,9 @@ function Backup-ToCloud {
 
         try {
             Write-Warning "正在连接 GitHub 私有仓库..."
-            $cloneOutput = git -c credential.helper='' clone --depth 1 $pushUrl $tempDir 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                Write-Error "从云端克隆仓库失败！Git输出: $(Sanitize-GitOutput ($cloneOutput | Out-String))"
-                if ($cloneOutput -match "Failed to connect to .* port .*|Could not connect to server") {
+            if (-not (Invoke-GitWithProgress -OperationName "从云端克隆仓库" -SanitizeOutput -GitArgs @('-c', 'credential.helper=', 'clone', '--progress', '--depth', '1', $pushUrl, $tempDir))) {
+                Write-Error "从云端克隆仓库失败！Git输出:`n$(Get-GitLastOutputTail -Lines 8)"
+                if (Test-GitLastOutput "Failed to connect to .* port .*|Could not connect to server|Connection timed out|Could not resolve host") {
                     Write-GitNetworkTroubleshooting
                 }
             } else {
@@ -1098,10 +1257,9 @@ function Backup-ToCloud {
                             Write-Error "Git 提交失败！输出: $($commitOutput | Out-String)"
                         } else {
                             Write-Warning "正在上传到 GitHub..."
-                            $pushOutput = git -c credential.helper='' push 2>&1
-                            if ($LASTEXITCODE -ne 0) {
-                                Write-Error "上传失败！Git输出: $(Sanitize-GitOutput ($pushOutput | Out-String))"
-                                if ($pushOutput -match "Failed to connect to .* port .*|Could not connect to server") {
+                            if (-not (Invoke-GitWithProgress -OperationName "上传到 GitHub" -SanitizeOutput -GitArgs @('-c', 'credential.helper=', 'push', '--progress'))) {
+                                Write-Error "上传失败！Git输出:`n$(Get-GitLastOutputTail -Lines 8)"
+                                if (Test-GitLastOutput "Failed to connect to .* port .*|Could not connect to server|Connection timed out|Could not resolve host") {
                                     Write-GitNetworkTroubleshooting
                                 }
                             } else {
@@ -1167,12 +1325,11 @@ function Restore-FromCloud {
         $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
         try {
             Write-Warning "正在从 GitHub 私有仓库下载备份..."
-            $cloneOutput = git -c credential.helper='' clone --depth 1 $pullUrl $tempDir 2>&1
-            if ($LASTEXITCODE -eq 0) {
+            if (Invoke-GitWithProgress -OperationName "从云端下载备份仓库" -SanitizeOutput -GitArgs @('-c', 'credential.helper=', 'clone', '--progress', '--depth', '1', $pullUrl, $tempDir)) {
                 $cloneSuccess = $true
             } else {
-                Write-Error "恢复失败！Git输出: $(Sanitize-GitOutput ($cloneOutput | Out-String))"
-                if ($cloneOutput -match "Failed to connect to .* port .*|Could not connect to server") {
+                Write-Error "恢复失败！Git输出:`n$(Get-GitLastOutputTail -Lines 8)"
+                if (Test-GitLastOutput "Failed to connect to .* port .*|Could not connect to server|Connection timed out|Could not resolve host") {
                     Write-GitNetworkTroubleshooting
                 }
             }
@@ -1511,17 +1668,16 @@ function Install-SillyTavern {
         }
 
         Write-Warning "正在使用线路 [$($selectedRoute.Host)] 下载 ($Repo_Branch 分支)..."
-        $gitOutput = git -c credential.helper='' clone --depth 1 -b $Repo_Branch $selectedRoute.GitUrl $ST_Dir 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            if ($gitOutput -match "Permission denied") {
+        if (-not (Invoke-GitWithProgress -OperationName "下载酒馆主程序" -GitArgs @('-c', 'credential.helper=', 'clone', '--progress', '--depth', '1', '-b', $Repo_Branch, $selectedRoute.GitUrl, $ST_Dir))) {
+            if (Test-GitLastOutput "Permission denied") {
                 Write-Error "权限不足，无法创建目录。请尝试以【管理员身份】运行本脚本。"
                 Press-Any-Key
                 exit
             }
-            if ($gitOutput -match "Failed to connect to .* port .*|Could not connect to server") {
+            if (Test-GitLastOutput "Failed to connect to .* port .*|Could not connect to server|Connection timed out|Could not resolve host") {
                 Write-GitNetworkTroubleshooting
             }
-            Write-Error "下载失败！Git输出: $($gitOutput | Out-String)"
+            Write-Error "下载失败！Git输出:`n$(Get-GitLastOutputTail -Lines 8)"
             if (Test-Path $ST_Dir) { Remove-Item -Recurse -Force $ST_Dir }
             Press-Any-Key
             return
@@ -1620,65 +1776,96 @@ function Update-SillyTavern {
     $pullSucceeded = $false
     Write-Warning "正在尝试使用线路 [$($selectedRoute.Host)] 更新..."
     git remote set-url origin $selectedRoute.GitUrl
-    $gitOutput = git -c credential.helper='' pull origin $Repo_Branch --allow-unrelated-histories --no-rebase 2>&1
-    if ($LASTEXITCODE -eq 0) {
-        if ($gitOutput -match "Already up to date") { Write-Success "代码已是最新，无需更新。" } else { Write-Success "代码更新成功。" }
+
+    $repoIssues = @(Get-GitRepoIssueSummary)
+    if ($repoIssues.Count -gt 0) {
+        Clear-Host
+        Write-Header "检测到仓库残留状态"
+        Write-Host "`n--- 检测结果 ---`n$($repoIssues -join "`n")`n--------------"
+        Write-Host "这通常是上次更新/切换中断遗留，并非您的操作错误。" -ForegroundColor Cyan
+        if (Read-YesNoPrompt -Label "是否先执行一键自愈再继续更新（推荐）" -DefaultYes $true) {
+            if (Invoke-GitWorkspaceAutoRepair -Branch $Repo_Branch) {
+                Write-Success "仓库自愈完成，继续更新。"
+            } else {
+                Write-Error "一键自愈失败，请重试或切换网络后再试。"
+                Set-Location $ScriptBaseDir
+                Press-Any-Key
+                return
+            }
+        }
+    }
+
+    if (Invoke-GitWithProgress -OperationName "拉取酒馆更新" -GitArgs @('-c', 'credential.helper=', 'pull', '--progress', 'origin', $Repo_Branch, '--allow-unrelated-histories', '--no-rebase')) {
+        if (Test-GitLastOutput "Already up to date") { Write-Success "代码已是最新，无需更新。" } else { Write-Success "代码更新成功。" }
         $pullSucceeded = $true
-    } elseif ($gitOutput -match "Your local changes to the following files would be overwritten|conflict|error: Pulling is not possible because you have unmerged files.|divergent branches|reconcile|index\.lock") {
+    } elseif (Test-GitLastOutput "Your local changes to the following files would be overwritten|conflict|error: Pulling is not possible because you have unmerged files\.|divergent branches|reconcile|index\.lock|You have not concluded your merge|rebase|cherry-pick") {
         Clear-Host
         Write-Header "检测到更新冲突"
 
-        $reason = "未知原因"
-        $actionDesc = "放弃代码修改并清理环境"
+        $reason = "检测到程序目录与目标版本存在差异，无法直接自动合并。"
+        $actionDesc = "重置程序目录差异"
 
-        if ($gitOutput -match "Your local changes") {
-            if ($gitOutput -match "package-lock\.json") {
-                $reason = "依赖配置文件 (package-lock.json) 发生冲突。这通常是由于安装扩展或自动更新依赖引起的，并非您的错误。"
-                $actionDesc = "重置系统配置文件以确保更新顺利进行"
-            } else {
-                $reason = "本地代码文件被修改（可能是您手动修改过，或某些插件自动改动了文件）。"
-                $actionDesc = "放弃本地代码修改并清理环境"
-            }
-        } elseif ($gitOutput -match "divergent branches|reconcile") {
+        $unmergedPreview = Get-GitUnmergedFilesPreview -Lines 8
+        if (-not [string]::IsNullOrWhiteSpace($unmergedPreview)) {
+            $reason = "检测到未解决冲突文件（通常是上次更新中断遗留）。"
+            $actionDesc = "清理未解决冲突并同步代码"
+        } elseif (Test-GitLastOutput "package-lock\.json") {
+            $reason = "依赖配置文件 (package-lock.json) 差异，这是系统自动行为。"
+            $actionDesc = "重置依赖配置文件"
+        } elseif (Test-GitLastOutput "yarn\.lock|pnpm-lock\.yaml|npm-shrinkwrap\.json") {
+            $reason = "检测到依赖锁文件差异，这是常见自动行为。"
+            $actionDesc = "重置依赖锁文件"
+        } elseif (Test-GitLastOutput "divergent branches|reconcile") {
             $reason = "本地版本与远程版本存在分叉（通常是由于非正常的更新中断引起）。"
             $actionDesc = "同步版本状态并清理环境"
-        } elseif ($gitOutput -match "index\.lock") {
+        } elseif (Test-GitLastOutput "index\.lock") {
             $reason = "Git 环境被锁定（可能有其他 Git 进程正在运行或上次操作异常中断）。"
             $actionDesc = "解除锁定并清理环境"
-        } elseif ($gitOutput -match "conflict|unmerged files") {
+        } elseif (Test-GitLastOutput "You have not concluded your merge|rebase|cherry-pick") {
+            $reason = "检测到未完成的 Git 操作（merge/rebase/cherry-pick）。"
+            $actionDesc = "终止未完成操作并恢复仓库状态"
+        } elseif (Test-GitLastOutput "conflict|unmerged files") {
             $reason = "代码合并时发生冲突。"
             $actionDesc = "放弃冲突的修改并清理环境"
         }
 
         Write-Warning "原因: $reason"
-        Write-Host "`n--- 冲突/错误预览 ---`n$($gitOutput | Select-String -Pattern '^\s+|hint:|fatal:' | Select -First 8)`n--------------------"
+        $preview = if (-not [string]::IsNullOrWhiteSpace($unmergedPreview)) { $unmergedPreview } else { Get-GitConflictPreview -Lines 8 }
+        if (-not [string]::IsNullOrWhiteSpace($preview)) {
+            Write-Host "`n--- 冲突对象（来自 Git 输出） ---`n$preview`n------------------------------"
+        }
         Write-Host "`n此操作将$($actionDesc)，【不会】影响您的聊天记录、角色卡等用户数据。" -ForegroundColor Cyan
-        if (-not (Read-YesNoPrompt -Label "强制覆盖本地修改并继续更新" -DefaultYes $false)) {
+        if (-not [string]::IsNullOrWhiteSpace($unmergedPreview)) {
+            Write-Host "这是更新中断后的常见状态，确认后脚本会自动清理并恢复到可更新状态。" -ForegroundColor Cyan
+        } else {
+            Write-Host "若上方包含 package-lock / yarn.lock / pnpm-lock.yaml，通常可放心确认继续。" -ForegroundColor Cyan
+        }
+        if (-not (Read-YesNoPrompt -Label "是否执行修复以完成更新" -DefaultYes $true)) {
             Write-Warning "操作已取消。"; Set-Location $ScriptBaseDir; Press-Any-Key; return
         }
 
-        Write-Warning "正在清理环境并执行强制覆盖 (git reset --hard)..."
-        if (Test-Path ".git/index.lock") { Remove-Item ".git/index.lock" -Force }
-        git reset --hard "origin/$Repo_Branch"
-        git clean -fd
-        git -c credential.helper='' pull origin $Repo_Branch --allow-unrelated-histories --no-rebase
-        if ($LASTEXITCODE -eq 0) {
-            Write-Success "强制更新成功。"
-            $pullSucceeded = $true
+        Write-Warning "正在执行一键深度修复并重试更新..."
+        if (Invoke-GitWorkspaceAutoRepair -Branch $Repo_Branch -DeepClean) {
+            if (Invoke-GitWithProgress -OperationName "重新拉取酒馆更新" -GitArgs @('-c', 'credential.helper=', 'pull', '--progress', 'origin', $Repo_Branch, '--allow-unrelated-histories', '--no-rebase')) {
+                Write-Success "强制更新成功。"
+                $pullSucceeded = $true
+            } else {
+                Write-Error "强制更新失败！"
+            }
         } else {
-            Write-Error "强制更新失败！"
+            Write-Error "深度修复失败！"
         }
     } else {
-        if ($gitOutput -match "Permission denied") {
+        if (Test-GitLastOutput "Permission denied") {
             Write-Error "权限不足，无法写入文件。请尝试以【管理员身份】运行本脚本。"
             Set-Location $ScriptBaseDir
             Press-Any-Key
             return
         }
-        if ($gitOutput -match "Failed to connect to .* port .*|Could not connect to server") {
+        if (Test-GitLastOutput "Failed to connect to .* port .*|Could not connect to server|Connection timed out|Could not resolve host") {
             Write-GitNetworkTroubleshooting
         }
-        Write-Error "更新失败！Git输出: $($gitOutput | Out-String)"
+        Write-Error "更新失败！Git输出:`n$(Get-GitLastOutputTail -Lines 8)"
     }
 
     if ($pullSucceeded) {
@@ -1710,12 +1897,11 @@ function Rollback-SillyTavern {
     Write-Warning "正在尝试使用线路 [$($selectedRoute.Host)] 获取版本列表..."
     git remote set-url origin $selectedRoute.GitUrl
     if (Test-Path ".git/index.lock") { Remove-Item ".git/index.lock" -Force }
-    $fetchOutput = git -c credential.helper='' fetch --all --tags 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        if ($fetchOutput -match "Failed to connect to .* port .*|Could not connect to server") {
+    if (-not (Invoke-GitWithProgress -OperationName "获取版本标签" -GitArgs @('-c', 'credential.helper=', 'fetch', '--progress', '--all', '--tags'))) {
+        if (Test-GitLastOutput "Failed to connect to .* port .*|Could not connect to server|Connection timed out|Could not resolve host") {
             Write-GitNetworkTroubleshooting
         }
-        Write-Error "获取版本信息失败！Git输出: $($fetchOutput | Out-String)"
+        Write-Error "获取版本信息失败！Git输出:`n$(Get-GitLastOutputTail -Lines 8)"
         Set-Location $ScriptBaseDir
         Press-Any-Key
         return
@@ -1769,11 +1955,66 @@ function Rollback-SillyTavern {
                 Write-Host "`n此操作仅会改变酒馆的程序版本，不会影响您的用户数据 (如聊天记录、角色卡等)。" -ForegroundColor Cyan
                 if (-not (Read-YesNoPrompt -Label "切换到版本 $($selectedTag)" -DefaultYes $true)) { Write-Warning "操作已取消。"; continue }
 
+                $repoIssues = @(Get-GitRepoIssueSummary)
+                if ($repoIssues.Count -gt 0) {
+                    Clear-Host
+                    Write-Header "检测到仓库残留状态"
+                    Write-Host "`n--- 检测结果 ---`n$($repoIssues -join "`n")`n--------------"
+                    Write-Host "这通常是上次更新/切换中断遗留，并非您的操作错误。" -ForegroundColor Cyan
+                    if (Read-YesNoPrompt -Label "是否先执行一键自愈再继续切换版本（推荐）" -DefaultYes $true) {
+                        if (Invoke-GitWorkspaceAutoRepair -Branch $Repo_Branch) {
+                            Write-Success "仓库自愈完成，继续切换版本。"
+                        } else {
+                            Write-Error "一键自愈失败，请重试。"
+                            Press-Any-Key
+                            return
+                        }
+                    }
+                }
+
                 Write-Warning "正在切换到版本 $selectedTag ..."
                 if (Test-Path ".git/index.lock") { Remove-Item ".git/index.lock" -Force }
-                $checkoutOutput = git checkout -f "tags/$selectedTag" 2>&1
-                if ($LASTEXITCODE -ne 0) {
-                    Write-Error "切换版本失败！Git输出: $($checkoutOutput | Out-String)"; Press-Any-Key; return
+
+                $checkoutSucceeded = $false
+                if (Invoke-GitWithProgress -OperationName "切换到版本 $selectedTag" -GitArgs @('checkout', '-f', "tags/$selectedTag")) {
+                    $checkoutSucceeded = $true
+                } elseif (Test-GitLastOutput "overwritten by checkout|Please commit|unmerged files|conflict|index\.lock|You have not concluded your merge|rebase|cherry-pick") {
+                    $reason = "检测到程序目录与目标版本存在差异，无法直接切换。"
+                    $actionDesc = "清理冲突状态并继续切换版本"
+                    $unmergedPreview = Get-GitUnmergedFilesPreview -Lines 8
+                    if (-not [string]::IsNullOrWhiteSpace($unmergedPreview)) {
+                        $reason = "检测到未解决冲突文件（通常是上次更新中断遗留）。"
+                    } elseif (Test-GitLastOutput "You have not concluded your merge|rebase|cherry-pick") {
+                        $reason = "检测到未完成的 Git 操作（merge/rebase/cherry-pick）。"
+                    } elseif (Test-GitLastOutput "index\.lock") {
+                        $reason = "Git 环境被锁定（可能是上次操作意外中断）。"
+                    }
+
+                    $preview = if (-not [string]::IsNullOrWhiteSpace($unmergedPreview)) { $unmergedPreview } else { Get-GitConflictPreview -Lines 8 }
+                    Clear-Host
+                    Write-Header "检测到切换冲突"
+                    Write-Warning "原因: $reason"
+                    if (-not [string]::IsNullOrWhiteSpace($preview)) {
+                        Write-Host "`n--- 冲突对象（来自 Git 输出） ---`n$preview`n------------------------------"
+                    }
+                    Write-Host "`n此操作将$($actionDesc)，【不会】影响您的聊天记录、角色卡等用户数据。" -ForegroundColor Cyan
+                    Write-Host "该情况很常见，确认后脚本会自动清理并继续切换，可放心继续。" -ForegroundColor Cyan
+                    if (Read-YesNoPrompt -Label "是否执行修复并继续切换版本（推荐）" -DefaultYes $true) {
+                        if ((Invoke-GitWorkspaceAutoRepair -Branch $Repo_Branch -DeepClean) -and (Invoke-GitWithProgress -OperationName "强制切换到版本 $selectedTag" -GitArgs @('checkout', '-f', "tags/$selectedTag"))) {
+                            $checkoutSucceeded = $true
+                        } else {
+                            Write-Error "强制切换失败！"
+                        }
+                    } else {
+                        Write-Warning "已取消版本切换。"
+                    }
+                } else {
+                    Write-Error "切换版本失败！Git输出:`n$(Get-GitLastOutputTail -Lines 8)"
+                }
+
+                if (-not $checkoutSucceeded) {
+                    Press-Any-Key
+                    return
                 }
                 git clean -fd
                 
@@ -2095,13 +2336,12 @@ function Install-Gcli2Api {
         Set-Location $GcliDir
 
         git remote set-url origin $selectedRoute.GitUrl
-        $fetchOutput = git fetch --all 2>&1
-        if ($LASTEXITCODE -ne 0) {
+        if (-not (Invoke-GitWithProgress -OperationName "拉取 gcli2api 更新" -GitArgs @('fetch', '--progress', '--all'))) {
             Set-Location $ScriptBaseDir
-            if ($fetchOutput -match "Failed to connect to .* port .*|Could not connect to server") {
+            if (Test-GitLastOutput "Failed to connect to .* port .*|Could not connect to server|Connection timed out|Could not resolve host") {
                 Write-GitNetworkTroubleshooting
             }
-            Write-Error "Git 拉取更新失败！输出: $($fetchOutput | Out-String)"
+            Write-Error "Git 拉取更新失败！输出:`n$(Get-GitLastOutputTail -Lines 8)"
             Press-Any-Key
             return
         }
@@ -2113,12 +2353,11 @@ function Install-Gcli2Api {
         }
     } else {
         Write-Warning "正在使用线路 [$($selectedRoute.Host)] 克隆 gcli2api..."
-        $cloneOutput = git clone $selectedRoute.GitUrl $GcliDir 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            if ($cloneOutput -match "Failed to connect to .* port .*|Could not connect to server") {
+        if (-not (Invoke-GitWithProgress -OperationName "克隆 gcli2api 仓库" -GitArgs @('clone', '--progress', $selectedRoute.GitUrl, $GcliDir))) {
+            if (Test-GitLastOutput "Failed to connect to .* port .*|Could not connect to server|Connection timed out|Could not resolve host") {
                 Write-GitNetworkTroubleshooting
             }
-            Write-Error "克隆 gcli2api 仓库失败！Git输出: $($cloneOutput | Out-String)"; Press-Any-Key; return
+            Write-Error "克隆 gcli2api 仓库失败！Git输出:`n$(Get-GitLastOutputTail -Lines 8)"; Press-Any-Key; return
         }
     }
     Set-Location $GcliDir
@@ -2535,12 +2774,11 @@ function Get-AiStudioToken {
         
         if ($needClone) {
             Write-Warning "正在克隆 ais2api 项目..."
-            $gitOutput = git clone $selectedRoute.GitUrl $ais2apiDir 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                if ($gitOutput -match "Failed to connect to .* port .*|Could not connect to server") {
+            if (-not (Invoke-GitWithProgress -OperationName "克隆 ais2api 项目" -GitArgs @('clone', '--progress', $selectedRoute.GitUrl, $ais2apiDir))) {
+                if (Test-GitLastOutput "Failed to connect to .* port .*|Could not connect to server|Connection timed out|Could not resolve host") {
                     Write-GitNetworkTroubleshooting
                 }
-                Write-Error "克隆失败！Git输出: $($gitOutput | Out-String)"
+                Write-Error "克隆失败！Git输出:`n$(Get-GitLastOutputTail -Lines 8)"
                 Press-Any-Key; return
             }
         }

@@ -53,8 +53,10 @@ MIRROR_LIST=(
     "https://hubproxy-advj.onrender.com/https://github.com/SillyTavern/SillyTavern.git"
 )
 
+GIT_LAST_LOG_FILE=""
+
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v5.14test${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v5.15test${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
     echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
 }
@@ -109,6 +111,153 @@ fn_print_error_exit() {
 fn_press_any_key() {
     echo -e "\n${CYAN}请按任意键返回...${NC}"
     read -n 1 -s
+}
+
+fn_run_git_with_progress() {
+    local operation_name="$1"
+    local sanitize_output="${2:-false}"
+    shift 2
+
+    if [[ $# -eq 0 ]]; then
+        fn_print_error "内部错误：未提供 Git 命令。"
+        return 2
+    fi
+
+    if [[ -n "$GIT_LAST_LOG_FILE" && -f "$GIT_LAST_LOG_FILE" ]]; then
+        rm -f "$GIT_LAST_LOG_FILE"
+    fi
+    GIT_LAST_LOG_FILE="$(mktemp)"
+
+    fn_print_warning "${operation_name}：正在执行 Git 操作并实时显示进度..."
+    if [[ "$sanitize_output" == "true" ]]; then
+        (
+            "$@" 2>&1 \
+                | awk '{ gsub(/https:\/\/[^\/@[:space:]]+@github\.com\//, "https://***@github.com/"); print; fflush(); }' \
+                | tee "$GIT_LAST_LOG_FILE"
+            exit ${PIPESTATUS[0]}
+        )
+    else
+        (
+            "$@" 2>&1 | tee "$GIT_LAST_LOG_FILE"
+            exit ${PIPESTATUS[0]}
+        )
+    fi
+}
+
+fn_git_last_log_contains_regex() {
+    local pattern="$1"
+    [[ -n "$GIT_LAST_LOG_FILE" && -f "$GIT_LAST_LOG_FILE" ]] || return 1
+    grep -qE "$pattern" "$GIT_LAST_LOG_FILE"
+}
+
+fn_git_last_log_tail() {
+    local lines="${1:-20}"
+    [[ -n "$GIT_LAST_LOG_FILE" && -f "$GIT_LAST_LOG_FILE" ]] || return 0
+    tail -n "$lines" "$GIT_LAST_LOG_FILE"
+}
+
+fn_git_last_log_conflict_preview() {
+    local lines="${1:-8}"
+    [[ -n "$GIT_LAST_LOG_FILE" && -f "$GIT_LAST_LOG_FILE" ]] || return 0
+    local preview
+    preview="$(
+        {
+            grep -Eo 'CONFLICT[^[:cntrl:]]* in [^[:space:]]+' "$GIT_LAST_LOG_FILE" 2>/dev/null | sed -E 's/.* in //'
+            grep -E '^[[:space:]]+[^[:space:]]' "$GIT_LAST_LOG_FILE" 2>/dev/null | sed -E 's/^[[:space:]]+//'
+            grep -Eo '(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|npm-shrinkwrap\.json|\.git/index\.lock|index\.lock)' "$GIT_LAST_LOG_FILE" 2>/dev/null
+        } | sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g' \
+          | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' \
+          | grep -vE '^(Please commit|Aborting|error:|fatal:|hint:|remote:|To )' \
+          | awk 'NF && !seen[$0]++'
+    )"
+
+    if [[ -z "$preview" ]]; then
+        preview="$(fn_git_last_log_tail "$lines" \
+            | sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g' \
+            | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+    else
+        preview="$(printf '%s\n' "$preview" | head -n "$lines")"
+    fi
+
+    printf '%s' "$preview"
+}
+
+fn_git_unmerged_files_preview() {
+    local lines="${1:-8}"
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+
+    local files
+    files="$(git diff --name-only --diff-filter=U 2>/dev/null | sed '/^[[:space:]]*$/d')"
+    [[ -n "$files" ]] || return 0
+
+    local total preview
+    total="$(printf '%s\n' "$files" | wc -l | awk '{print $1}')"
+    preview="$(printf '%s\n' "$files" | head -n "$lines")"
+    if [[ "$total" =~ ^[0-9]+$ ]] && (( total > lines )); then
+        preview="${preview}"$'\n'"...（其余省略，共 ${total} 个未解决冲突文件）"
+    fi
+    printf '%s' "$preview"
+}
+
+fn_git_repo_issue_summary() {
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+
+    local issues=()
+    local unmerged_count
+    unmerged_count="$(git diff --name-only --diff-filter=U 2>/dev/null | sed '/^[[:space:]]*$/d' | wc -l | awk '{print $1}')"
+    if [[ "$unmerged_count" =~ ^[0-9]+$ ]] && (( unmerged_count > 0 )); then
+        issues+=("未解决冲突文件: ${unmerged_count} 个")
+    fi
+
+    [[ -f .git/MERGE_HEAD ]] && issues+=("检测到未完成的 merge 状态")
+    [[ -f .git/CHERRY_PICK_HEAD ]] && issues+=("检测到未完成的 cherry-pick 状态")
+    [[ -f .git/REVERT_HEAD ]] && issues+=("检测到未完成的 revert 状态")
+    [[ -d .git/rebase-merge || -d .git/rebase-apply ]] && issues+=("检测到未完成的 rebase 状态")
+
+    local lock_files=()
+    local lock_path
+    for lock_path in .git/index.lock .git/shallow.lock .git/packed-refs.lock .git/config.lock; do
+        if [[ -f "$lock_path" ]]; then
+            lock_files+=("${lock_path#.git/}")
+        fi
+    done
+    if (( ${#lock_files[@]} > 0 )); then
+        issues+=("Git 锁文件残留: ${lock_files[*]}")
+    fi
+
+    if (( ${#issues[@]} == 0 )); then
+        return 1
+    fi
+
+    printf '%s\n' "${issues[@]}"
+    return 0
+}
+
+fn_git_workspace_auto_repair() {
+    local branch="${1:-$REPO_BRANCH}"
+    local deep_clean="${2:-false}"
+
+    fn_print_warning "正在执行 Git 一键自愈..."
+
+    rm -f .git/index.lock .git/shallow.lock .git/packed-refs.lock .git/config.lock 2>/dev/null || true
+
+    git merge --abort >/dev/null 2>&1 || true
+    git rebase --abort >/dev/null 2>&1 || true
+    git cherry-pick --abort >/dev/null 2>&1 || true
+    git revert --abort >/dev/null 2>&1 || true
+    git am --abort >/dev/null 2>&1 || true
+
+    if [[ "$deep_clean" == "true" ]]; then
+        if ! git reset --hard "origin/$branch" >/dev/null 2>&1; then
+            git reset --hard HEAD >/dev/null 2>&1 || return 1
+        fi
+        git checkout -B "$branch" "origin/$branch" >/dev/null 2>&1 || git checkout -B "$branch" >/dev/null 2>&1 || true
+        git clean -fd >/dev/null 2>&1 || return 1
+    else
+        git reset --merge >/dev/null 2>&1 || true
+    fi
+
+    return 0
 }
 
 fn_trim() {
@@ -814,11 +963,9 @@ fn_git_backup_to_cloud() {
         (
             cd "$HOME" || exit 1
             fn_print_warning "正在连接 GitHub 私有仓库..."
-            local clone_output
-            clone_output="$(git -c credential.helper='' clone --depth 1 "$push_url" "$temp_dir" 2>&1)"
-            if [ $? -ne 0 ]; then
-                fn_print_error "从云端克隆仓库失败！Git输出: $(fn_sanitize_git_output "$clone_output")"
-                if echo "$clone_output" | grep -qE "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
+            if ! fn_run_git_with_progress "从云端克隆仓库" true git -c credential.helper='' clone --progress --depth 1 "$push_url" "$temp_dir"; then
+                fn_print_error "从云端克隆仓库失败！Git输出: $(fn_git_last_log_tail 2)"
+                if fn_git_last_log_contains_regex "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
                     fn_write_git_network_troubleshooting
                 fi
                 exit 1
@@ -870,11 +1017,9 @@ fn_git_backup_to_cloud() {
             fi
 
             fn_print_warning "正在上传到 GitHub..."
-            local push_output
-            push_output="$(git -c credential.helper='' push 2>&1)"
-            if [ $? -ne 0 ]; then
-                fn_print_error "上传失败！Git输出: $(fn_sanitize_git_output "$push_output")"
-                if echo "$push_output" | grep -qE "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
+            if ! fn_run_git_with_progress "上传到 GitHub" true git -c credential.helper='' push --progress; then
+                fn_print_error "上传失败！Git输出: $(fn_git_last_log_tail 2)"
+                if fn_git_last_log_contains_regex "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
                     fn_write_git_network_troubleshooting
                 fi
                 exit 1
@@ -945,13 +1090,11 @@ fn_git_restore_from_cloud() {
     while ! $clone_success; do
         temp_dir="$(mktemp -d)"
         fn_print_warning "正在从 GitHub 私有仓库下载备份..."
-        local clone_output
-        clone_output="$(git -c credential.helper='' clone --depth 1 "$pull_url" "$temp_dir" 2>&1)"
-        if [ $? -eq 0 ]; then
+        if fn_run_git_with_progress "下载云端备份仓库" true git -c credential.helper='' clone --progress --depth 1 "$pull_url" "$temp_dir"; then
             clone_success=true
         else
-            fn_print_error "恢复失败！Git输出: $(fn_sanitize_git_output "$clone_output")"
-            if echo "$clone_output" | grep -qE "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
+            fn_print_error "恢复失败！Git输出: $(fn_git_last_log_tail 2)"
+            if fn_git_last_log_contains_regex "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
                 fn_write_git_network_troubleshooting
             fi
             rm -rf "$temp_dir"
@@ -1435,13 +1578,11 @@ fn_install_st() {
         IFS='|' read -r route_host route_url <<<"$selected_route"
 
         fn_print_warning "正在使用线路 [${route_host}] 下载 (${REPO_BRANCH} 分支)..."
-        local git_output
-        git_output="$(git clone --depth 1 -b "$REPO_BRANCH" "$route_url" "$ST_DIR" 2>&1)"
-        if [ $? -ne 0 ]; then
-            if echo "$git_output" | grep -qE "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
+        if ! fn_run_git_with_progress "下载酒馆主程序" false git clone --progress --depth 1 -b "$REPO_BRANCH" "$route_url" "$ST_DIR"; then
+            if fn_git_last_log_contains_regex "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
                 fn_write_git_network_troubleshooting
             fi
-            fn_print_error "下载失败！Git输出: $(echo "$git_output" | tail -n 2)"
+            fn_print_error "下载失败！Git输出: $(fn_git_last_log_tail 2)"
             rm -rf "$ST_DIR"
             fn_press_any_key
             return
@@ -1490,42 +1631,71 @@ fn_update_st() {
     fn_print_warning "正在使用线路 [${route_host}] 更新..."
     git remote set-url origin "$route_url" >/dev/null 2>&1
 
-    local pull_succeeded=false
-    local git_output
-    # 使用 --no-rebase 策略并捕获输出
-    git_output=$(git pull origin "$REPO_BRANCH" --no-rebase --allow-unrelated-histories 2>&1)
-    local exit_code=$?
+    local preflight_issues
+    preflight_issues="$(fn_git_repo_issue_summary || true)"
+    if [[ -n "$preflight_issues" ]]; then
+        clear
+        fn_print_header "检测到仓库残留状态"
+        echo -e "\n--- 检测结果 ---\n${preflight_issues}\n--------------"
+        echo -e "${CYAN}这通常是上次更新/切换中断遗留，并非您的操作错误。${NC}"
+        if fn_read_yes_no_prompt "是否先执行一键自愈再继续更新（推荐）" true ""; then
+            if fn_git_workspace_auto_repair "$REPO_BRANCH" false; then
+                fn_print_success "仓库自愈完成，继续更新。"
+            else
+                fn_print_error "一键自愈失败，请重试或切换网络后再试。"
+                fn_press_any_key
+                return
+            fi
+        fi
+    fi
 
-    if [ $exit_code -eq 0 ]; then
-        if [[ "$git_output" == *"Already up to date."* ]]; then
+    local pull_succeeded=false
+    if fn_run_git_with_progress "更新酒馆代码" false git pull --progress origin "$REPO_BRANCH" --no-rebase --allow-unrelated-histories; then
+        if fn_git_last_log_contains_regex "Already up to date\\."; then
             fn_print_success "代码已是最新，无需更新。"
         else
             fn_print_success "代码更新成功。"
         fi
         pull_succeeded=true
-    elif echo "$git_output" | grep -qE "overwritten by merge|Please commit|unmerged files|Pulling is not possible|divergent branches|reconcile|index.lock"; then
+    elif fn_git_last_log_contains_regex "overwritten by merge|Please commit|unmerged files|Pulling is not possible|divergent branches|reconcile|index.lock|You have not concluded your merge|rebase|cherry-pick"; then
         # 智能诊断冲突原因
         local reason="检测到程序目录与目标版本存在差异，无法直接自动合并。"
         local actionDesc="重置程序目录差异"
+        local conflict_preview
+        local unmerged_preview
+        unmerged_preview="$(fn_git_unmerged_files_preview 8)"
 
-        if echo "$git_output" | grep -q "package-lock.json"; then
+        if [[ -n "$unmerged_preview" ]]; then
+            reason="检测到未解决冲突文件（通常是上次更新中断遗留）。"
+            actionDesc="清理未解决冲突并同步代码"
+        elif fn_git_last_log_contains_regex "package-lock\\.json"; then
             reason="依赖配置文件 (package-lock.json) 冲突，这是系统自动行为。"
             actionDesc="重置系统配置文件"
-        elif echo "$git_output" | grep -qE "yarn.lock|pnpm-lock.yaml|npm-shrinkwrap.json"; then
+        elif fn_git_last_log_contains_regex "yarn\\.lock|pnpm-lock\\.yaml|npm-shrinkwrap\\.json"; then
             reason="检测到依赖锁文件差异，这是常见自动行为。"
             actionDesc="重置依赖锁文件"
-        elif echo "$git_output" | grep -qE "divergent branches|reconcile"; then
+        elif fn_git_last_log_contains_regex "divergent branches|reconcile"; then
             reason="本地版本与云端版本状态不一致 (分叉)。"
             actionDesc="同步版本状态"
-        elif echo "$git_output" | grep -q "index.lock"; then
+        elif fn_git_last_log_contains_regex "index\\.lock"; then
             reason="Git 环境被锁定 (可能是上次操作意外中断)。"
             actionDesc="解除锁定"
+        elif fn_git_last_log_contains_regex "You have not concluded your merge|rebase|cherry-pick"; then
+            reason="检测到未完成的 Git 操作（merge/rebase/cherry-pick）。"
+            actionDesc="终止未完成操作并恢复仓库状态"
         fi
 
+        if [[ -n "$unmerged_preview" ]]; then
+            conflict_preview="$unmerged_preview"
+        else
+            conflict_preview="$(fn_git_last_log_conflict_preview 5)"
+        fi
         clear
         fn_print_header "检测到更新冲突"
         fn_print_warning "原因: $reason"
-        echo -e "\n--- 冲突文件预览 ---\n$(echo "$git_output" | grep -E '^\s+' | head -n 5)\n--------------------"
+        if [[ -n "$conflict_preview" ]]; then
+            echo -e "\n--- 冲突对象（来自 Git 输出） ---\n${conflict_preview}\n------------------------------"
+        fi
         echo -e "\n${CYAN}此操作将${BOLD}${actionDesc}${NC}，但${GREEN}绝对不会${NC}影响您的聊天记录、角色卡等个人数据。${NC}"
         echo -e "${CYAN}若上方包含 package-lock / yarn.lock / pnpm-lock.yaml，通常可放心确认继续。${NC}"
         if ! fn_read_yes_no_prompt "是否执行修复以完成更新" true ""; then
@@ -1535,13 +1705,8 @@ fn_update_st() {
         fi
 
         fn_print_warning "正在执行深度修复与强制覆盖..."
-        # 自动解锁
-        rm -f .git/index.lock
-        if git reset --hard "origin/$REPO_BRANCH" >/dev/null 2>&1; then
-            # 彻底清理未追踪文件
-            git clean -fd >/dev/null 2>&1
-            fn_print_warning "正在重新拉取最新代码..."
-            if git pull origin "$REPO_BRANCH" --no-rebase --allow-unrelated-histories >/dev/null 2>&1; then
+        if fn_git_workspace_auto_repair "$REPO_BRANCH" true; then
+            if fn_run_git_with_progress "重新拉取最新代码" false git pull --progress origin "$REPO_BRANCH" --no-rebase --allow-unrelated-histories; then
                 fn_print_success "强制更新成功。"
                 pull_succeeded=true
             else
@@ -1551,10 +1716,10 @@ fn_update_st() {
             fn_print_error "强制覆盖失败！"
         fi
     else
-        if echo "$git_output" | grep -qE "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
+        if fn_git_last_log_contains_regex "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
             fn_write_git_network_troubleshooting
         fi
-        fn_print_error "更新失败。Git输出: $(echo "$git_output" | tail -n 2)"
+        fn_print_error "更新失败。Git输出: $(fn_git_last_log_tail 2)"
     fi
 
     if $pull_succeeded; then
@@ -1590,8 +1755,11 @@ fn_rollback_st() {
     IFS='|' read -r route_host route_url <<<"$selected_route"
     fn_print_warning "正在使用线路 [${route_host}] 获取版本信息..."
     git remote set-url origin "$route_url" >/dev/null 2>&1
-    if ! git fetch --all --tags >/dev/null 2>&1; then
-        fn_print_error "无法从远程仓库获取版本信息。"
+    if ! fn_run_git_with_progress "获取版本标签" false git fetch --progress --all --tags; then
+        if fn_git_last_log_contains_regex "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
+            fn_write_git_network_troubleshooting
+        fi
+        fn_print_error "无法从远程仓库获取版本信息。Git输出: $(fn_git_last_log_tail 2)"
         fn_press_any_key
         return
     fi
@@ -1668,43 +1836,72 @@ fn_rollback_st() {
             return
         fi
 
+        local preflight_issues
+        preflight_issues="$(fn_git_repo_issue_summary || true)"
+        if [[ -n "$preflight_issues" ]]; then
+            clear
+            fn_print_header "检测到仓库残留状态"
+            echo -e "\n--- 检测结果 ---\n${preflight_issues}\n--------------"
+            echo -e "${CYAN}这通常是上次更新/切换中断遗留，并非您的操作错误。${NC}"
+            if fn_read_yes_no_prompt "是否先执行一键自愈再继续切换版本（推荐）" true ""; then
+                if fn_git_workspace_auto_repair "$REPO_BRANCH" false; then
+                    fn_print_success "仓库自愈完成，继续切换版本。"
+                else
+                    fn_print_error "一键自愈失败，请重试。"
+                    fn_press_any_key
+                    return
+                fi
+            fi
+        fi
+
         fn_print_warning "正在尝试切换到版本 ${selected_tag}..."
-        local checkout_output
-        checkout_output=$(git checkout "tags/$selected_tag" 2>&1)
-        local exit_code=$?
         local checkout_succeeded=false
 
-        if [ $exit_code -eq 0 ]; then
+        if fn_run_git_with_progress "切换到版本 ${selected_tag}" false git checkout "tags/$selected_tag"; then
             fn_print_success "版本已成功切换到 ${selected_tag}"
             checkout_succeeded=true
-        elif echo "$checkout_output" | grep -qE "overwritten by checkout|Please commit|index.lock"; then
+        elif fn_git_last_log_contains_regex "overwritten by checkout|Please commit|unmerged files|conflict|index.lock|You have not concluded your merge|rebase|cherry-pick"; then
             # 智能诊断切换冲突
             local reason="检测到程序目录与目标版本存在差异，无法直接切换。"
             local actionDesc="重置程序目录差异"
             local safe_hint="这是常见情况，可按提示确认继续。"
             local conflict_preview
-            conflict_preview="$(echo "$checkout_output" | grep -E '^[[:space:]]+' | sed -E 's/^[[:space:]]+//' | head -n 8)"
+            local unmerged_preview
+            unmerged_preview="$(fn_git_unmerged_files_preview 8)"
 
-            if echo "$checkout_output" | grep -q "package-lock.json"; then
+            if [[ -n "$unmerged_preview" ]]; then
+                reason="检测到未解决冲突文件（通常是上次更新中断遗留）。"
+                actionDesc="清理未解决冲突并继续切换"
+                safe_hint="该情况很常见，确认后脚本会自动清理冲突状态，可放心继续。"
+                conflict_preview="$unmerged_preview"
+            else
+                conflict_preview="$(fn_git_last_log_conflict_preview 8)"
+            fi
+
+            if [[ -z "$unmerged_preview" ]] && fn_git_last_log_contains_regex "package-lock\\.json"; then
                 reason="依赖配置文件 (package-lock.json) 差异，这是系统自动行为。"
                 actionDesc="重置依赖配置文件"
                 safe_hint="该情况通常由依赖安装自动产生，可放心确认继续。"
-            elif echo "$checkout_output" | grep -qE "yarn.lock|pnpm-lock.yaml|npm-shrinkwrap.json"; then
+            elif [[ -z "$unmerged_preview" ]] && fn_git_last_log_contains_regex "yarn\\.lock|pnpm-lock\\.yaml|npm-shrinkwrap\\.json"; then
                 reason="检测到依赖锁文件差异，这是常见自动行为。"
                 actionDesc="重置依赖锁文件"
                 safe_hint="该情况通常由依赖安装自动产生，可放心确认继续。"
             fi
 
-            if echo "$checkout_output" | grep -q "index.lock"; then
+            if fn_git_last_log_contains_regex "index\\.lock"; then
                 reason="Git 环境被锁定 (可能是上次操作意外中断)。"
                 actionDesc="解除锁定"
                 safe_hint="请继续执行修复，脚本会自动解除锁定。"
+            elif fn_git_last_log_contains_regex "You have not concluded your merge|rebase|cherry-pick"; then
+                reason="检测到未完成的 Git 操作（merge/rebase/cherry-pick）。"
+                actionDesc="终止未完成操作并恢复仓库状态"
+                safe_hint="该情况很常见，确认后脚本会自动修复，可放心继续。"
             fi
 
             fn_print_header "检测到切换冲突"
             fn_print_warning "原因: $reason"
             if [[ -n "$conflict_preview" ]]; then
-                echo -e "\n--- 冲突文件预览 ---\n${conflict_preview}\n--------------------"
+                echo -e "\n--- 冲突对象（来自 Git 输出） ---\n${conflict_preview}\n------------------------------"
             fi
             echo -e "\n${CYAN}此操作将${BOLD}${actionDesc}${NC}，但${GREEN}绝对不会${NC}影响您的聊天记录、角色卡等个人数据。${NC}"
             echo -e "${CYAN}${safe_hint}${NC}"
@@ -1712,11 +1909,7 @@ fn_rollback_st() {
                 fn_print_warning "已取消版本切换。"
             else
                 fn_print_warning "正在执行深度修复与强制切换..."
-                # 自动解锁
-                rm -f .git/index.lock
-                if git checkout -f "tags/$selected_tag" >/dev/null 2>&1; then
-                    # 彻底清理未追踪文件
-                    git clean -fd >/dev/null 2>&1
+                if fn_git_workspace_auto_repair "$REPO_BRANCH" true && fn_run_git_with_progress "强制切换到版本 ${selected_tag}" false git checkout -f "tags/$selected_tag"; then
                     fn_print_success "版本已成功强制切换到 ${selected_tag}"
                     checkout_succeeded=true
                 else
@@ -1724,7 +1917,7 @@ fn_rollback_st() {
                 fi
             fi
         else
-            fn_print_error "切换失败！Git输出: $(echo "$checkout_output" | tail -n 2)"
+            fn_print_error "切换失败！Git输出: $(fn_git_last_log_tail 2)"
         fi
 
         if $checkout_succeeded; then
@@ -2159,15 +2352,15 @@ fn_install_gcli() {
         fn_print_warning "检测到旧目录，正在更新..."
         cd "$GCLI_DIR" || return
         git remote set-url origin "$route_url"
-        if ! git fetch --all; then
-            fn_print_error "Git 拉取更新失败！请检查网络连接。"
+        if ! fn_run_git_with_progress "拉取 gcli2api 更新" false git fetch --progress --all; then
+            fn_print_error "Git 拉取更新失败！请检查网络连接。Git输出: $(fn_git_last_log_tail 2)"
             fn_press_any_key
             return
         fi
         git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
     else
-        if ! git clone "$route_url" "$GCLI_DIR"; then
-            fn_print_error "克隆仓库失败！请检查网络或代理设置。"
+        if ! fn_run_git_with_progress "克隆 gcli2api 仓库" false git clone --progress "$route_url" "$GCLI_DIR"; then
+            fn_print_error "克隆仓库失败！请检查网络或代理设置。Git输出: $(fn_git_last_log_tail 2)"
             fn_press_any_key
             return
         fi
