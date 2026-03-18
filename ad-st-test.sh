@@ -54,9 +54,10 @@ MIRROR_LIST=(
 )
 
 GIT_LAST_LOG_FILE=""
+PKG_NONINTERACTIVE_NOTICE_SHOWN="false"
 
 fn_show_main_header() {
-    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v5.15test${NC}"
+    echo -e "    ${YELLOW}>>${GREEN} 清绝咕咕助手 v5.16test${NC}"
     echo -e "       ${BOLD}\033[0;37m作者: 清绝 | 网址: blog.qjyg.de${NC}"
     echo -e "    ${RED}本脚本为免费工具，严禁用于商业倒卖！${NC}"
 }
@@ -857,6 +858,31 @@ fn_run_npm_install() {
     fi
 }
 
+fn_print_pkg_noninteractive_notice() {
+    if [[ "$PKG_NONINTERACTIVE_NOTICE_SHOWN" == "true" ]]; then
+        return 0
+    fi
+
+    echo -e "${CYAN}若系统包配置文件有差异，脚本会自动保留当前已安装版本并继续，避免安装过程停顿。${NC}"
+    PKG_NONINTERACTIVE_NOTICE_SHOWN="true"
+}
+
+fn_run_termux_apt_noninteractive() {
+    if [ $# -eq 0 ]; then
+        fn_print_error "内部错误：未提供软件包命令。"
+        return 2
+    fi
+
+    fn_print_pkg_noninteractive_notice
+    env DEBIAN_FRONTEND=noninteractive \
+        APT_LISTCHANGES_FRONTEND=none \
+        UCF_FORCE_CONFFOLD=1 \
+        apt -y \
+            -o Dpkg::Options::=--force-confdef \
+            -o Dpkg::Options::=--force-confold \
+            "$@"
+}
+
 fn_update_termux_source() {
     fn_print_header "1/5: 配置软件源"
     echo -e "${YELLOW}即将开始配置 Termux 软件源...${NC}"
@@ -870,7 +896,7 @@ fn_update_termux_source() {
     for i in {1..3}; do
         termux-change-repo
         fn_print_warning "正在更新软件包列表 (第 $i/3 次尝试)..."
-        if pkg update -y; then
+        if fn_run_termux_apt_noninteractive update; then
             fn_print_success "软件源配置并更新成功！"
             return 0
         fi
@@ -1559,8 +1585,8 @@ fn_install_st() {
         done
         fn_print_header "2/5: 安装核心依赖"
         echo -e "${YELLOW}正在安装核心依赖...${NC}"
-        yes | pkg upgrade -y
-        yes | pkg install git nodejs-lts rsync zip unzip termux-api coreutils gawk bc || fn_print_error_exit "核心依赖安装失败！"
+        fn_run_termux_apt_noninteractive upgrade || fn_print_error_exit "核心依赖升级失败！"
+        fn_run_termux_apt_noninteractive install git nodejs-lts rsync zip unzip termux-api coreutils gawk bc || fn_print_error_exit "核心依赖安装失败！"
         fn_print_success "核心依赖安装完毕。"
     fi
     fn_print_header "3/5: 下载酒馆主程序"
@@ -1670,25 +1696,28 @@ fn_update_st() {
             actionDesc="清理未解决冲突并同步代码"
         elif fn_git_last_log_contains_regex "package-lock\\.json"; then
             reason="依赖配置文件 (package-lock.json) 冲突，这是系统自动行为。"
-            actionDesc="重置系统配置文件"
+            actionDesc="重置依赖配置文件"
         elif fn_git_last_log_contains_regex "yarn\\.lock|pnpm-lock\\.yaml|npm-shrinkwrap\\.json"; then
             reason="检测到依赖锁文件差异，这是常见自动行为。"
             actionDesc="重置依赖锁文件"
         elif fn_git_last_log_contains_regex "divergent branches|reconcile"; then
-            reason="本地版本与云端版本状态不一致 (分叉)。"
-            actionDesc="同步版本状态"
+            reason="本地版本与远程版本存在分叉（通常是由于非正常的更新中断引起）。"
+            actionDesc="同步版本状态并清理环境"
         elif fn_git_last_log_contains_regex "index\\.lock"; then
-            reason="Git 环境被锁定 (可能是上次操作意外中断)。"
-            actionDesc="解除锁定"
+            reason="Git 环境被锁定（可能有其他 Git 进程正在运行或上次操作异常中断）。"
+            actionDesc="解除锁定并清理环境"
         elif fn_git_last_log_contains_regex "You have not concluded your merge|rebase|cherry-pick"; then
             reason="检测到未完成的 Git 操作（merge/rebase/cherry-pick）。"
             actionDesc="终止未完成操作并恢复仓库状态"
+        elif fn_git_last_log_contains_regex "conflict|unmerged files"; then
+            reason="代码合并时发生冲突。"
+            actionDesc="放弃冲突的修改并清理环境"
         fi
 
         if [[ -n "$unmerged_preview" ]]; then
             conflict_preview="$unmerged_preview"
         else
-            conflict_preview="$(fn_git_last_log_conflict_preview 5)"
+            conflict_preview="$(fn_git_last_log_conflict_preview 8)"
         fi
         clear
         fn_print_header "检测到更新冲突"
@@ -1697,7 +1726,11 @@ fn_update_st() {
             echo -e "\n--- 冲突对象（来自 Git 输出） ---\n${conflict_preview}\n------------------------------"
         fi
         echo -e "\n${CYAN}此操作将${BOLD}${actionDesc}${NC}，但${GREEN}绝对不会${NC}影响您的聊天记录、角色卡等个人数据。${NC}"
-        echo -e "${CYAN}若上方包含 package-lock / yarn.lock / pnpm-lock.yaml，通常可放心确认继续。${NC}"
+        if [[ -n "$unmerged_preview" ]]; then
+            echo -e "${CYAN}这是更新中断后的常见状态，确认后脚本会自动清理并恢复到可更新状态。${NC}"
+        else
+            echo -e "${CYAN}若上方包含 package-lock / yarn.lock / pnpm-lock.yaml，通常可放心确认继续。${NC}"
+        fi
         if ! fn_read_yes_no_prompt "是否执行修复以完成更新" true ""; then
             fn_print_warning "已取消更新。"
             fn_press_any_key
@@ -1755,6 +1788,7 @@ fn_rollback_st() {
     IFS='|' read -r route_host route_url <<<"$selected_route"
     fn_print_warning "正在使用线路 [${route_host}] 获取版本信息..."
     git remote set-url origin "$route_url" >/dev/null 2>&1
+    if [ -f ".git/index.lock" ]; then rm -f ".git/index.lock"; fi
     if ! fn_run_git_with_progress "获取版本标签" false git fetch --progress --all --tags; then
         if fn_git_last_log_contains_regex "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
             fn_write_git_network_troubleshooting
@@ -1856,9 +1890,9 @@ fn_rollback_st() {
 
         fn_print_warning "正在尝试切换到版本 ${selected_tag}..."
         local checkout_succeeded=false
+        if [ -f ".git/index.lock" ]; then rm -f ".git/index.lock"; fi
 
-        if fn_run_git_with_progress "切换到版本 ${selected_tag}" false git checkout "tags/$selected_tag"; then
-            fn_print_success "版本已成功切换到 ${selected_tag}"
+        if fn_run_git_with_progress "切换到版本 ${selected_tag}" false git checkout -f "tags/$selected_tag"; then
             checkout_succeeded=true
         elif fn_git_last_log_contains_regex "overwritten by checkout|Please commit|unmerged files|conflict|index.lock|You have not concluded your merge|rebase|cherry-pick"; then
             # 智能诊断切换冲突
@@ -1921,6 +1955,7 @@ fn_rollback_st() {
         fi
 
         if $checkout_succeeded; then
+            git clean -fd >/dev/null 2>&1 || true
             if fn_run_npm_install; then
                 fn_print_success "版本切换并同步依赖成功！"
             else
@@ -2313,22 +2348,22 @@ fn_install_gcli() {
     fi
 
     fn_print_warning "正在更新系统软件包以确保兼容性 (pkg upgrade)..."
-    if ! pkg update -y || ! pkg upgrade -y; then
+    if ! fn_run_termux_apt_noninteractive update || ! fn_run_termux_apt_noninteractive upgrade; then
         fn_print_error "软件包更新失败！请检查网络连接或手动执行 'pkg upgrade'。"
         fn_press_any_key
         return
     fi
 
     fn_print_warning "正在检查环境依赖..."
-    local packages_to_install=""
-    if ! command -v uv &> /dev/null; then packages_to_install+=" uv"; fi
-    if ! command -v python &> /dev/null; then packages_to_install+=" python"; fi
-    if ! command -v node &> /dev/null; then packages_to_install+=" nodejs"; fi
-    if ! command -v git &> /dev/null; then packages_to_install+=" git"; fi
+    local packages_to_install=()
+    if ! command -v uv &> /dev/null; then packages_to_install+=("uv"); fi
+    if ! command -v python &> /dev/null; then packages_to_install+=("python"); fi
+    if ! command -v node &> /dev/null; then packages_to_install+=("nodejs"); fi
+    if ! command -v git &> /dev/null; then packages_to_install+=("git"); fi
 
-    if [ -n "$packages_to_install" ]; then
-        fn_print_warning "正在安装缺失的系统依赖: $packages_to_install"
-        pkg install $packages_to_install -y || { fn_print_error "依赖安装失败！"; fn_press_any_key; return; }
+    if [ ${#packages_to_install[@]} -gt 0 ]; then
+        fn_print_warning "正在安装缺失的系统依赖: ${packages_to_install[*]}"
+        fn_run_termux_apt_noninteractive install "${packages_to_install[@]}" || { fn_print_error "依赖安装失败！"; fn_press_any_key; return; }
     fi
 
     if ! command -v pm2 &> /dev/null; then
@@ -2353,14 +2388,25 @@ fn_install_gcli() {
         cd "$GCLI_DIR" || return
         git remote set-url origin "$route_url"
         if ! fn_run_git_with_progress "拉取 gcli2api 更新" false git fetch --progress --all; then
-            fn_print_error "Git 拉取更新失败！请检查网络连接。Git输出: $(fn_git_last_log_tail 2)"
+            if fn_git_last_log_contains_regex "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
+                fn_write_git_network_troubleshooting
+            fi
+            fn_print_error "Git 拉取更新失败！Git输出: $(fn_git_last_log_tail 8)"
             fn_press_any_key
             return
         fi
         git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
+        if [ $? -ne 0 ]; then
+            fn_print_error "Git 重置失败！请检查文件占用或手动处理。"
+            fn_press_any_key
+            return
+        fi
     else
         if ! fn_run_git_with_progress "克隆 gcli2api 仓库" false git clone --progress "$route_url" "$GCLI_DIR"; then
-            fn_print_error "克隆仓库失败！请检查网络或代理设置。Git输出: $(fn_git_last_log_tail 2)"
+            if fn_git_last_log_contains_regex "Failed to connect to|Could not connect to server|Connection timed out|Could not resolve host"; then
+                fn_write_git_network_troubleshooting
+            fi
+            fn_print_error "克隆 gcli2api 仓库失败！Git输出: $(fn_git_last_log_tail 8)"
             fn_press_any_key
             return
         fi

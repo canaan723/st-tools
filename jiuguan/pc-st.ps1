@@ -7,7 +7,7 @@
 # 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
 # 任何违反本协议的行为都将受到法律追究。
 
-$ScriptVersion = "v5.18"
+$ScriptVersion = "v5.19"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -884,6 +884,21 @@ function Format-DownloadCandidateSummary {
     return ($parts -join " | ")
 }
 
+function Show-DownloadCandidateAddresses {
+    param(
+        [Parameter(Mandatory=$true)] $Candidate,
+        [bool]$RequireGit,
+        [bool]$RequireFile
+    )
+
+    if ($RequireGit -and -not [string]::IsNullOrWhiteSpace($Candidate.GitUrl)) {
+        Write-Host "       Git: $($Candidate.GitUrl)" -ForegroundColor DarkGray
+    }
+    if ($RequireFile -and -not [string]::IsNullOrWhiteSpace($Candidate.FileUrl)) {
+        Write-Host "       文件: $($Candidate.FileUrl)" -ForegroundColor DarkGray
+    }
+}
+
 function Show-DownloadMeasurementSummary {
     param(
         [Parameter(Mandatory=$true)] [object[]]$Results,
@@ -897,6 +912,7 @@ function Show-DownloadMeasurementSummary {
     for ($i = 0; $i -lt $successfulResults.Count; $i++) {
         $result = $successfulResults[$i]
         Write-Host ("  [{0,2}] {1} - {2}" -f ($i + 1), $result.Name, (Format-DownloadCandidateSummary -Candidate $result -RequireGit:$RequireGit -RequireFile:$RequireFile)) -ForegroundColor Green
+        Show-DownloadCandidateAddresses -Candidate $result -RequireGit:$RequireGit -RequireFile:$RequireFile
     }
 
     foreach ($result in $failedResults) {
@@ -904,6 +920,7 @@ function Show-DownloadMeasurementSummary {
             continue
         }
         Write-Host "  ✗ $($result.Name)" -ForegroundColor Red
+        Show-DownloadCandidateAddresses -Candidate $result -RequireGit:$RequireGit -RequireFile:$RequireFile
     }
     return $successfulResults
 }
@@ -1980,14 +1997,29 @@ function Rollback-SillyTavern {
                     $checkoutSucceeded = $true
                 } elseif (Test-GitLastOutput "overwritten by checkout|Please commit|unmerged files|conflict|index\.lock|You have not concluded your merge|rebase|cherry-pick") {
                     $reason = "检测到程序目录与目标版本存在差异，无法直接切换。"
-                    $actionDesc = "清理冲突状态并继续切换版本"
+                    $actionDesc = "清理程序目录差异并继续切换版本"
+                    $safeHint = "该情况很常见，确认后脚本会自动清理并继续切换，可放心继续。"
                     $unmergedPreview = Get-GitUnmergedFilesPreview -Lines 8
                     if (-not [string]::IsNullOrWhiteSpace($unmergedPreview)) {
                         $reason = "检测到未解决冲突文件（通常是上次更新中断遗留）。"
+                        $actionDesc = "清理未解决冲突并继续切换"
+                        $safeHint = "该情况很常见，确认后脚本会自动清理冲突状态，可放心继续。"
+                    } elseif (Test-GitLastOutput "package-lock\.json") {
+                        $reason = "依赖配置文件 (package-lock.json) 差异，这是系统自动行为。"
+                        $actionDesc = "重置依赖配置文件"
+                        $safeHint = "该情况通常由依赖安装自动产生，可放心确认继续。"
+                    } elseif (Test-GitLastOutput "yarn\.lock|pnpm-lock\.yaml|npm-shrinkwrap\.json") {
+                        $reason = "检测到依赖锁文件差异，这是常见自动行为。"
+                        $actionDesc = "重置依赖锁文件"
+                        $safeHint = "该情况通常由依赖安装自动产生，可放心确认继续。"
                     } elseif (Test-GitLastOutput "You have not concluded your merge|rebase|cherry-pick") {
                         $reason = "检测到未完成的 Git 操作（merge/rebase/cherry-pick）。"
+                        $actionDesc = "终止未完成操作并恢复仓库状态"
+                        $safeHint = "该情况很常见，确认后脚本会自动修复，可放心继续。"
                     } elseif (Test-GitLastOutput "index\.lock") {
                         $reason = "Git 环境被锁定（可能是上次操作意外中断）。"
+                        $actionDesc = "解除锁定"
+                        $safeHint = "请继续执行修复，脚本会自动解除锁定。"
                     }
 
                     $preview = if (-not [string]::IsNullOrWhiteSpace($unmergedPreview)) { $unmergedPreview } else { Get-GitConflictPreview -Lines 8 }
@@ -1998,7 +2030,7 @@ function Rollback-SillyTavern {
                         Write-Host "`n--- 冲突对象（来自 Git 输出） ---`n$preview`n------------------------------"
                     }
                     Write-Host "`n此操作将$($actionDesc)，【不会】影响您的聊天记录、角色卡等用户数据。" -ForegroundColor Cyan
-                    Write-Host "该情况很常见，确认后脚本会自动清理并继续切换，可放心继续。" -ForegroundColor Cyan
+                    Write-Host $safeHint -ForegroundColor Cyan
                     if (Read-YesNoPrompt -Label "是否执行修复并继续切换版本（推荐）" -DefaultYes $true) {
                         if ((Invoke-GitWorkspaceAutoRepair -Branch $Repo_Branch -DeepClean) -and (Invoke-GitWithProgress -OperationName "强制切换到版本 $selectedTag" -GitArgs @('checkout', '-f', "tags/$selectedTag"))) {
                             $checkoutSucceeded = $true
